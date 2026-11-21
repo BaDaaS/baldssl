@@ -11,7 +11,7 @@ by humans: regenerating preserves them, and new commands start as
 Status values:
   supported    implemented and byte-for-byte compatible
   partial      implemented for a subset of the options (see note)
-  planned      on the roadmap in TODO.md
+  planned      next on the roadmap
   not-started  nothing yet
 
 Usage: scripts/gen-commands.py <openssl-3.5> <openssl-4.1> <out.json>

@@ -3,7 +3,7 @@
 //!
 //! Supported public keys: P-256, P-384, P-521 (`id-ecPublicKey` with a named
 //! curve), Ed25519, and RSA for display. Anything else is reported as
-//! [`baldssl_core::Error::Unsupported`]; see `TODO.md`.
+//! [`baldssl_core::Error::Unsupported`].
 
 pub mod cert;
 pub mod ext;

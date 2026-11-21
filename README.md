@@ -36,7 +36,8 @@ test. CI requires 3.5.9 and 4.1.0 to pass; 3.0.22, 3.6.5 and 4.0.3 run as
 informational jobs.
 
 Rule for new output: never print something OpenSSL would print differently.
-Unimplemented cases return `Error::Unsupported` and get a `TODO.md` entry.
+Unimplemented cases return `Error::Unsupported`; the status of each command is
+kept in `website/src/commands.json` (see the website section).
 
 ## testing
 

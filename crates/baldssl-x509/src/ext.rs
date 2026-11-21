@@ -8,7 +8,7 @@
 //!   `ASN1_STRING_print`.
 //! * An extension OpenSSL knows but baldssl does not implement yet returns
 //!   [`Error::Unsupported`], because OpenSSL would decode it and any output
-//!   of ours would differ. Each such extension is listed in `TODO.md`.
+//!   of ours would differ.
 
 use baldssl_core::{
     Error, Result,

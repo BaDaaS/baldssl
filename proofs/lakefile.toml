@@ -1,7 +1,7 @@
 # Lean 4 project for the formal verification of baldssl.
 #
 # Status: a compile-only skeleton. CI checks that it builds against the pinned
-# Aeneas library; no extracted code and no theorems yet (see TODO.md). Keep
+# Aeneas library; no extracted code and no theorems yet. Keep
 # `lean-toolchain` equal to Aeneas' `backends/lean/lean-toolchain` at `rev`.
 name = "baldssl"
 defaultTargets = ["Baldssl"]

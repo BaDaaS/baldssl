@@ -2,7 +2,7 @@
 //! specifications with no third-party code.
 //!
 //! Implemented: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (FIPS 180-4).
-//! Planned, see `TODO.md`: P-256, P-384, P-521 field and group arithmetic,
+//! Planned: P-256, P-384, P-521 field and group arithmetic,
 //! ECDSA (FIPS 186-5), Ed25519 (RFC 8032), HMAC, a DRBG, and the RSA
 //! verification needed to read RSA-signed chains.
 //!
