@@ -28,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest # Linux x86_64
+          - ubuntu-26.04 # Linux x86_64
           - ubuntu-24.04-arm # Linux aarch64 (Raspberry Pi 3/4/5, 64-bit OS)
           - macos-latest # macOS aarch64
           - macos-15-intel # macOS x86_64
@@ -59,6 +59,12 @@ jobs:
 
   # 32-bit and other architectures: cross-compiled, tests run under QEMU
   # (Linux) or natively (32-bit x86).
+  #
+  # Every apt package is pinned to an exact version of the runner's Ubuntu
+  # release (26.04, hence no ubuntu-latest anywhere). Ubuntu drops a version
+  # from the archive once an update supersedes it, so a pin then fails loudly
+  # and has to be bumped: read the new version with
+  # `apt-cache policy <package>` on the runner, or from the failing log.
   cross:
     name: cross (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -68,26 +74,32 @@ jobs:
         include:
           # Raspberry Pi 2/3/4 with a 32-bit OS (ARMv7).
           - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-latest
-            apt: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+            os: ubuntu-26.04
+            apt: >-
+              gcc-arm-linux-gnueabihf=4:15.2.0-5ubuntu1
+              libc6-dev-armhf-cross=2.43-2ubuntu2cross1
             linker: arm-linux-gnueabihf-gcc
             sysroot: /usr/arm-linux-gnueabihf
           # Raspberry Pi Zero/1 (ARMv6). Linked against Ubuntu's armhf libc,
           # so this checks code generation and the test suite, not
           # Raspberry Pi OS's ARMv6 userland.
           - target: arm-unknown-linux-gnueabihf
-            os: ubuntu-latest
-            apt: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+            os: ubuntu-26.04
+            apt: >-
+              gcc-arm-linux-gnueabihf=4:15.2.0-5ubuntu1
+              libc6-dev-armhf-cross=2.43-2ubuntu2cross1
             linker: arm-linux-gnueabihf-gcc
             sysroot: /usr/arm-linux-gnueabihf
           - target: riscv64gc-unknown-linux-gnu
-            os: ubuntu-latest
-            apt: gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
+            os: ubuntu-26.04
+            apt: >-
+              gcc-riscv64-linux-gnu=4:15.2.0-5ubuntu1
+              libc6-dev-riscv64-cross=2.43-2ubuntu2cross1
             linker: riscv64-linux-gnu-gcc
             sysroot: /usr/riscv64-linux-gnu
           - target: i686-unknown-linux-gnu
-            os: ubuntu-latest
-            apt: gcc-multilib
+            os: ubuntu-26.04
+            apt: gcc-multilib=4:15.2.0-5ubuntu1
           - target: i686-pc-windows-msvc
             os: windows-latest
     env:
@@ -107,6 +119,7 @@ jobs:
           APT: ${{ matrix.apt }}
           LINKER: ${{ matrix.linker }}
           SYSROOT: ${{ matrix.sysroot }}
+          QEMU_VERSION: 1:10.2.1+ds-1ubuntu3.3
         run: |
           sudo apt-get update
           # shellcheck disable=SC2086 # APT is a package list
@@ -114,8 +127,8 @@ jobs:
           if [ -n "$LINKER" ]; then
             # qemu-user-binfmt registers QEMU with binfmt_misc
             # (qemu-user-static is gone from recent Ubuntu releases).
-            sudo apt-get install -y --no-install-recommends qemu-user \
-              qemu-user-binfmt
+            sudo apt-get install -y --no-install-recommends \
+              "qemu-user=$QEMU_VERSION" "qemu-user-binfmt=$QEMU_VERSION"
             var=$(echo "$CARGO_BUILD_TARGET" | tr 'a-z-' 'A-Z_')
             echo "CARGO_TARGET_${var}_LINKER=$LINKER" >> "$GITHUB_ENV"
             # binfmt_misc runs foreign binaries through QEMU, including the
@@ -132,7 +145,7 @@ jobs:
         run: make test
 
   format:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,7 +159,7 @@ jobs:
 
   # Zero-dependency policy, docs, the `--cfg aeneas` build, shell scripts.
   hygiene:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -160,7 +173,7 @@ jobs:
       - run: make lint-shell
 
   coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       # Instrumented builds are not cached; do not route them through sccache.
       RUSTC_WRAPPER: ""
@@ -184,7 +197,7 @@ jobs:
   # the others are informational, to see drift before supporting them.
   interop:
     name: interop (OpenSSL ${{ matrix.version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     continue-on-error: ${{ !matrix.required }}
     strategy:
       fail-fast: false
@@ -225,7 +238,7 @@ jobs:
   # The committed golden files must be exactly what the supported OpenSSL
   # releases print today.
   golden:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -250,7 +263,7 @@ jobs:
 
   # The Lean 4 skeleton must keep building against the pinned Aeneas.
   lean:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
