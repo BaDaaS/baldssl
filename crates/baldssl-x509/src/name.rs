@@ -1,0 +1,239 @@
+//! Distinguished names and their OpenSSL rendering.
+//!
+//! OpenSSL 3's `x509` prints names with `XN_FLAG_SEP_CPLUS_SPC |
+//! ASN1_STRFLGS_UTF8_CONVERT` unless `-nameopt` is given: RDNs joined by
+//! `", "`, multi-valued RDNs by `" + "`, short field names, `=` without
+//! spaces, every string type converted to UTF-8 and *no escaping at all*.
+//! That last point means the output is bytes, not necessarily valid UTF-8
+//! (a UTF8String is copied verbatim, and BMPString surrogates are encoded
+//! one by one), so the printer returns `Vec<u8>`.
+
+use baldssl_core::{
+    Error, Result,
+    der::{Oid, Reader, Tlv, tag},
+};
+
+use crate::objects;
+
+/// `AttributeTypeAndValue`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attribute<'a> {
+    /// The attribute type.
+    pub oid: Oid<'a>,
+    /// The value, any ASN.1 type.
+    pub value: Tlv<'a>,
+}
+
+/// `Name ::= SEQUENCE OF RelativeDistinguishedName`, each RDN a SET.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Name<'a> {
+    /// The RDNs in encoding order.
+    pub rdns: Vec<Vec<Attribute<'a>>>,
+}
+
+impl<'a> Name<'a> {
+    /// Decodes a Name from `r`.
+    ///
+    /// # Errors
+    ///
+    /// On malformed DER or an empty RDN.
+    pub fn read(r: &mut Reader<'a>) -> Result<Self> {
+        Self::from_contents(r.expect(tag::SEQUENCE)?.value)
+    }
+
+    /// Decodes a Name from the contents of its SEQUENCE.
+    ///
+    /// # Errors
+    ///
+    /// On malformed DER or an empty RDN.
+    pub fn from_contents(value: &'a [u8]) -> Result<Self> {
+        let mut seq = Reader::new(value);
+        let mut rdns = Vec::new();
+        while !seq.is_empty() {
+            let mut set = Reader::new(seq.expect(tag::SET)?.value);
+            let mut rdn = Vec::new();
+            while !set.is_empty() {
+                let mut atv = set.sequence()?;
+                let oid = Oid::parse(atv.expect(tag::OID)?.value)?;
+                let value = atv.read()?;
+                atv.finish()?;
+                rdn.push(Attribute { oid, value });
+            }
+            if rdn.is_empty() {
+                return Err(Error::invalid("empty RelativeDistinguishedName"));
+            }
+            rdns.push(rdn);
+        }
+        Ok(Name { rdns })
+    }
+
+    /// The OpenSSL default (`-nameopt` unset) one-line rendering.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unsupported`] for value types OpenSSL would not print as
+    /// text.
+    pub fn to_openssl(&self) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        for (i, rdn) in self.rdns.iter().enumerate() {
+            if i > 0 {
+                out.extend_from_slice(b", ");
+            }
+            for (j, atv) in rdn.iter().enumerate() {
+                if j > 0 {
+                    out.extend_from_slice(b" + ");
+                }
+                out.extend_from_slice(
+                    objects::short_name(&atv.oid)?.as_bytes(),
+                );
+                out.push(b'=');
+                string_to_utf8(&atv.value, &mut out)?;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Appends the UTF-8 encoding of a code point the way OpenSSL's `UTF8_putc`
+/// does: surrogates are encoded like any other value below `0x10000`.
+fn push_utf8(c: u32, out: &mut Vec<u8>) -> Result<()> {
+    // The casts below keep the low 6 bits of a shifted code point, which is
+    // the definition of the UTF-8 encoding.
+    #[allow(clippy::cast_possible_truncation)]
+    match c {
+        0..=0x7f => out.push(c as u8),
+        0x80..=0x7ff => {
+            out.push(0xc0 | (c >> 6) as u8);
+            out.push(0x80 | (c & 0x3f) as u8);
+        }
+        0x800..=0xffff => {
+            out.push(0xe0 | (c >> 12) as u8);
+            out.push(0x80 | ((c >> 6) & 0x3f) as u8);
+            out.push(0x80 | (c & 0x3f) as u8);
+        }
+        0x1_0000..=0x10_ffff => {
+            out.push(0xf0 | (c >> 18) as u8);
+            out.push(0x80 | ((c >> 12) & 0x3f) as u8);
+            out.push(0x80 | ((c >> 6) & 0x3f) as u8);
+            out.push(0x80 | (c & 0x3f) as u8);
+        }
+        _ => return Err(Error::unsupported("UniversalString above U+10FFFF")),
+    }
+    Ok(())
+}
+
+/// Converts an ASN.1 string to the bytes OpenSSL prints with
+/// `ASN1_STRFLGS_UTF8_CONVERT` and no escaping (`do_print_ex` + `do_buf`).
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] for non-string types, [`Error::Invalid`] for a
+/// BMPString or UniversalString of bad length.
+pub fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
+    match value.octet() {
+        // UTF8String is copied byte for byte, even when it is not UTF-8.
+        tag::UTF8_STRING => out.extend_from_slice(value.value),
+        // One byte per character, read as Latin-1, then UTF-8 encoded.
+        tag::NUMERIC_STRING
+        | tag::PRINTABLE_STRING
+        | tag::T61_STRING
+        | tag::IA5_STRING
+        | tag::VISIBLE_STRING => {
+            for &b in value.value {
+                push_utf8(u32::from(b), out)?;
+            }
+        }
+        tag::BMP_STRING => {
+            let (units, rest) = value.value.as_chunks::<2>();
+            if !rest.is_empty() {
+                return Err(Error::invalid("BMPString of odd length"));
+            }
+            for unit in units {
+                push_utf8(u32::from(u16::from_be_bytes(*unit)), out)?;
+            }
+        }
+        tag::UNIVERSAL_STRING => {
+            let (chars, rest) = value.value.as_chunks::<4>();
+            if !rest.is_empty() {
+                return Err(Error::invalid("UniversalString length"));
+            }
+            for c in chars {
+                push_utf8(u32::from_be_bytes(*c), out)?;
+            }
+        }
+        other => {
+            return Err(Error::unsupported(format!(
+                "name attribute value of ASN.1 type 0x{other:02x}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn tlv(octet: u8, value: &[u8]) -> Vec<u8> {
+        let mut v = vec![octet, u8::try_from(value.len()).unwrap()];
+        v.extend_from_slice(value);
+        v
+    }
+
+    fn render(octet: u8, value: &[u8]) -> Result<Vec<u8>> {
+        let enc = tlv(octet, value);
+        let (t, _) = baldssl_core::der::parse_tlv(&enc).unwrap();
+        let mut out = Vec::new();
+        string_to_utf8(&t, &mut out)?;
+        Ok(out)
+    }
+
+    #[test]
+    fn string_types() {
+        assert_eq!(
+            render(tag::UTF8_STRING, "H\u{e9}".as_bytes()).unwrap(),
+            "H\u{e9}".as_bytes()
+        );
+        assert_eq!(render(tag::PRINTABLE_STRING, b"ab").unwrap(), b"ab");
+        assert_eq!(
+            render(tag::T61_STRING, &[0xe9]).unwrap(),
+            "\u{e9}".as_bytes()
+        );
+        assert_eq!(
+            render(tag::BMP_STRING, &[0x00, 0xe9, 0x20, 0xac]).unwrap(),
+            "\u{e9}\u{20ac}".as_bytes()
+        );
+        assert_eq!(
+            render(tag::UNIVERSAL_STRING, &[0, 1, 0xf6, 0x00]).unwrap(),
+            "\u{1f600}".as_bytes()
+        );
+        assert!(render(tag::BMP_STRING, &[0x00]).is_err());
+        assert!(render(tag::UNIVERSAL_STRING, &[0, 0x11, 0, 0]).is_err());
+        assert!(render(tag::OCTET_STRING, b"x").is_err());
+        // A lone surrogate is encoded as three bytes, as UTF8_putc does.
+        assert_eq!(
+            render(tag::BMP_STRING, &[0xd8, 0x00]).unwrap(),
+            [0xed, 0xa0, 0x80]
+        );
+    }
+
+    proptest! {
+        /// On valid Rust strings, the UTF-8 encoder agrees with `char`.
+        #[test]
+        fn utf8_matches_std(c in any::<char>()) {
+            let mut ours = Vec::new();
+            push_utf8(u32::from(c), &mut ours).unwrap();
+            let mut buf = [0u8; 4];
+            prop_assert_eq!(ours, c.encode_utf8(&mut buf).as_bytes());
+        }
+
+        /// BMPString of any BMP text is its UTF-8.
+        #[test]
+        fn bmp_roundtrip(s in "[\\u{0}-\\u{d7ff}\\u{e000}-\\u{fffd}]{0,30}") {
+            let units: Vec<u8> = s.encode_utf16().flat_map(u16::to_be_bytes).collect();
+            prop_assume!(units.len() < 128);
+            prop_assert_eq!(render(tag::BMP_STRING, &units).unwrap(), s.as_bytes());
+        }
+    }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "baldssl-x509"
+description = "X.509 certificate parsing and OpenSSL-compatible printing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+baldssl-core.workspace = true
+baldssl-crypto.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
