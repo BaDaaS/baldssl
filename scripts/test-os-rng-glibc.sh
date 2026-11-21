@@ -82,7 +82,7 @@ else
         echo "FAIL $image: expected linking to fail below glibc 2.25" >&2
         exit 1
     fi
-    if ! grep -Eq "undefined reference to .?getrandom" "$log"; then
+    if ! grep -Eq "undefined (reference to|symbol:) .?getrandom" "$log"; then
         echo "FAIL $image: failed, but not on an undefined getrandom" >&2
         exit 1
     fi
