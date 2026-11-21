@@ -20,6 +20,8 @@
 //!
 //! [x690]: https://www.itu.int/rec/T-REC-X.690
 
+pub mod write;
+
 use core::fmt::Write as _;
 
 use crate::Error;
