@@ -19,7 +19,7 @@
       "id": "os-rng",
       "name": "Randomness from the operating system",
       "purpose": "Key and nonce generation; the only code allowed to use unsafe.",
-      "status": "in-progress",
+      "status": "implemented",
       "link": "https://github.com/BaDaaS/baldssl/pull/2"
     },
     {

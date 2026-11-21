@@ -29,6 +29,7 @@ baldssl-x509 = { path = "crates/baldssl-x509", version = "0.1.0" }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
+# Allowed in one module only, baldssl-crypto::os_rng (`make check-unsafe`).
 unsafe_code = "deny"
 missing_docs = "warn"
 # `--cfg aeneas` is passed when extracting to Lean with Charon; it compiles

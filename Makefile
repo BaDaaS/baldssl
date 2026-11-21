@@ -85,6 +85,16 @@ lint-beta: ## Run clippy with the beta toolchain
 lint-shell: ## Lint shell scripts with shellcheck
 	shellcheck $(SHELL_SCRIPTS)
 
+.PHONY: check-unsafe
+check-unsafe: ## Fail if unsafe code appears outside baldssl-crypto's os_rng
+	@found=$$(grep -rlE 'unsafe *(\{|fn|extern|impl)' crates fuzz \
+		--include='*.rs' | grep -v '^crates/baldssl-crypto/src/os_rng.rs$$' \
+		|| true); \
+	if [ -n "$$found" ]; then \
+		echo "unsafe code outside os_rng.rs:"; echo "$$found"; exit 1; \
+	fi; \
+	echo "unsafe code only in crates/baldssl-crypto/src/os_rng.rs"
+
 .PHONY: check-no-deps
 check-no-deps: ## Fail if any third-party crate is a normal/build dependency
 	@external=$$(cargo tree --workspace -e normal,build --prefix none \
@@ -169,7 +179,8 @@ lean: ## Build the Lean 4 skeleton in proofs/ (Aeneas library, Mathlib cache)
 # --- Aggregate ---------------------------------------------------------------
 
 .PHONY: ci
-ci: check-format lint test doc check-no-deps check-aeneas lint-shell ## Run the CI checks locally
+ci: check-format lint test doc check-no-deps check-unsafe check-aeneas \
+	lint-shell ## Run the CI checks locally
 
 .PHONY: clean
 clean: ## Remove build artifacts
