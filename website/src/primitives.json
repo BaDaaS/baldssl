@@ -40,7 +40,7 @@
       "id": "ed25519",
       "name": "Ed25519",
       "purpose": "The Edwards curve of Ed25519 and the derivation of a public key from a private key (RFC 8032).",
-      "status": "in-progress",
+      "status": "implemented",
       "link": "https://github.com/BaDaaS/baldssl/pull/8"
     },
     {
