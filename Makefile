@@ -116,6 +116,40 @@ test: ## Run all tests (unit, property, golden)
 test-release: ## Run all tests in release mode
 	cargo test --workspace --release
 
+# os_rng on every libc and OS version it supports (#39). The minimum versions
+# are documented in crates/baldssl-crypto/src/os_rng.rs.
+IMAGE ?= buildpack-deps:noble
+EXPECT ?= pass
+MUSL_TARGET ?= x86_64-unknown-linux-musl
+ANDROID_MODE ?= run
+ANDROID_API ?= 28
+ANDROID_RUN_API ?= 28
+
+.PHONY: test-os-rng
+test-os-rng: ## Run the os_rng tests on this machine
+	cargo test -p baldssl-crypto --lib os_rng
+
+.PHONY: test-os-rng-glibc
+test-os-rng-glibc: ## os_rng in a Linux container (IMAGE, EXPECT)
+	scripts/test-os-rng-glibc.sh "$(IMAGE)" "$(EXPECT)"
+
+.PHONY: test-os-rng-musl
+test-os-rng-musl: ## os_rng statically linked against musl (MUSL_TARGET=)
+	rustup target add "$(MUSL_TARGET)"
+	cargo test -p baldssl-crypto --lib --target "$(MUSL_TARGET)" os_rng
+
+.PHONY: test-os-rng-android
+test-os-rng-android: ## os_rng on Android (ANDROID_MODE, ANDROID_API, _RUN_API)
+	scripts/test-os-rng-android.sh "$(ANDROID_MODE)" "$(ANDROID_API)" \
+		"$(ANDROID_RUN_API)"
+
+.PHONY: check-os-rng-bsd
+check-os-rng-bsd: ## Type-check os_rng for FreeBSD and NetBSD
+	for target in x86_64-unknown-freebsd x86_64-unknown-netbsd; do \
+		rustup target add "$$target" && \
+		cargo check -p baldssl-crypto --target "$$target" || exit 1; \
+	done
+
 .PHONY: coverage
 coverage: ## Coverage report (Cobertura XML + HTML) in target/coverage
 	cargo tarpaulin --workspace --engine llvm --out Xml --out Html \

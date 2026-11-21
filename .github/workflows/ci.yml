@@ -15,7 +15,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_GHA_ENABLED: 'true'
 
 jobs:
   # Clippy and the full test suite (unit, property, golden files) on every
@@ -34,7 +34,7 @@ jobs:
           - macos-15-intel # macOS x86_64
           - windows-latest # Windows x86_64
           - windows-11-arm # Windows aarch64
-        toolchain: ["1.100.0", beta, nightly]
+        toolchain: ['1.100.0', beta, nightly]
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
@@ -144,6 +144,147 @@ jobs:
         shell: bash
         run: make test
 
+  # os_rng on every libc and OS version it claims to support (#39). The
+  # minimum versions are documented, with their sources, in
+  # crates/baldssl-crypto/src/os_rng.rs. No sccache here: the builds are small
+  # and some run inside containers.
+  #
+  # glibc: built and run inside each distribution with its own C toolchain.
+  # Debian stretch (glibc 2.24) is below the minimum, 2.25, where getrandom
+  # appeared, so linking must fail there: this pins the documented minimum.
+  os-rng-glibc:
+    name: os-rng (glibc, ${{ matrix.image }})
+    runs-on: ubuntu-26.04
+    env:
+      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: 'buildpack-deps:stretch', expect: link-fail } # 2.24
+          - { image: 'buildpack-deps:bionic', expect: pass } # 2.27
+          - { image: 'buildpack-deps:buster', expect: pass } # 2.28
+          - { image: 'buildpack-deps:focal', expect: pass } # 2.31
+          - { image: 'buildpack-deps:jammy', expect: pass } # 2.35
+          - { image: 'buildpack-deps:bookworm', expect: pass } # 2.36
+          - { image: 'buildpack-deps:trixie', expect: pass } # 2.41
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Test os_rng
+        env:
+          IMAGE: ${{ matrix.image }}
+          EXPECT: ${{ matrix.expect }}
+        run: make test-os-rng-glibc IMAGE="$IMAGE" EXPECT="$EXPECT"
+
+  # musl, statically linked against the musl that Rust bundles.
+  os-rng-musl:
+    name: os-rng (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-26.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Test os_rng
+        env:
+          TARGET: ${{ matrix.target }}
+        run: make test-os-rng-musl MUSL_TARGET="$TARGET"
+
+  # Android: bionic has getrandom from API 28. Linking against API 27 must
+  # fail; a build for API 28 runs on the minimum and on a recent API level.
+  os-rng-android:
+    name:
+      os-rng (Android ${{ matrix.mode }}, API ${{ matrix.api }}${{
+      matrix.run_api && format(' on {0}', matrix.run_api) || '' }})
+    runs-on: ubuntu-26.04
+    env:
+      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mode: link-fail, api: 27 }
+          - { mode: run, api: 28, run_api: 28 }
+          - { mode: run, api: 28, run_api: 35 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Enable KVM for the emulator
+        if: matrix.mode == 'run'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Test os_rng
+        env:
+          MODE: ${{ matrix.mode }}
+          API: ${{ matrix.api }}
+          RUN_API: ${{ matrix.run_api }}
+        run: >
+          make test-os-rng-android ANDROID_MODE="$MODE" ANDROID_API="$API"
+          ANDROID_RUN_API="$RUN_API"
+
+  # Every macOS and Windows runner version, both architectures.
+  os-rng-platforms:
+    name: os-rng (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15 # macOS 15 arm64
+          - macos-15-intel # macOS 15 x86_64
+          - macos-26 # macOS 26 arm64
+          - macos-26-intel # macOS 26 x86_64
+          - windows-2022 # Windows Server 2022 x86_64
+          - windows-2025 # Windows Server 2025 x86_64
+          - windows-11-arm # Windows 11 arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
+      - name: Test os_rng
+        shell: bash
+        run: make test-os-rng
+
+  # The BSD branches type-check (tier-2 targets with a prebuilt std; running
+  # them needs a VM, tracked in #39).
+  os-rng-bsd:
+    runs-on: ubuntu-26.04
+    env:
+      RUSTC_WRAPPER: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - run: make check-os-rng-bsd
+
   # WebAssembly: the libraries build for the browser target, and the CLI,
   # built for WASI, passes the same golden suite as the native binary.
   wasm:
@@ -171,7 +312,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Install nightly rustfmt
-        run: rustup toolchain install nightly --profile minimal --component rustfmt
+        run:
+          rustup toolchain install nightly --profile minimal --component rustfmt
       - uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
         with:
           tool: taplo-cli@0.9.3
@@ -197,7 +339,7 @@ jobs:
     runs-on: ubuntu-26.04
     env:
       # Instrumented builds are not cached; do not route them through sccache.
-      RUSTC_WRAPPER: ""
+      RUSTC_WRAPPER: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -261,10 +403,10 @@ jobs:
         include:
           - version: 3.5.9
             sha256: 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
-            install: "1"
+            install: '1'
           - version: 4.1.0
             sha256: 50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
-            install: ""
+            install: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
