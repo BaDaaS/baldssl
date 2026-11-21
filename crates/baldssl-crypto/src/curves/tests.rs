@@ -359,7 +359,7 @@ fn openssl_key_pairs() {
         );
     }
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/keys/ec-keypairs.txt");
+        .join("../../tests/fixtures/keys/keypairs.txt");
     let mut seen = 0;
     for line in fs::read_to_string(path).unwrap().lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();

@@ -23,6 +23,8 @@
 
 pub mod ct;
 pub mod curves;
+pub mod ed25519;
+pub mod edwards;
 pub mod field;
 pub mod fields;
 pub mod os_rng;
