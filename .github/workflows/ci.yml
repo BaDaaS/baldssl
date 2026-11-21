@@ -271,19 +271,61 @@ jobs:
         shell: bash
         run: make test-os-rng
 
-  # The BSD branches type-check (tier-2 targets with a prebuilt std; running
-  # them needs a VM, tracked in #39).
+  # The BSDs, in virtual machines (vmactions, pinned by commit). Each uses
+  # the Rust its own packages provide, which may trail the pinned toolchain:
+  # rust-version is ignored there, and the version used is printed. FreeBSD
+  # and NetBSD are tier-2 targets; OpenBSD and DragonFly are tier 3, built
+  # by their own packaged compilers.
   os-rng-bsd:
+    name: os-rng (${{ matrix.os }} ${{ matrix.release }})
     runs-on: ubuntu-26.04
-    env:
-      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: freebsd, release: '15.1' }
+          - { os: freebsd, release: '14.5' }
+          - { os: netbsd, release: '11.1' }
+          - { os: netbsd, release: '10.2' }
+          - { os: openbsd, release: '8.0' }
+          - { os: openbsd, release: '7.9' }
+          - { os: dragonflybsd, release: '6.4' }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the pinned toolchain
-        run: rustup toolchain install
-      - run: make check-os-rng-bsd
+      - name: Test os_rng on FreeBSD
+        if: matrix.os == 'freebsd'
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1.6.0
+        with:
+          release: ${{ matrix.release }}
+          copyback: false
+          prepare: pkg install -y rust gmake
+          run: gmake test-os-rng-system-rust
+      - name: Test os_rng on NetBSD
+        if: matrix.os == 'netbsd'
+        uses: vmactions/netbsd-vm@5957cf330aef2e6ddc63c604364c99ce2e02b91d # v1.5.3
+        with:
+          release: ${{ matrix.release }}
+          copyback: false
+          prepare: /usr/sbin/pkg_add -u rust gmake
+          run: gmake test-os-rng-system-rust
+      - name: Test os_rng on OpenBSD
+        if: matrix.os == 'openbsd'
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1.4.9
+        with:
+          release: ${{ matrix.release }}
+          copyback: false
+          prepare: pkg_add rust gmake
+          run: gmake test-os-rng-system-rust
+      - name: Test os_rng on DragonFly BSD
+        if: matrix.os == 'dragonflybsd'
+        uses: vmactions/dragonflybsd-vm@84881684c8771163f1dd37820a358aa3cd8bc2f2 # v1.3.5
+        with:
+          release: ${{ matrix.release }}
+          copyback: false
+          prepare: pkg install -y rust gmake
+          run: gmake test-os-rng-system-rust
 
   # WebAssembly: the libraries build for the browser target, and the CLI,
   # built for WASI, passes the same golden suite as the native binary.

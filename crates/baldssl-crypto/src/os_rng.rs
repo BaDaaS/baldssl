@@ -26,8 +26,9 @@
 //! glibc 2.24; they run statically linked against musl on x86_64 and aarch64;
 //! on Android they must fail to link against API 27 and pass on emulators at
 //! API 28 and 35; and they run on every macOS (15, 26) and Windows (Server
-//! 2022, 2025, Windows 11 arm64) runner. The FreeBSD and NetBSD branches are
-//! only type-checked. Whether `BCryptGenRandom` is the right primitive on
+//! 2022, 2025, Windows 11 arm64) runner, and in virtual machines on FreeBSD
+//! (14.5, 15.1), NetBSD (10.2, 11.1), OpenBSD (7.9, 8.0) and DragonFly BSD
+//! (6.4). Whether `BCryptGenRandom` is the right primitive on
 //! Windows is investigated in [#40].
 //!
 //! [glibc 2.25 NEWS]: https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=NEWS;hb=HEAD

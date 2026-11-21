@@ -143,12 +143,10 @@ test-os-rng-android: ## os_rng on Android (ANDROID_MODE, ANDROID_API, _RUN_API)
 	scripts/test-os-rng-android.sh "$(ANDROID_MODE)" "$(ANDROID_API)" \
 		"$(ANDROID_RUN_API)"
 
-.PHONY: check-os-rng-bsd
-check-os-rng-bsd: ## Type-check os_rng for FreeBSD and NetBSD
-	for target in x86_64-unknown-freebsd x86_64-unknown-netbsd; do \
-		rustup target add "$$target" && \
-		cargo check -p baldssl-crypto --target "$$target" || exit 1; \
-	done
+.PHONY: test-os-rng-system-rust
+test-os-rng-system-rust: ## os_rng with the OS's packaged Rust (BSD VMs)
+	rustc --version
+	cargo test --ignore-rust-version -p baldssl-crypto --lib os_rng
 
 .PHONY: coverage
 coverage: ## Coverage report (Cobertura XML + HTML) in target/coverage
