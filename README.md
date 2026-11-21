@@ -6,54 +6,12 @@
   <a href="https://badaas.be/baldssl/">badaas.be/baldssl</a>
 </p>
 
-A reimplementation of the `openssl` command-line tool in Rust, with no
-third-party dependencies, intended to be verified incrementally in Lean 4.
+Developer documentation for baldssl, a reimplementation of the `openssl`
+command-line tool in Rust with no third-party dependencies.
 
-The first goal is drop-in compatibility: the same arguments and the same output
-bytes as OpenSSL, starting with what is needed to run a certificate authority. A
-friendlier native interface will be added later beside the compatible one, on
-top of the same library crates.
-
-## status
-
-The status of every OpenSSL command in baldssl (supported, partial, planned, not
-started) is tracked on the website:
-[badaas.be/baldssl/#commands](https://badaas.be/baldssl/#commands). Today `x509`
-is implemented for display
-(`-text -noout -subject -issuer -serial -startdate -enddate -dates -fingerprint -in -out -inform -outform`);
-the roadmap is in [TODO.md](TODO.md).
-
-Public keys printed by `x509 -text`: P-256, P-384, P-521, Ed25519, and RSA
-(display only). Anything else is rejected with an `unsupported` error rather
-than printed differently from OpenSSL.
-
-## OpenSSL compatibility profiles
-
-Also on the website:
-[badaas.be/baldssl/#compatibility](https://badaas.be/baldssl/#compatibility).
-
-OpenSSL 3.x and 4.x print `-text` differently (hex dumps of 15 vs 16 bytes per
-line, signatures of 18 vs 24, the RSA modulus sign byte, the EC key header).
-baldssl reproduces either, selected with an environment variable so that scripts
-calling `openssl` need no new flags:
-
-```sh
-baldssl x509 -in cert.crt -text            # OpenSSL 3.x layout (default)
-BALDSSL_OPENSSL_COMPAT=4 baldssl x509 ...  # OpenSSL 4.x layout
-```
-
-Supported and checked in CI: OpenSSL 3.5.9 (profile `3`) and 4.1.0 (profile
-`4`). CI also runs 3.0.22, 3.6.5 and 4.0.3 as informational jobs.
-
-## intentional differences from OpenSSL
-
-- `-fingerprint` defaults to SHA-256 (OpenSSL: SHA-1); pass `-sha1` for
-  OpenSSL's output. `-fingerprint sha384` is accepted as well as
-  `-fingerprint -sha384`.
-- Exit codes: 0 success, 1 any error, 2 input file not found (OpenSSL uses 1 for
-  both errors).
-- The serial-number layout follows LP64 `long` (Linux, macOS). OpenSSL on
-  Windows uses a 4-byte `long` and prints 5 to 8 byte serials in hex form.
+To install and use baldssl, see the website:
+[badaas.be/baldssl](https://badaas.be/baldssl/) (installation, command status,
+compatibility with OpenSSL versions, differences from OpenSSL).
 
 ## building
 
@@ -65,6 +23,20 @@ make help         # all targets
 
 The toolchain is pinned in `rust-toolchain.toml` (latest stable). Formatting
 uses nightly `rustfmt` and `taplo`; `make setup` installs the tools.
+
+## OpenSSL compatibility profiles
+
+OpenSSL 3.x and 4.x print `-text` differently (hex dump geometry, the RSA
+modulus sign byte, the EC key header), so the printer takes a profile:
+`baldssl_x509::text::Compat` (`V3`, `V4`), chosen by the CLI from
+`BALDSSL_OPENSSL_COMPAT`. Golden files exist per profile
+(`tests/fixtures/golden/v3`, `v4`, recorded from OpenSSL 3.5.9 and 4.1.0), and
+`scripts/interop.sh` picks the profile from the version of the OpenSSL under
+test. CI requires 3.5.9 and 4.1.0 to pass; 3.0.22, 3.6.5 and 4.0.3 run as
+informational jobs.
+
+Rule for new output: never print something OpenSSL would print differently.
+Unimplemented cases return `Error::Unsupported` and get a `TODO.md` entry.
 
 ## testing
 
@@ -102,10 +74,11 @@ scripts/wasmtime-baldssl.sh x509 -in cert.crt -noout -text
 
 ## website
 
-The website (`website/`, plain HTML and Tailwind CSS, built with Vite) is
-published on GitHub Pages at <https://badaas.be/baldssl/>. It lists every
-OpenSSL command with its status in baldssl, generated from
-`website/src/commands.json`:
+The website (`website/`, plain HTML and Tailwind CSS, built with Vite) is the
+user documentation, deployed to GitHub Pages by `.github/workflows/pages.yml` on
+every push to `main` that touches `website/`. Its command table is generated
+from `website/src/commands.json`; update a command's `status` and `note` there
+when implementing it:
 
 ```sh
 make website-install website-build   # website/dist
