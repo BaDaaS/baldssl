@@ -1,0 +1,68 @@
+{
+  "comment": "The building blocks baldssl implements, shown on the website. Each pull request that implements one sets its status to `implemented` (and its `link` to the pull request). Statuses: implemented, in-progress, planned.",
+  "primitives": [
+    {
+      "id": "encoding",
+      "name": "Base64, PEM and DER reading",
+      "purpose": "Decoding certificates and keys: canonical base64, PEM framing, and a strict DER reader that rejects non-canonical encodings.",
+      "status": "implemented",
+      "link": ""
+    },
+    {
+      "id": "sha",
+      "name": "SHA-1 and SHA-2",
+      "purpose": "Fingerprints, and the hashes signatures are computed over (FIPS 180-4).",
+      "status": "implemented",
+      "link": ""
+    },
+    {
+      "id": "os-rng",
+      "name": "Randomness from the operating system",
+      "purpose": "Key and nonce generation; the only code allowed to use unsafe.",
+      "status": "in-progress",
+      "link": "https://github.com/BaDaaS/baldssl/pull/2"
+    },
+    {
+      "id": "field",
+      "name": "Constant-time prime fields",
+      "purpose": "Arithmetic modulo the primes of P-256, P-384, P-521 and Ed25519, without branches on secret values.",
+      "status": "in-progress",
+      "link": "https://github.com/BaDaaS/baldssl/pull/4"
+    },
+    {
+      "id": "nist-curves",
+      "name": "P-256, P-384 and P-521",
+      "purpose": "The NIST curves by model (affine, projective with complete formulas, Jacobian) and constant-time scalar multiplication.",
+      "status": "in-progress",
+      "link": "https://github.com/BaDaaS/baldssl/pull/6"
+    },
+    {
+      "id": "ed25519",
+      "name": "Ed25519",
+      "purpose": "The Edwards curve of Ed25519 and the derivation of a public key from a private key (RFC 8032).",
+      "status": "in-progress",
+      "link": "https://github.com/BaDaaS/baldssl/pull/8"
+    },
+    {
+      "id": "der-writer",
+      "name": "DER writer",
+      "purpose": "Encoding ASN.1 structures: keys now, certificate requests and certificates next.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "pkcs8",
+      "name": "Private keys (PKCS#8)",
+      "purpose": "Generating keys and writing them as openssl genpkey does.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "ecdsa",
+      "name": "ECDSA",
+      "purpose": "Signing and verifying with P-256, P-384 and P-521 (FIPS 186-5), for certificate requests, signing and verification.",
+      "status": "planned",
+      "link": ""
+    }
+  ]
+}

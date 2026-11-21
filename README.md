@@ -96,6 +96,10 @@ make website-commands OPENSSL_3=... OPENSSL_4=...   # refresh the table
 A test (`crates/baldssl/tests/commands.rs`) fails if the table marks a command
 as implemented that the binary does not dispatch, or the reverse.
 
+The "Building blocks" table lists the primitives baldssl implements, from
+`website/src/primitives.json`; the pull request that implements a primitive sets
+its status to `implemented` there.
+
 Every command the website shows (the common tasks, the install and usage
 snippets) lives in `website/src/examples.json`, and the page renders them
 verbatim with a copy button. `make website-examples OPENSSL=...` runs them all

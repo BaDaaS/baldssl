@@ -9,6 +9,9 @@ import { defineConfig } from 'vite';
 const commandsPath = fileURLToPath(
   new URL('./src/commands.json', import.meta.url),
 );
+const primitivesPath = fileURLToPath(
+  new URL('./src/primitives.json', import.meta.url),
+);
 const examplesPath = fileURLToPath(
   new URL('./src/examples.json', import.meta.url),
 );
@@ -153,6 +156,38 @@ function examples() {
   };
 }
 
+const PRIMITIVE_STATUS = {
+  implemented: ['Implemented', 'bg-success-subtle text-success'],
+  'in-progress': ['In progress', 'bg-warning-subtle text-warning'],
+  planned: ['Planned', 'bg-info-subtle text-info'],
+};
+
+// The "Building blocks" table, from src/primitives.json.
+function primitives() {
+  return {
+    name: 'baldssl-primitives',
+    configureServer(server) {
+      server.watcher.add(primitivesPath);
+    },
+    transformIndexHtml(html) {
+      const list = JSON.parse(readFileSync(primitivesPath, 'utf8')).primitives;
+      const rows = list
+        .map(p => {
+          const [label, colors] = PRIMITIVE_STATUS[p.status];
+          const link = p.link
+            ? `<a href="${escapeHtml(p.link)}" class="mt-1 inline-block rounded-md text-xs font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none">Pull request ${escapeHtml(p.link.split('/').pop())}</a>`
+            : '';
+          return `<tr class="border-t border-border align-top">
+  <td class="py-3 pr-3 text-sm"><span class="font-medium text-foreground">${escapeHtml(p.name)}</span><span class="mt-1 block text-muted">${inline(p.purpose)}</span>${link}</td>
+  <td class="py-3"><span class="inline-flex rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap ${colors}">${label}</span></td>
+</tr>`;
+        })
+        .join('\n');
+      return html.replace('<!-- primitives -->', rows);
+    },
+  };
+}
+
 function commandTables() {
   return {
     name: 'baldssl-command-tables',
@@ -181,5 +216,5 @@ function commandTables() {
 export default defineConfig({
   // Relative URLs: the site is served from /baldssl/ on GitHub Pages.
   base: './',
-  plugins: [tailwindcss(), commandTables(), examples()],
+  plugins: [tailwindcss(), commandTables(), examples(), primitives()],
 });
