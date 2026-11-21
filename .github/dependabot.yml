@@ -1,0 +1,31 @@
+# Dependabot keeps the pinned versions current. What it covers:
+# - cargo: the workspace (only `proptest`, a dev-dependency, since the
+#   shipped crates have no third-party dependencies) and fuzz/ (its own
+#   lockfile, `libfuzzer-sys`).
+# - github-actions: the SHA-pinned actions in the workflows and in the
+#   composite action; Dependabot updates the SHA and its `# vX.Y.Z` comment
+#   together.
+# Not covered, bumped by hand: rust-toolchain.toml, the OpenSSL tarball
+# versions and checksums, the apt package pins, the toolbox script SHA, and
+# the Lean / Aeneas pins in proofs/.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /fuzz
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/build-openssl
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']
+    commit-message:
+      prefix: CI
