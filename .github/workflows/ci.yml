@@ -188,6 +188,7 @@ jobs:
         run: rustup toolchain install
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - run: make check-no-deps
+      - run: make check-unsafe
       - run: make doc
       - run: make check-aeneas
       - run: make lint-shell
