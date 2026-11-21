@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="website/res/baldssl-lockup-light.svg" alt="baldssl" width="420">
+</p>
+
 # baldssl
 
 A reimplementation of the `openssl` command-line tool in Rust, with no

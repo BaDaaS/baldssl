@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 16 168 168" width="168" height="168" role="img" aria-label="baldssl">
+  <title>baldssl</title>
+  <path d="M50 96 C50 50 72 24 100 24 C128 24 150 50 150 96 L150 124 C150 156 130 180 100 180 C70 180 50 156 50 124 Z" fill="#C2410C"/>
+  <rect x="50" y="90" width="100" height="12" fill="#1C1917"/>
+  <path d="M55 92 H97 V108 C97 120 88 126 76 126 C64 126 55 118 55 106 Z" fill="#1C1917"/>
+  <path d="M103 92 H145 V106 C145 118 136 126 124 126 C112 126 103 120 103 108 Z" fill="#1C1917"/>
+</svg>
