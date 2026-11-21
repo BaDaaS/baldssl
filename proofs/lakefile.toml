@@ -1,0 +1,15 @@
+# Lean 4 project for the formal verification of baldssl.
+#
+# Status: a compile-only skeleton. CI checks that it builds against the pinned
+# Aeneas library; no extracted code and no theorems yet (see TODO.md). Keep
+# `lean-toolchain` equal to Aeneas' `backends/lean/lean-toolchain` at `rev`.
+name = "baldssl"
+defaultTargets = ["Baldssl"]
+
+[[require]]
+name = "aeneas"
+git = { url = "https://github.com/AeneasVerif/aeneas", subDir = "backends/lean" }
+rev = "2e3d4488280bb8a95411db81019a7854a784861f"
+
+[[lean_lib]]
+name = "Baldssl"
