@@ -12,6 +12,8 @@ reader would paste them into bash:
   toggle); for a task with status "supported" that variant is run, on a copy
   of the directory as it was before the task, and must exit the same way and
   produce the same stdout and the same files, byte for byte;
+- a supported task with random output (a new key) is checked by running
+  its `verify` commands with OpenSSL on what baldssl produced;
 - a deterministic task with status "not-yet" fails the check if baldssl
   already reproduces it, so the status is updated when a feature lands;
 - `usage` and `compatibility` commands run with baldssl as `baldssl`;
@@ -153,6 +155,32 @@ def main() -> int:
                 status == "supported" or ex.get("deterministic")
             ):
                 print(f"ok    {ident}")
+                continue
+
+            if status == "supported" and not ex.get("deterministic"):
+                # Random output (a new key): baldssl must succeed, and
+                # OpenSSL must accept what it produced.
+                mine = run(baldssl_variant(command), shadow, real, profile)
+                problems = []
+                if mine.returncode != 0:
+                    problems.append(
+                        f"exit {mine.returncode}: "
+                        f"{mine.stderr.decode(errors='replace').strip()[:300]}"
+                    )
+                for check in ex.get("verify", []):
+                    verified = run(check, shadow, real, profile)
+                    if verified.returncode != 0:
+                        problems.append(
+                            f"`{check}` rejects it: "
+                            f"{verified.stderr.decode(errors='replace').strip()[:300]}"
+                        )
+                if not ex.get("verify"):
+                    problems.append("a random supported task needs `verify`")
+                if problems:
+                    failures.append(f"{ident}: baldssl " + "; ".join(problems))
+                    print(f"FAIL  {ident} (baldssl)")
+                else:
+                    print(f"ok    {ident} (baldssl verified by OpenSSL)")
                 continue
 
             mine = run(baldssl_variant(command), shadow, real, profile)

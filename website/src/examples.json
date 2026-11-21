@@ -1,27 +1,29 @@
 {
-  "comment": "Every command shown on the website, as the lines it is displayed in (joined with backslash continuations, at most 38 characters each so they fit a phone screen). scripts/check-website-examples.py runs them in this order, in one directory, against OpenSSL 3.5 and 4.1 (CI job `website examples`). Tasks are shown with openssl or baldssl (a toggle on the page); the baldssl variant replaces the program name. A task with status `supported` must give the same output and files with baldssl; a deterministic `not-yet` task fails the check once baldssl reproduces it. `deterministic: false` marks commands whose output is random (keys, serials). Sections: `tasks`, `install`, `usage`, `compatibility`.",
+  "comment": "Every command shown on the website, as the lines it is displayed in (joined with backslash continuations, at most 38 characters each so they fit a phone screen). scripts/check-website-examples.py runs them in this order, in one directory, against OpenSSL 3.5 and 4.1 (CI job `website examples`). Tasks are shown with openssl or baldssl (a toggle on the page); the baldssl variant replaces the program name. A task with status `supported` must give the same output and files with baldssl; a deterministic `not-yet` task fails the check once baldssl reproduces it. `deterministic: false` marks commands whose output is random (keys, serials); a supported random task lists `verify` commands, run with OpenSSL on what baldssl produced. Sections: `tasks`, `install`, `usage`, `compatibility`.",
   "examples": [
     {
       "id": "genpkey-ec",
       "section": "tasks",
       "title": "Create a private key",
       "explanation": "Generates an elliptic-curve private key on the P-256 curve and writes it to key.pem in PKCS#8 PEM format. The file is a secret: anyone holding it can act as you.",
-      "status": "not-yet",
+      "status": "supported",
       "deterministic": false,
       "lines": [
         "openssl genpkey -algorithm EC \\",
         "  -pkeyopt ec_paramgen_curve:P-256 \\",
         "  -out key.pem"
-      ]
+      ],
+      "verify": ["openssl pkey -in key.pem -noout -check"]
     },
     {
       "id": "genpkey-ed25519",
       "section": "tasks",
       "title": "Create an Ed25519 private key",
       "explanation": "Ed25519 keys are small and fast, and are used for SSH, signatures and recent TLS deployments.",
-      "status": "not-yet",
+      "status": "supported",
       "deterministic": false,
-      "lines": ["openssl genpkey -algorithm ED25519 \\", "  -out ed25519.pem"]
+      "lines": ["openssl genpkey -algorithm ED25519 \\", "  -out ed25519.pem"],
+      "verify": ["openssl pkey -in ed25519.pem -noout -check"]
     },
     {
       "id": "genpkey-rsa",
