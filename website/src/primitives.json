@@ -33,7 +33,7 @@
       "id": "nist-curves",
       "name": "P-256, P-384 and P-521",
       "purpose": "The NIST curves by model (affine, projective with complete formulas, Jacobian) and constant-time scalar multiplication.",
-      "status": "in-progress",
+      "status": "implemented",
       "link": "https://github.com/BaDaaS/baldssl/pull/6"
     },
     {
