@@ -11,6 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 baldssl-core = { path = "../crates/baldssl-core" }
+baldssl-pkey = { path = "../crates/baldssl-pkey" }
 baldssl-x509 = { path = "../crates/baldssl-x509" }
 libfuzzer-sys = "0.4.13"
 
@@ -40,6 +41,13 @@ bench = false
 [[bin]]
 name = "x509"
 path = "fuzz_targets/x509.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pkey"
+path = "fuzz_targets/pkey.rs"
 test = false
 doc = false
 bench = false

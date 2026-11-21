@@ -51,6 +51,20 @@ pub(crate) type AlgorithmIdentifier =
 pub(crate) const ALGORITHM_IDENTIFIER: AlgorithmIdentifier =
     Sequence((ObjectIdentifier, (OptionalLast(Any), ())));
 
+/// `SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
+/// subjectPublicKey BIT STRING }` ([RFC 5280] section 4.1), the key a whole
+/// number of bytes ([RFC 5480] section 2 for EC, [RFC 8410] section 4 for
+/// Ed25519).
+///
+/// [RFC 5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+/// [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2
+/// [RFC 8410]: https://www.rfc-editor.org/rfc/rfc8410#section-4
+pub(crate) type SubjectPublicKeyInfo =
+    Sequence<(AlgorithmIdentifier, (BitString, ()))>;
+
+pub(crate) const SUBJECT_PUBLIC_KEY_INFO: SubjectPublicKeyInfo =
+    Sequence((ALGORITHM_IDENTIFIER, (BitString, ())));
+
 /// `PrivateKeyInfo` ([RFC 5208] section 5): version, algorithm, and the
 /// private key as an OCTET STRING, whose contents the algorithm determines
 /// (an `ECPrivateKey` for EC, a `CurvePrivateKey` for Ed25519). The
