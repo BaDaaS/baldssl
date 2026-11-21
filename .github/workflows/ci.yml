@@ -112,8 +112,10 @@ jobs:
           # shellcheck disable=SC2086 # APT is a package list
           sudo apt-get install -y --no-install-recommends $APT
           if [ -n "$LINKER" ]; then
-            sudo apt-get install -y --no-install-recommends qemu-user-static \
-              binfmt-support
+            # qemu-user-binfmt registers QEMU with binfmt_misc
+            # (qemu-user-static is gone from recent Ubuntu releases).
+            sudo apt-get install -y --no-install-recommends qemu-user \
+              qemu-user-binfmt
             var=$(echo "$CARGO_BUILD_TARGET" | tr 'a-z-' 'A-Z_')
             echo "CARGO_TARGET_${var}_LINKER=$LINKER" >> "$GITHUB_ENV"
             # binfmt_misc runs foreign binaries through QEMU, including the
@@ -159,6 +161,9 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
+    env:
+      # Instrumented builds are not cached; do not route them through sccache.
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

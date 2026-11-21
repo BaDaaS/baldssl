@@ -45,7 +45,7 @@ runs:
         # The rpath lets several versions coexist in one job without
         # LD_LIBRARY_PATH: each binary loads its own libcrypto.
         ./Configure --prefix="$PREFIX" --openssldir="$PREFIX/ssl" \
-          --libdir=lib no-tests no-docs "-Wl,-rpath,$PREFIX/lib"
+          --libdir=lib no-tests "-Wl,-rpath,$PREFIX/lib"
         make -j"$(nproc)"
         make install_sw
     - shell: bash
