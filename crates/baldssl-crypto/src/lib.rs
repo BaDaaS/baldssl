@@ -1,7 +1,9 @@
 //! Cryptographic primitives for baldssl, implemented from their
 //! specifications with no third-party code.
 //!
-//! Implemented: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (FIPS 180-4), and
+//! Implemented: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (FIPS 180-4),
+//! constant-time prime-field arithmetic for P-256, P-384, P-521 and
+//! Curve25519 / Ed25519 ([`field`], [`fields`]), and
 //! randomness from the operating system ([`os_rng`], the only module allowed
 //! to use `unsafe`).
 //! Planned: P-256, P-384, P-521 field and group arithmetic,
@@ -19,6 +21,9 @@
 #![deny(clippy::arithmetic_side_effects)]
 #![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
 
+pub mod ct;
+pub mod field;
+pub mod fields;
 pub mod os_rng;
 mod sha1;
 mod sha256;

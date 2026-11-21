@@ -39,7 +39,7 @@ build-wasm: ## Build the libraries (browser) and the CLI (WASI) for WebAssembly
 .PHONY: test-wasm
 test-wasm: build-wasm ## Run the library tests and the golden suite as WebAssembly (needs wasmtime)
 	CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir /" \
-		cargo test --target wasm32-wasip1 \
+		cargo test --release --target wasm32-wasip1 \
 		-p baldssl-core -p baldssl-crypto -p baldssl-x509
 	BALDSSL_BIN=$(CURDIR)/scripts/wasmtime-baldssl.sh \
 		cargo test -p baldssl --test golden --test commands
