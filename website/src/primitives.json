@@ -1,5 +1,5 @@
 {
-  "comment": "The building blocks baldssl implements, shown on the website. Each pull request that implements one sets its status to `implemented` (and its `link` to the pull request). Statuses: implemented, in-progress, planned.",
+  "comment": "The building blocks baldssl implements, shown on the website. Each pull request that implements one sets its status to `implemented` (and its `link` to the pull request). Statuses: implemented, in-progress, planned. The issues tracking each one are in tracking.json.",
   "primitives": [
     {
       "id": "encoding",
@@ -61,6 +61,69 @@
       "id": "ecdsa",
       "name": "ECDSA",
       "purpose": "Signing and verifying with P-256, P-384 and P-521 (FIPS 186-5), for certificate requests, signing and verification.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "hmac-drbg",
+      "name": "HMAC and HMAC-DRBG",
+      "purpose": "Message authentication (RFC 2104) and the deterministic random bit generator of SP 800-90A, for signature nonces and PBKDF2.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "ed25519-sign",
+      "name": "Ed25519 signatures",
+      "purpose": "Signing and verification (RFC 8032), for Ed25519 requests, certificates and chains.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "key-parsing",
+      "name": "Reading keys",
+      "purpose": "PKCS#8, SEC 1 and SubjectPublicKeyInfo in PEM and DER, for every command that takes a key.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "rsa-verify",
+      "name": "RSA signature verification",
+      "purpose": "PKCS#1 v1.5 and PSS (RFC 8017), to verify the RSA-signed chains found in practice.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "rsa-keygen",
+      "name": "RSA key generation",
+      "purpose": "Probable primes as in FIPS 186-5, for `genpkey -algorithm RSA`.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "aes",
+      "name": "AES and PBKDF2",
+      "purpose": "AES-256-CBC (FIPS 197) and PBKDF2 (RFC 8018), for `enc` and PKCS#12.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "more-curves",
+      "name": "secp256k1, X25519, X448 and Ed448",
+      "purpose": "Keys and key agreement beyond the NIST curves and Ed25519 (RFC 7748, RFC 8032).",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "sha-crypt",
+      "name": "SHA-crypt",
+      "purpose": "The `$5$` and `$6$` password hashes of `/etc/shadow`, for `passwd`.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "tls13",
+      "name": "TLS 1.3 client",
+      "purpose": "Enough of RFC 8446 to fetch a server's certificate chain with `s_client`.",
       "status": "planned",
       "link": ""
     }

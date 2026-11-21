@@ -1,6 +1,8 @@
 // Plain HTML + Tailwind CSS v4, built with Vite. The only build-time logic
-// is the plugin below, which renders the command tables from
-// src/commands.json into static HTML (no client-side JavaScript).
+// is the plugins below, which render the command tables, the Common tasks and
+// the Building blocks from src/*.json into static HTML (no client-side
+// JavaScript), with links to the issues tracking each item
+// (src/tracking.json).
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
@@ -15,6 +17,48 @@ const primitivesPath = fileURLToPath(
 const examplesPath = fileURLToPath(
   new URL('./src/examples.json', import.meta.url),
 );
+const trackingPath = fileURLToPath(
+  new URL('./src/tracking.json', import.meta.url),
+);
+
+const ISSUES = 'https://github.com/BaDaaS/baldssl/issues/';
+
+// The issues tracking each command, task and building block
+// (src/tracking.json), read once per build. `section` is commands, tasks or
+// primitives.
+const tracking = section =>
+  JSON.parse(readFileSync(trackingPath, 'utf8'))[section];
+
+// "Tracked in #15, #16": links to the issues, or nothing.
+const issueLinks = (numbers = []) =>
+  numbers.length === 0
+    ? ''
+    : `<span class="text-xs text-muted">Tracked in ${numbers
+        .map(
+          n =>
+            `<a href="${ISSUES}${n}" class="rounded-md font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none">#${n}</a>`,
+        )
+        .join(', ')}</span>`;
+
+// Every id in tracking.json must exist, and every item whose status is in
+// `untracked` must have at least one issue: the build fails otherwise.
+const checkTracking = (section, items, id, untracked) => {
+  const issues = tracking(section);
+  const ids = new Set(items.map(id));
+  const unknown = Object.keys(issues).filter(k => !ids.has(k));
+  if (unknown.length > 0) {
+    throw new Error(`tracking.json ${section}: unknown ${unknown.join(', ')}`);
+  }
+  const missing = items
+    .filter(i => untracked.includes(i.status) && !issues[id(i)]?.length)
+    .map(id);
+  if (missing.length > 0) {
+    throw new Error(
+      `tracking.json ${section}: no issue for ${missing.join(', ')}`,
+    );
+  }
+  return issues;
+};
 
 const escapeHtml = s =>
   s
@@ -50,25 +94,26 @@ const availability = versions =>
 
 // On small screens the OpenSSL and Notes columns fold into a line under the
 // description, so the status column stays visible without scrolling.
-const standardRows = commands =>
+const standardRows = (commands, issues) =>
   commands
-    .map(
-      c => `<tr class="border-t border-border align-top">
+    .map(c => {
+      const links = issueLinks(issues[c.name]);
+      return `<tr class="border-t border-border align-top">
   <td class="py-3 pr-3 font-mono text-sm font-medium whitespace-nowrap text-foreground">${escapeHtml(c.name)}</td>
-  <td class="py-3 pr-3 text-sm text-muted">${inline(c.description)}<span class="mt-1 block text-xs sm:hidden">OpenSSL ${availability(c.openssl)}${c.note ? `. ${inline(c.note)}` : ''}</span></td>
+  <td class="py-3 pr-3 text-sm text-muted">${inline(c.description)}<span class="mt-1 block text-xs sm:hidden">OpenSSL ${availability(c.openssl)}${c.note ? `. ${inline(c.note)}` : ''}</span>${links ? `<span class="mt-1 block sm:hidden">${links}</span>` : ''}</td>
   <td class="hidden py-3 pr-4 text-sm whitespace-nowrap sm:table-cell">${availability(c.openssl)}</td>
   <td class="py-3 pr-3">${badge(c.status)}</td>
-  <td class="hidden py-3 text-sm text-muted sm:table-cell">${inline(c.note)}</td>
-</tr>`,
-    )
+  <td class="hidden py-3 text-sm text-muted sm:table-cell">${inline(c.note)}${links ? `<span class="mt-1 block">${links}</span>` : ''}</td>
+</tr>`;
+    })
     .join('\n');
 
-const shortcutRows = commands =>
+const shortcutRows = (commands, issues) =>
   commands
     .map(
       c => `<tr class="border-t border-border">
   <td class="py-2 pr-4 font-mono text-sm text-foreground">${escapeHtml(c.name)}</td>
-  <td class="py-2 pr-4 text-sm text-muted">${inline(c.description)}</td>
+  <td class="py-2 pr-4 text-sm text-muted">${inline(c.description)}${issues[c.name] ? `<span class="mt-1 block">${issueLinks(issues[c.name])}</span>` : ''}</td>
   <td class="py-2">${badge(c.status)}</td>
 </tr>`,
     )
@@ -107,7 +152,7 @@ const TASK_STATUS = {
   'not-yet': ['baldssl: not yet', 'bg-muted-subtle text-muted'],
 };
 
-const taskCard = ex => {
+const taskCard = (ex, issues) => {
   const [label, colors] = TASK_STATUS[ex.status];
   return `<article class="flex min-w-0 flex-col rounded-lg border border-border bg-surface p-4 sm:p-6">
   <div class="flex items-start justify-between gap-3">
@@ -115,7 +160,7 @@ const taskCard = ex => {
     <span class="inline-flex shrink-0 rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap ${colors}">${label}</span>
   </div>
   <p class="mt-2 text-sm text-muted">${inline(ex.explanation)}</p>
-  <div class="mt-4">${codeBlock(ex.lines, ['openssl', 'baldssl'])}</div>
+  <div class="mt-4">${codeBlock(ex.lines, ['openssl', 'baldssl'])}</div>${issues[ex.id] ? `\n  <p class="mt-3">${issueLinks(issues[ex.id])}</p>` : ''}
 </article>`;
 };
 
@@ -134,14 +179,21 @@ function examples() {
     name: 'baldssl-examples',
     configureServer(server) {
       server.watcher.add(examplesPath);
+      server.watcher.add(trackingPath);
     },
     transformIndexHtml(html) {
       const list = JSON.parse(readFileSync(examplesPath, 'utf8')).examples;
+      const issues = checkTracking(
+        'tasks',
+        list.filter(e => e.section === 'tasks'),
+        e => e.id,
+        ['not-yet'],
+      );
       let out = html.replace('<!-- tasks:toggle -->', toolToggle).replace(
         '<!-- tasks -->',
         list
           .filter(e => e.section === 'tasks')
-          .map(taskCard)
+          .map(ex => taskCard(ex, issues))
           .join('\n'),
       );
       for (const ex of list) {
@@ -168,9 +220,14 @@ function primitives() {
     name: 'baldssl-primitives',
     configureServer(server) {
       server.watcher.add(primitivesPath);
+      server.watcher.add(trackingPath);
     },
     transformIndexHtml(html) {
       const list = JSON.parse(readFileSync(primitivesPath, 'utf8')).primitives;
+      const issues = checkTracking('primitives', list, p => p.id, [
+        'planned',
+        'in-progress',
+      ]);
       const rows = list
         .map(p => {
           const [label, colors] = PRIMITIVE_STATUS[p.status];
@@ -178,7 +235,7 @@ function primitives() {
             ? `<a href="${escapeHtml(p.link)}" class="mt-1 inline-block rounded-md text-xs font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none">Pull request ${escapeHtml(p.link.split('/').pop())}</a>`
             : '';
           return `<tr class="border-t border-border align-top">
-  <td class="py-3 pr-3 text-sm"><span class="font-medium text-foreground">${escapeHtml(p.name)}</span><span class="mt-1 block text-muted">${inline(p.purpose)}</span>${link}</td>
+  <td class="py-3 pr-3 text-sm"><span class="font-medium text-foreground">${escapeHtml(p.name)}</span><span class="mt-1 block text-muted">${inline(p.purpose)}</span>${link}${issues[p.id] ? `<span class="mt-1 block">${issueLinks(issues[p.id])}</span>` : ''}</td>
   <td class="py-3"><span class="inline-flex rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap ${colors}">${label}</span></td>
 </tr>`;
         })
@@ -193,11 +250,15 @@ function commandTables() {
     name: 'baldssl-command-tables',
     configureServer(server) {
       server.watcher.add(commandsPath);
+      server.watcher.add(trackingPath);
     },
     transformIndexHtml(html) {
       const { commands } = JSON.parse(readFileSync(commandsPath, 'utf8'));
       const of = kind => commands.filter(c => c.kind === kind);
       const standard = of('standard');
+      const issues = checkTracking('commands', commands, c => c.name, [
+        'planned',
+      ]);
       const count = s => commands.filter(c => c.status === s).length;
       const summary =
         `${commands.length} commands: ${count('supported')} supported, ` +
@@ -205,10 +266,13 @@ function commandTables() {
         `${count('not-started')} not started.`;
       return html
         .replace('<!-- commands:summary -->', escapeHtml(summary))
-        .replace('<!-- commands:standard -->', standardRows(standard))
+        .replace('<!-- commands:standard -->', standardRows(standard, issues))
         .replace('<!-- commands:standard-count -->', String(standard.length))
-        .replace('<!-- commands:digest -->', shortcutRows(of('digest')))
-        .replace('<!-- commands:cipher -->', shortcutRows(of('cipher')));
+        .replace('<!-- commands:digest -->', shortcutRows(of('digest'), issues))
+        .replace(
+          '<!-- commands:cipher -->',
+          shortcutRows(of('cipher'), issues),
+        );
     },
   };
 }
