@@ -1,0 +1,33 @@
+# Build artifacts
+/target/
+dist/
+build/
+
+# Tooling output
+mutants.out/
+mutants.out.old/
+/proofs/.lake/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+*.local
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Private keys must never be committed (fixtures are certificates only).
+*.key

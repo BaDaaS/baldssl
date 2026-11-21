@@ -1,0 +1,5 @@
+# Golden outputs and fixtures are compared byte for byte: never convert
+# their line endings (core.autocrlf on Windows would break every test).
+tests/fixtures/** -text
+*.rs text eol=lf
+*.sh text eol=lf

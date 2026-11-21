@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+# fuzz/ needs nightly and its own lockfile; proofs/ is a Lean project.
+exclude = ["fuzz", "proofs"]
+members = [
+  "crates/baldssl-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+repository = "https://github.com/BaDaaS/baldssl"
+
+# Zero third-party dependencies, by design: every primitive (base64, PEM, DER,
+# SHA-1, SHA-2, argument parsing) lives in this repository so that it can be
+# audited and, incrementally, verified in Lean 4 through Aeneas.
+[workspace.dependencies]
+baldssl-core = { path = "crates/baldssl-core", version = "0.1.0" }
+
+# Test-only. `make check-no-deps` asserts no third-party crate reaches a
+# normal or build dependency edge.
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+# `--cfg aeneas` is passed when extracting to Lean with Charon; it compiles
+# out the parts Aeneas cannot translate (std::io, Display, std::error::Error).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(aeneas)"] }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+# Prose names ASN.1 types (UTCTime, BOOLEAN) and specs constantly.
+doc_markdown = "allow"
+# Suggests the `bytecount` crate; the project takes no dependencies.
+naive_bytecount = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+dbg_macro = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

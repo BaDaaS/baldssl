@@ -1,0 +1,14 @@
+[package]
+name = "baldssl-core"
+description = "Shared types, errors, base64, PEM and DER for baldssl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

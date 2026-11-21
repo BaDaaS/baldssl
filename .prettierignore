@@ -1,0 +1,6 @@
+target/
+fuzz/target/
+proofs/.lake/
+tests/fixtures/
+*.lock
+CHANGELOG.md

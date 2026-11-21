@@ -1,0 +1,1 @@
+exclude = ["proofs/.lake/**", "target/**", "fuzz/target/**"]

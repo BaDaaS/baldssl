@@ -1,0 +1,5 @@
+# The latest stable release. CI also runs beta and nightly by overriding
+# this file with RUSTUP_TOOLCHAIN.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
