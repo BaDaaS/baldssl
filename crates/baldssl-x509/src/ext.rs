@@ -345,7 +345,7 @@ fn decode(ext: &Extension<'_>, dotted: &str) -> Result<Printed> {
 ///
 /// On a malformed extension, or [`Error::Unsupported`] (see the module
 /// documentation).
-pub fn print_extensions(
+pub(crate) fn print_extensions(
     out: &mut Vec<u8>,
     exts: &[Extension<'_>],
 ) -> Result<()> {

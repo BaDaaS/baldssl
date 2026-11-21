@@ -52,8 +52,13 @@ check-aeneas: ## Check the Lean-extraction subset builds with --cfg aeneas
 		--target-dir target/aeneas
 
 .PHONY: doc
-doc: ## Build the API documentation, warnings as errors
+doc: ## Build the public API documentation, warnings as errors
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+.PHONY: doc-private
+doc-private: ## Build the documentation of private items too, warnings as errors
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps \
+		--document-private-items --target-dir target/doc-private
 
 # --- Formatting and lints ----------------------------------------------------
 
@@ -292,8 +297,8 @@ lean: ## Build the Lean 4 skeleton in proofs/ (Aeneas library, Mathlib cache)
 # --- Aggregate ---------------------------------------------------------------
 
 .PHONY: ci
-ci: check-format lint test doc check-no-deps check-unsafe check-aeneas \
-	check-where-clauses check-use-at-top check-opt-suffix \
+ci: check-format lint test doc doc-private check-no-deps check-unsafe \
+	check-aeneas check-where-clauses check-use-at-top check-opt-suffix \
 	check-practices lint-shell check-py ## Run the CI checks locally
 
 .PHONY: clean

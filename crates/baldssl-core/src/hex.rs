@@ -47,13 +47,15 @@ pub fn plain(bytes: &[u8], case: Case) -> String {
     out
 }
 
-/// Parses a hex string with no separators. Used by tests and fixtures.
+/// Parses a hex string with no separators: the inverse of [`plain`], for the
+/// round-trip property test.
 ///
 /// # Errors
 ///
 /// Returns `None` on odd length or a non-hex digit.
+#[cfg(test)]
 #[must_use]
-pub fn parse_opt(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn parse_opt(s: &str) -> Option<Vec<u8>> {
     fn val_opt(c: u8) -> Option<u8> {
         match c {
             b'0'..=b'9' => c.checked_sub(b'0'),

@@ -14,7 +14,7 @@ use baldssl_core::{Error, Result};
 
 /// Whether an option takes a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
+pub(crate) enum Kind {
     /// `-text`
     Flag,
     /// `-in <file>`
@@ -23,7 +23,7 @@ pub enum Kind {
 
 /// One accepted option.
 #[derive(Debug, Clone, Copy)]
-pub struct Spec {
+pub(crate) struct Spec {
     /// The name without dashes.
     pub name: &'static str,
     /// Flag or value.
@@ -34,7 +34,7 @@ pub struct Spec {
 
 /// A parsed option occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Opt {
+pub(crate) struct Opt {
     /// The name as typed, without dashes (case preserved, so `-SHA256`
     /// stays `SHA256`).
     pub name: String,
@@ -63,7 +63,7 @@ fn split_option_opt(arg: &OsStr) -> Option<(String, Option<OsString>)> {
 ///
 /// [`Error::Usage`] for an unknown option, a missing value, a value given
 /// to a flag, or a positional argument.
-pub fn parse(
+pub(crate) fn parse(
     command: &str,
     args: &[OsString],
     specs: &[Spec],
@@ -116,7 +116,7 @@ pub fn parse(
 
 /// The `-help` text.
 #[must_use]
-pub fn usage(command: &str, specs: &[Spec]) -> String {
+pub(crate) fn usage(command: &str, specs: &[Spec]) -> String {
     let mut s = format!("Usage: baldssl {command} [options]\n");
     for spec in specs {
         let arg = match spec.kind {

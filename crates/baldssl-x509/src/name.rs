@@ -32,18 +32,18 @@ pub enum NameStyle {
 
 /// `AttributeTypeAndValue`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Attribute<'a> {
+pub(crate) struct Attribute<'a> {
     /// The attribute type.
-    pub oid: Oid<'a>,
+    pub(crate) oid: Oid<'a>,
     /// The value, any ASN.1 type.
-    pub value: Tlv<'a>,
+    pub(crate) value: Tlv<'a>,
 }
 
 /// `Name ::= SEQUENCE OF RelativeDistinguishedName`, each RDN a SET.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Name<'a> {
     /// The RDNs in encoding order.
-    pub rdns: Vec<Vec<Attribute<'a>>>,
+    pub(crate) rdns: Vec<Vec<Attribute<'a>>>,
 }
 
 impl<'a> Name<'a> {
@@ -52,7 +52,7 @@ impl<'a> Name<'a> {
     /// # Errors
     ///
     /// On malformed DER or an empty RDN.
-    pub fn read(r: &mut Reader<'a>) -> Result<Self> {
+    pub(crate) fn read(r: &mut Reader<'a>) -> Result<Self> {
         Self::from_contents(r.expect(tag::SEQUENCE)?.value)
     }
 
@@ -61,7 +61,7 @@ impl<'a> Name<'a> {
     /// # Errors
     ///
     /// On malformed DER or an empty RDN.
-    pub fn from_contents(value: &'a [u8]) -> Result<Self> {
+    pub(crate) fn from_contents(value: &'a [u8]) -> Result<Self> {
         let mut seq = Reader::new(value);
         let mut rdns = Vec::new();
         while !seq.is_empty() {
@@ -186,7 +186,7 @@ fn push_utf8(c: u32, out: &mut Vec<u8>) -> Result<()> {
 ///
 /// [`Error::Unsupported`] for non-string types, [`Error::Invalid`] for a
 /// BMPString or UniversalString of bad length.
-pub fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
+pub(crate) fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
     match value.octet() {
         // UTF8String is copied byte for byte, even when it is not UTF-8.
         tag::UTF8_STRING => out.extend_from_slice(value.value),

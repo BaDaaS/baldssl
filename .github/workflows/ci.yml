@@ -374,6 +374,7 @@ jobs:
       - run: make check-opt-suffix
       - run: make check-practices
       - run: make doc
+      - run: make doc-private
       - run: make check-aeneas
       - run: make lint-shell
 
