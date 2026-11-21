@@ -28,7 +28,7 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.paths.outputs.prefix }}
-        key: openssl-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.sha256 }}
+        key: openssl-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.sha256 }}-ssldirs
     - if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
@@ -47,7 +47,8 @@ runs:
         ./Configure --prefix="$PREFIX" --openssldir="$PREFIX/ssl" \
           --libdir=lib no-tests "-Wl,-rpath,$PREFIX/lib"
         make -j"$(nproc)"
-        make install_sw
+        # install_ssldirs adds the default openssl.cnf, which `req` reads.
+        make install_sw install_ssldirs
     - shell: bash
       env:
         OPENSSL: ${{ steps.paths.outputs.openssl }}
