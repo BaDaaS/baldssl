@@ -29,28 +29,40 @@ use super::{
 use crate::{ct::Choice, field::PrimeField};
 
 /// A point $(X : Y : Z)$ of the curve `C`; see the module documentation.
-pub struct Projective<C: CurveParams> {
+pub struct Projective<C>
+where
+    C: CurveParams,
+{
     pub(crate) x: C::Base,
     pub(crate) y: C::Base,
     pub(crate) z: C::Base,
     pub(crate) _curve: PhantomData<C>,
 }
 
-impl<C: CurveParams> Clone for Projective<C> {
+impl<C> Clone for Projective<C>
+where
+    C: CurveParams,
+{
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<C: CurveParams> Copy for Projective<C> {}
+impl<C> Copy for Projective<C> where C: CurveParams {}
 
-impl<C: CurveParams> core::fmt::Debug for Projective<C> {
+impl<C> core::fmt::Debug for Projective<C>
+where
+    C: CurveParams,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}({:?} : {:?} : {:?})", C::NAME, self.x, self.y, self.z)
     }
 }
 
-impl<C: CurveParams> Projective<C> {
+impl<C> Projective<C>
+where
+    C: CurveParams,
+{
     pub(crate) fn new(x: C::Base, y: C::Base, z: C::Base) -> Self {
         Projective {
             x,
@@ -190,10 +202,13 @@ impl<C: CurveParams> Projective<C> {
     }
 }
 
-impl<C: CurveParams> PartialEq for Projective<C> {
+impl<C> PartialEq for Projective<C>
+where
+    C: CurveParams,
+{
     fn eq(&self, other: &Self) -> bool {
         self.ct_eq(other).to_bool_vartime()
     }
 }
 
-impl<C: CurveParams> Eq for Projective<C> {}
+impl<C> Eq for Projective<C> where C: CurveParams {}

@@ -25,28 +25,40 @@ use super::params::CurveParams;
 use crate::{ct::Choice, field::PrimeField};
 
 /// A point $(X : Y : Z)$ of the curve `C` in Jacobian coordinates.
-pub struct Jacobian<C: CurveParams> {
+pub struct Jacobian<C>
+where
+    C: CurveParams,
+{
     pub(crate) x: C::Base,
     pub(crate) y: C::Base,
     pub(crate) z: C::Base,
     pub(crate) _curve: PhantomData<C>,
 }
 
-impl<C: CurveParams> Clone for Jacobian<C> {
+impl<C> Clone for Jacobian<C>
+where
+    C: CurveParams,
+{
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<C: CurveParams> Copy for Jacobian<C> {}
+impl<C> Copy for Jacobian<C> where C: CurveParams {}
 
-impl<C: CurveParams> core::fmt::Debug for Jacobian<C> {
+impl<C> core::fmt::Debug for Jacobian<C>
+where
+    C: CurveParams,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}[{:?}, {:?}, {:?}]", C::NAME, self.x, self.y, self.z)
     }
 }
 
-impl<C: CurveParams> Jacobian<C> {
+impl<C> Jacobian<C>
+where
+    C: CurveParams,
+{
     pub(crate) fn new(x: C::Base, y: C::Base, z: C::Base) -> Self {
         Jacobian {
             x,

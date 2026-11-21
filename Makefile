@@ -85,6 +85,11 @@ lint-beta: ## Run clippy with the beta toolchain
 lint-shell: ## Lint shell scripts with shellcheck
 	shellcheck $(SHELL_SCRIPTS)
 
+.PHONY: check-where-clauses
+check-where-clauses: ## Fail on trait bounds written inline, not in where
+	find crates fuzz/fuzz_targets -name '*.rs' -not -path '*/target/*' \
+		-print0 | xargs -0 python3 scripts/where_clauses.py
+
 .PHONY: check-unsafe
 check-unsafe: ## Fail if unsafe code appears outside baldssl-crypto's os_rng
 	@found=$$(grep -rlE 'unsafe *(\{|fn|extern|impl)' crates fuzz \
@@ -180,6 +185,7 @@ lean: ## Build the Lean 4 skeleton in proofs/ (Aeneas library, Mathlib cache)
 
 .PHONY: ci
 ci: check-format lint test doc check-no-deps check-unsafe check-aeneas \
+	check-where-clauses \
 	lint-shell ## Run the CI checks locally
 
 .PHONY: clean

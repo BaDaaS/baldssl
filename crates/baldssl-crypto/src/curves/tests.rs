@@ -24,7 +24,10 @@ use crate::field::PrimeField;
 /// The affine group law: $\lambda = (y_2 - y_1) / (x_2 - x_1)$, or
 /// $(3 x_1^2 - 3) / (2 y_1)$ when doubling; $x_3 = \lambda^2 - x_1 - x_2$,
 /// $y_3 = \lambda (x_1 - x_3) - y_1$.
-fn reference_add<C: CurveParams>(p: &Affine<C>, q: &Affine<C>) -> Affine<C> {
+fn reference_add<C>(p: &Affine<C>, q: &Affine<C>) -> Affine<C>
+where
+    C: CurveParams,
+{
     let (Some((x1, y1)), Some((x2, y2))) = (p.coordinates(), q.coordinates())
     else {
         return if p.is_identity().to_bool_vartime() {
@@ -50,19 +53,31 @@ fn reference_add<C: CurveParams>(p: &Affine<C>, q: &Affine<C>) -> Affine<C> {
 }
 
 /// $kP$ by repeated reference additions, for small $k$.
-fn reference_small_mul<C: CurveParams>(p: &Affine<C>, k: u64) -> Affine<C> {
+fn reference_small_mul<C>(p: &Affine<C>, k: u64) -> Affine<C>
+where
+    C: CurveParams,
+{
     (0..k).fold(Affine::identity(), |acc, _| reference_add(&acc, p))
 }
 
-fn affine<C: CurveParams>(p: &Projective<C>) -> Affine<C> {
+fn affine<C>(p: &Projective<C>) -> Affine<C>
+where
+    C: CurveParams,
+{
     Affine::from(*p)
 }
 
-fn scalar<C: CurveParams>(k: u64) -> C::Scalar {
+fn scalar<C>(k: u64) -> C::Scalar
+where
+    C: CurveParams,
+{
     C::Scalar::from_u64(k)
 }
 
-fn check_constants<C: CurveParams>() {
+fn check_constants<C>()
+where
+    C: CurveParams,
+{
     assert!(params::element::<C::Base>(C::B).is_some(), "{} b", C::NAME);
     assert!(
         params::element::<C::Base>(C::GX).is_some(),
@@ -105,7 +120,10 @@ fn constants_and_order() {
 }
 
 /// The identity behaves as one in every model and formula.
-fn check_identity<C: CurveParams>() {
+fn check_identity<C>()
+where
+    C: CurveParams,
+{
     let g = Projective::<C>::generator();
     let o = Projective::<C>::identity();
     assert_eq!(g.add(&o), g);
@@ -144,7 +162,10 @@ fn identity() {
 }
 
 /// Small multiples of G by every formula against the affine reference.
-fn check_small_multiples<C: CurveParams>() {
+fn check_small_multiples<C>()
+where
+    C: CurveParams,
+{
     let g = Affine::<C>::generator();
     let mut proj = Projective::<C>::identity();
     let mut jac = Jacobian::<C>::identity();
@@ -180,7 +201,10 @@ fn small_multiples() {
 
 /// A scalar from arbitrary bytes, with the bits above the order's length
 /// cleared; `None` when still not below the order.
-fn scalar_from<C: CurveParams>(bytes: &[u8]) -> Option<C::Scalar> {
+fn scalar_from<C>(bytes: &[u8]) -> Option<C::Scalar>
+where
+    C: CurveParams,
+{
     let mut b = bytes.get(..C::Scalar::BYTES)?.to_vec();
     let spare = C::Scalar::BYTES * 8 - C::Scalar::BITS as usize;
     if let Some(first) = b.first_mut() {
@@ -192,7 +216,10 @@ fn scalar_from<C: CurveParams>(bytes: &[u8]) -> Option<C::Scalar> {
 
 /// The group laws through the scalar multiplication, and every model and map
 /// on random points.
-fn check_laws<C: CurveParams>(a: &[u8], b: &[u8]) {
+fn check_laws<C>(a: &[u8], b: &[u8])
+where
+    C: CurveParams,
+{
     let (Some(k1), Some(k2)) = (scalar_from::<C>(a), scalar_from::<C>(b))
     else {
         return;
@@ -284,7 +311,10 @@ proptest! {
 
 /// Decoding rejects a wrong length, a wrong prefix and a coordinate that is
 /// not below p.
-fn check_decoding<C: CurveParams>() {
+fn check_decoding<C>()
+where
+    C: CurveParams,
+{
     let enc = Affine::<C>::generator().to_uncompressed();
     assert_eq!(Affine::<C>::from_uncompressed(&enc[..enc.len() - 1]), None);
     let mut prefix = enc.clone();
@@ -310,7 +340,10 @@ fn decoding() {
 /// (`scripts/gen-ec-vectors.sh`).
 #[test]
 fn openssl_key_pairs() {
-    fn check<C: CurveParams>(d_hex: &str, q_hex: &str) {
+    fn check<C>(d_hex: &str, q_hex: &str)
+    where
+        C: CurveParams,
+    {
         let d_hex = d_hex.trim_start_matches('0');
         let padded = format!("{d_hex:0>width$}", width = 2 * C::Scalar::BYTES);
         let d = params::element::<C::Scalar>(&padded).expect("private scalar");

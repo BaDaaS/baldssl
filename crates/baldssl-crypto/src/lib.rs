@@ -247,7 +247,10 @@ mod tests {
         }
     }
 
-    fn stream<D: Digest>(data: &[u8], chunk: usize) -> Vec<u8> {
+    fn stream<D>(data: &[u8], chunk: usize) -> Vec<u8>
+    where
+        D: Digest,
+    {
         let mut h = D::new();
         for c in data.chunks(chunk.max(1)) {
             h.update(c);
@@ -265,7 +268,10 @@ mod tests {
         }
     }
 
-    fn split<D: Digest>(data: &[u8], cut: usize) -> Vec<u8> {
+    fn split<D>(data: &[u8], cut: usize) -> Vec<u8>
+    where
+        D: Digest,
+    {
         let cut = cut.min(data.len());
         let mut h = D::new();
         h.update(&data[..cut]);

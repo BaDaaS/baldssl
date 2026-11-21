@@ -12,22 +12,31 @@ use super::params::{self, CurveParams};
 use crate::{ct::Choice, field::PrimeField};
 
 /// A point of the curve `C` in affine coordinates, or the identity.
-pub struct Affine<C: CurveParams> {
+pub struct Affine<C>
+where
+    C: CurveParams,
+{
     pub(crate) x: C::Base,
     pub(crate) y: C::Base,
     pub(crate) infinity: Choice,
     pub(crate) _curve: PhantomData<C>,
 }
 
-impl<C: CurveParams> Clone for Affine<C> {
+impl<C> Clone for Affine<C>
+where
+    C: CurveParams,
+{
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<C: CurveParams> Copy for Affine<C> {}
+impl<C> Copy for Affine<C> where C: CurveParams {}
 
-impl<C: CurveParams> core::fmt::Debug for Affine<C> {
+impl<C> core::fmt::Debug for Affine<C>
+where
+    C: CurveParams,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.infinity.to_bool_vartime() {
             write!(f, "{}(identity)", C::NAME)
@@ -38,16 +47,25 @@ impl<C: CurveParams> core::fmt::Debug for Affine<C> {
 }
 
 /// The constant $b$ of the curve.
-pub(crate) fn b<C: CurveParams>() -> C::Base {
+pub(crate) fn b<C>() -> C::Base
+where
+    C: CurveParams,
+{
     params::element(C::B).unwrap_or(C::Base::ZERO)
 }
 
 /// $x^3 - 3x + b$, the right-hand side of the equation.
-pub(crate) fn rhs<C: CurveParams>(x: C::Base) -> C::Base {
+pub(crate) fn rhs<C>(x: C::Base) -> C::Base
+where
+    C: CurveParams,
+{
     x.square() * x - (x.double() + x) + b::<C>()
 }
 
-impl<C: CurveParams> Affine<C> {
+impl<C> Affine<C>
+where
+    C: CurveParams,
+{
     /// The identity, the point at infinity.
     #[must_use]
     pub fn identity() -> Self {
@@ -157,7 +175,10 @@ impl<C: CurveParams> Affine<C> {
 
 /// Equality of points; both identities are equal whatever the stored
 /// coordinates.
-impl<C: CurveParams> PartialEq for Affine<C> {
+impl<C> PartialEq for Affine<C>
+where
+    C: CurveParams,
+{
     fn eq(&self, other: &Self) -> bool {
         let both = self.infinity & other.infinity;
         let same = !self.infinity
@@ -168,4 +189,4 @@ impl<C: CurveParams> PartialEq for Affine<C> {
     }
 }
 
-impl<C: CurveParams> Eq for Affine<C> {}
+impl<C> Eq for Affine<C> where C: CurveParams {}

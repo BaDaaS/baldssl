@@ -33,7 +33,10 @@ pub trait CurveParams: 'static {
 /// Decodes a big-endian hexadecimal constant into a field element; `None`
 /// if it is not a canonical element. The constants above are checked by the
 /// tests, so callers may treat `None` as unreachable.
-pub(crate) fn element<F: PrimeField>(hex: &str) -> Option<F> {
+pub(crate) fn element<F>(hex: &str) -> Option<F>
+where
+    F: PrimeField,
+{
     let digits = hex.as_bytes();
     if digits.len() > 2 * F::BYTES || !digits.len().is_multiple_of(2) {
         return None;

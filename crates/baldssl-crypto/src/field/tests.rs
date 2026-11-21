@@ -174,18 +174,27 @@ impl Nat {
     }
 }
 
-fn modulus<M: Modulus<N>, const N: usize>() -> Nat {
+fn modulus<M, const N: usize>() -> Nat
+where
+    M: Modulus<N>,
+{
     Nat::from_hex(M::HEX)
 }
 
-fn element<M: Modulus<N>, const N: usize>(value: &Nat) -> Fp<M, N> {
+fn element<M, const N: usize>(value: &Nat) -> Fp<M, N>
+where
+    M: Modulus<N>,
+{
     let (x, valid) =
         Fp::<M, N>::from_bytes_be(&value.to_bytes_be(Fp::<M, N>::BYTES));
     assert!(valid.to_bool_vartime(), "{} not below the modulus", M::NAME);
     x
 }
 
-fn value<M: Modulus<N>, const N: usize>(x: &Fp<M, N>) -> Nat {
+fn value<M, const N: usize>(x: &Fp<M, N>) -> Nat
+where
+    M: Modulus<N>,
+{
     Nat::from_bytes_be(&x.to_bytes_be())
 }
 
@@ -244,7 +253,10 @@ fn sizes() {
 }
 
 /// The boundary values, and the encodings that must be rejected.
-fn boundaries<M: Modulus<N>, const N: usize>() {
+fn boundaries<M, const N: usize>()
+where
+    M: Modulus<N>,
+{
     type F<M, const N: usize> = Fp<M, N>;
     let p = modulus::<M, N>();
     let p_minus_1 = p.sub(&Nat::from_u64(1));
@@ -283,7 +295,10 @@ fn boundary_values() {
 
 /// Every operation agrees with the reference on `a` and `b`, given as
 /// arbitrary bytes reduced modulo `p`; and the field axioms hold.
-fn agrees<M: Modulus<N>, const N: usize>(a_bytes: &[u8], b_bytes: &[u8]) {
+fn agrees<M, const N: usize>(a_bytes: &[u8], b_bytes: &[u8])
+where
+    M: Modulus<N>,
+{
     let p = modulus::<M, N>();
     let (ra, rb) = (
         Nat::from_bytes_be(a_bytes).rem(&p),
@@ -369,7 +384,10 @@ proptest! {
     /// subtractions matter: p - 1 - k for small k.
     #[test]
     fn near_the_modulus(k in 0u64..1000) {
-        fn near<M: Modulus<N>, const N: usize>(k: u64) {
+        fn near<M, const N: usize>(k: u64)
+where
+    M: Modulus<N>,
+{
             let p = modulus::<M, N>();
             let a = p.sub(&Nat::from_u64(1 + k));
             let bytes = a.to_bytes_be(Fp::<M, N>::BYTES);

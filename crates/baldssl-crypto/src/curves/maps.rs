@@ -23,14 +23,20 @@ use super::{
 };
 use crate::field::PrimeField;
 
-impl<C: CurveParams> From<Affine<C>> for Projective<C> {
+impl<C> From<Affine<C>> for Projective<C>
+where
+    C: CurveParams,
+{
     fn from(p: Affine<C>) -> Self {
         let point = Projective::new(p.x, p.y, C::Base::ONE);
         Projective::select(&point, &Projective::identity(), p.infinity)
     }
 }
 
-impl<C: CurveParams> From<Projective<C>> for Affine<C> {
+impl<C> From<Projective<C>> for Affine<C>
+where
+    C: CurveParams,
+{
     fn from(p: Projective<C>) -> Self {
         let zinv = p.z.invert();
         let point = Affine {
@@ -43,7 +49,10 @@ impl<C: CurveParams> From<Projective<C>> for Affine<C> {
     }
 }
 
-impl<C: CurveParams> From<Affine<C>> for Jacobian<C> {
+impl<C> From<Affine<C>> for Jacobian<C>
+where
+    C: CurveParams,
+{
     fn from(p: Affine<C>) -> Self {
         let point = Jacobian::<C>::new(p.x, p.y, C::Base::ONE);
         let identity = Jacobian::<C>::identity();
@@ -55,7 +64,10 @@ impl<C: CurveParams> From<Affine<C>> for Jacobian<C> {
     }
 }
 
-impl<C: CurveParams> From<Jacobian<C>> for Affine<C> {
+impl<C> From<Jacobian<C>> for Affine<C>
+where
+    C: CurveParams,
+{
     fn from(p: Jacobian<C>) -> Self {
         let zinv = p.z.invert();
         let zinv2 = zinv.square();
@@ -69,14 +81,20 @@ impl<C: CurveParams> From<Jacobian<C>> for Affine<C> {
     }
 }
 
-impl<C: CurveParams> From<Jacobian<C>> for Projective<C> {
+impl<C> From<Jacobian<C>> for Projective<C>
+where
+    C: CurveParams,
+{
     fn from(p: Jacobian<C>) -> Self {
         let point = Projective::new(p.x * p.z, p.y, p.z.square() * p.z);
         Projective::select(&point, &Projective::identity(), p.is_identity())
     }
 }
 
-impl<C: CurveParams> From<Projective<C>> for Jacobian<C> {
+impl<C> From<Projective<C>> for Jacobian<C>
+where
+    C: CurveParams,
+{
     fn from(p: Projective<C>) -> Self {
         Jacobian::new(p.x * p.z, p.y * p.z.square(), p.z)
     }

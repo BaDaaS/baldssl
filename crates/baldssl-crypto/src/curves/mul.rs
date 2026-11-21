@@ -13,10 +13,10 @@ use crate::{ct::Choice, field::PrimeField};
 
 /// $k P$, constant time in $k$ and $P$.
 #[must_use]
-pub fn mul<C: CurveParams>(
-    point: &Projective<C>,
-    scalar: &C::Scalar,
-) -> Projective<C> {
+pub fn mul<C>(point: &Projective<C>, scalar: &C::Scalar) -> Projective<C>
+where
+    C: CurveParams,
+{
     let mut acc = Projective::identity();
     for byte in scalar.to_bytes_be() {
         for bit in (0..8).rev() {
@@ -34,6 +34,9 @@ pub fn mul<C: CurveParams>(
 
 /// $k G$, the public key of the private key $k$.
 #[must_use]
-pub fn mul_generator<C: CurveParams>(scalar: &C::Scalar) -> Projective<C> {
+pub fn mul_generator<C>(scalar: &C::Scalar) -> Projective<C>
+where
+    C: CurveParams,
+{
     mul(&Projective::generator(), scalar)
 }

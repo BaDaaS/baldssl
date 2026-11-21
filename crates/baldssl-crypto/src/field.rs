@@ -184,7 +184,10 @@ const fn bit_length<const N: usize>(a: &[u64; N]) -> u32 {
 /// The constants derived from a modulus.
 struct Consts<M, const N: usize>(PhantomData<M>);
 
-impl<M: Modulus<N>, const N: usize> Consts<M, N> {
+impl<M, const N: usize> Consts<M, N>
+where
+    M: Modulus<N>,
+{
     const P: [u64; N] = {
         let p = limbs_from_hex::<N>(M::HEX);
         assert!(p[0] & 1 == 1, "Montgomery form needs an odd modulus");
@@ -217,7 +220,10 @@ impl<M, const N: usize> Clone for Fp<M, N> {
 
 impl<M, const N: usize> Copy for Fp<M, N> {}
 
-impl<M: Modulus<N>, const N: usize> Fp<M, N> {
+impl<M, const N: usize> Fp<M, N>
+where
+    M: Modulus<N>,
+{
     /// Zero.
     pub const ZERO: Self = Self::from_mont([0; N]);
     /// One, which is $R \bmod p$ in Montgomery form.
@@ -396,7 +402,10 @@ impl<M: Modulus<N>, const N: usize> Fp<M, N> {
     }
 }
 
-impl<M: Modulus<N>, const N: usize> Add for Fp<M, N> {
+impl<M, const N: usize> Add for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
@@ -416,7 +425,10 @@ impl<M: Modulus<N>, const N: usize> Add for Fp<M, N> {
 
 // The `&` masks the add-back of p, the point of the operation.
 #[allow(clippy::suspicious_arithmetic_impl)]
-impl<M: Modulus<N>, const N: usize> Sub for Fp<M, N> {
+impl<M, const N: usize> Sub for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self {
@@ -431,7 +443,10 @@ impl<M: Modulus<N>, const N: usize> Sub for Fp<M, N> {
     }
 }
 
-impl<M: Modulus<N>, const N: usize> Neg for Fp<M, N> {
+impl<M, const N: usize> Neg for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     type Output = Self;
 
     fn neg(self) -> Self {
@@ -439,7 +454,10 @@ impl<M: Modulus<N>, const N: usize> Neg for Fp<M, N> {
     }
 }
 
-impl<M: Modulus<N>, const N: usize> Mul for Fp<M, N> {
+impl<M, const N: usize> Mul for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
@@ -449,17 +467,23 @@ impl<M: Modulus<N>, const N: usize> Mul for Fp<M, N> {
 
 /// Equality for tests and public values; secret comparisons use
 /// [`Fp::ct_eq`].
-impl<M: Modulus<N>, const N: usize> PartialEq for Fp<M, N> {
+impl<M, const N: usize> PartialEq for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     fn eq(&self, other: &Self) -> bool {
         self.ct_eq(other).to_bool_vartime()
     }
 }
 
-impl<M: Modulus<N>, const N: usize> Eq for Fp<M, N> {}
+impl<M, const N: usize> Eq for Fp<M, N> where M: Modulus<N> {}
 
 /// Prints the canonical value in hexadecimal. Elements may be secret; do
 /// not format secret values outside tests.
-impl<M: Modulus<N>, const N: usize> fmt::Debug for Fp<M, N> {
+impl<M, const N: usize> fmt::Debug for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}(0x", M::NAME)?;
         for byte in self.to_bytes_be() {
@@ -512,7 +536,10 @@ pub trait PrimeField:
     fn select(a: &Self, b: &Self, choice: Choice) -> Self;
 }
 
-impl<M: Modulus<N>, const N: usize> PrimeField for Fp<M, N> {
+impl<M, const N: usize> PrimeField for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     const ZERO: Self = Fp::<M, N>::ZERO;
     const ONE: Self = Fp::<M, N>::ONE;
     const BITS: u32 = Fp::<M, N>::BITS;
