@@ -142,6 +142,10 @@ baldssl x509 -in cert.crt -noout -text</code></pre>
                 class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface p-4 font-mono text-sm text-foreground"
               ><code>baldssl x509 -in cert.crt -text            # OpenSSL 3.x (default)
 BALDSSL_OPENSSL_COMPAT=4 baldssl x509 ...  # OpenSSL 4.x</code></pre>
+              <p class="mt-4">
+                Supported and checked against real OpenSSL builds in CI: OpenSSL
+                3.5.9 (profile 3) and 4.1.0 (profile 4).
+              </p>
             </div>
             <div class="max-w-prose text-sm text-muted">
               <h3 class="font-semibold text-foreground">
@@ -150,13 +154,35 @@ BALDSSL_OPENSSL_COMPAT=4 baldssl x509 ...  # OpenSSL 4.x</code></pre>
               <ul class="mt-3 list-disc space-y-2 pl-5">
                 <li>
                   <code class="font-mono text-foreground">-fingerprint</code>
-                  defaults to SHA-256 (OpenSSL: SHA-1).
+                  defaults to SHA-256 (OpenSSL: SHA-1); pass
+                  <code class="font-mono text-foreground">-sha1</code> for
+                  OpenSSL's output.
+                  <code class="font-mono text-foreground"
+                    >-fingerprint sha384</code
+                  >
+                  is accepted as well as
+                  <code class="font-mono text-foreground"
+                    >-fingerprint -sha384</code
+                  >.
                 </li>
-                <li>A missing input file exits with 2 (OpenSSL: 1).</li>
+                <li>
+                  Exit codes: 0 on success, 1 on any error, 2 when an input file
+                  does not exist (OpenSSL exits with 1 for both errors).
+                </li>
                 <li>
                   Serial numbers follow the LP64 layout of Linux and macOS.
+                  OpenSSL on Windows prints serials of 5 to 8 bytes in hex form
+                  instead.
                 </li>
               </ul>
+              <h3 class="mt-8 font-semibold text-foreground">Supported keys</h3>
+              <p class="mt-3">
+                <code class="font-mono text-foreground">x509 -text</code>
+                prints P-256, P-384, P-521 and Ed25519 keys, and RSA keys for
+                display. Other key types are rejected with an
+                <code class="font-mono text-foreground">unsupported</code>
+                error rather than printed differently from OpenSSL.
+              </p>
             </div>
           </div>
         </div>
