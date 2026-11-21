@@ -69,7 +69,7 @@ proptest! {
         if let Ok(cert) = Certificate::from_der(&der) {
             let _ = print_text(&cert, Compat::V3);
             let _ = print_text(&cert, Compat::V4);
-            let _ = cert.subject.to_openssl();
+            let _ = cert.subject.to_openssl(baldssl_x509::name::NameStyle::Utf8);
         }
         let _ = certificate_der(&der, Some(Format::Pem));
     }

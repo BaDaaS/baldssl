@@ -1,12 +1,18 @@
 //! Distinguished names and their OpenSSL rendering.
 //!
-//! OpenSSL 3's `x509` prints names with `XN_FLAG_SEP_CPLUS_SPC |
-//! ASN1_STRFLGS_UTF8_CONVERT` unless `-nameopt` is given: RDNs joined by
-//! `", "`, multi-valued RDNs by `" + "`, short field names, `=` without
-//! spaces, every string type converted to UTF-8 and *no escaping at all*.
-//! That last point means the output is bytes, not necessarily valid UTF-8
-//! (a UTF8String is copied verbatim, and BMPString surrogates are encoded
-//! one by one), so the printer returns `Vec<u8>`.
+//! Without `-nameopt`, OpenSSL's `x509` prints names in one of two styles
+//! ([`NameStyle`]), both with RDNs joined by `", "`, multi-valued RDNs by
+//! `" + "`, short field names, and every string type converted to UTF-8:
+//!
+//! * OpenSSL 3.2 and later: `XN_FLAG_SEP_CPLUS_SPC |
+//!   ASN1_STRFLGS_UTF8_CONVERT`, `=` without spaces and *no escaping at
+//!   all*. The output is then bytes, not necessarily valid UTF-8 (a
+//!   UTF8String is copied verbatim, and BMPString surrogates are encoded one
+//!   by one), so the printer returns `Vec<u8>`.
+//! * OpenSSL 3.0: `XN_FLAG_ONELINE`, ` = ` with spaces, bytes above `0x7F`
+//!   and control characters escaped as `\XX`, and a value containing an RFC
+//!   2253 special character (`,+<>;`, or a leading `#` or space, or a
+//!   trailing space) wrapped in double quotes.
 
 use baldssl_core::{
     Error, Result,
@@ -14,6 +20,15 @@ use baldssl_core::{
 };
 
 use crate::objects;
+
+/// How names are printed; see the module documentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameStyle {
+    /// OpenSSL 3.2 and later: `CN=x`, UTF-8, no escaping.
+    Utf8,
+    /// OpenSSL 3.0 (`XN_FLAG_ONELINE`): `CN = x`, escaped and quoted.
+    Oneline,
+}
 
 /// `AttributeTypeAndValue`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,8 +87,9 @@ impl<'a> Name<'a> {
     /// # Errors
     ///
     /// [`Error::Unsupported`] for value types OpenSSL would not print as
-    /// text.
-    pub fn to_openssl(&self) -> Result<Vec<u8>> {
+    /// text, and, in the [`NameStyle::Oneline`] style, for values containing
+    /// `"` or `\\`, whose escaping baldssl does not reproduce yet.
+    pub fn to_openssl(&self, style: NameStyle) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         for (i, rdn) in self.rdns.iter().enumerate() {
             if i > 0 {
@@ -86,12 +102,51 @@ impl<'a> Name<'a> {
                 out.extend_from_slice(
                     objects::short_name(&atv.oid)?.as_bytes(),
                 );
-                out.push(b'=');
-                string_to_utf8(&atv.value, &mut out)?;
+                let mut value = Vec::new();
+                string_to_utf8(&atv.value, &mut value)?;
+                match style {
+                    NameStyle::Utf8 => {
+                        out.push(b'=');
+                        out.extend_from_slice(&value);
+                    }
+                    NameStyle::Oneline => {
+                        out.extend_from_slice(b" = ");
+                        oneline_value(&value, &mut out)?;
+                    }
+                }
             }
         }
         Ok(out)
     }
+}
+
+/// Escapes a value as `XN_FLAG_ONELINE` does (`do_buf` and `do_esc_char`
+/// with `ASN1_STRFLGS_RFC2253 | ASN1_STRFLGS_ESC_QUOTE`): `\\XX` for bytes
+/// above `0x7E` and control characters, and double quotes around a value
+/// that contains an RFC 2253 special character.
+fn oneline_value(value: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    if value.iter().any(|&b| b == b'"' || b == b'\\') {
+        return Err(Error::unsupported(
+            "OpenSSL 3.0 name escaping of a value containing \" or \\",
+        ));
+    }
+    let quote = value.iter().any(|b| b",+<>;".contains(b))
+        || matches!(value.first(), Some(b'#' | b' '))
+        || value.last() == Some(&b' ');
+    if quote {
+        out.push(b'"');
+    }
+    for &b in value {
+        if (0x20..=0x7e).contains(&b) {
+            out.push(b);
+        } else {
+            out.extend_from_slice(format!("\\{b:02X}").as_bytes());
+        }
+    }
+    if quote {
+        out.push(b'"');
+    }
+    Ok(())
 }
 
 /// Appends the UTF-8 encoding of a code point the way OpenSSL's `UTF8_putc`

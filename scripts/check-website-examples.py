@@ -108,7 +108,9 @@ def main() -> int:
     version = subprocess.run(
         [str(openssl), "version"], capture_output=True, text=True, check=True
     ).stdout.split()[1]
-    profile = {"BALDSSL_OPENSSL_COMPAT": version.split(".")[0]}
+    # The profile is 3.0 for OpenSSL 3.0, the major version otherwise.
+    line = "3.0" if version.startswith("3.0.") else version.split(".")[0]
+    profile = {"BALDSSL_OPENSSL_COMPAT": line}
     print(f"OpenSSL {version} (baldssl profile {profile['BALDSSL_OPENSSL_COMPAT']})")
 
     examples = json.loads(EXAMPLES.read_text(encoding="utf-8"))["examples"]

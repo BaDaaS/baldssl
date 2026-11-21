@@ -263,12 +263,14 @@ fn read_input(path: Option<&OsStr>) -> Result<Vec<u8>> {
 /// The environment variable selecting the OpenSSL release line to imitate.
 pub const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
 
-/// Reads [`COMPAT_ENV`]: `3` (default) or `4`.
+/// Reads [`COMPAT_ENV`]: `3` (default), `3.0` or `4`.
 fn compat() -> Result<Compat> {
     match std::env::var(COMPAT_ENV) {
         Err(_) => Ok(Compat::default()),
         Ok(v) => Compat::from_version(&v).ok_or_else(|| {
-            Error::Usage(format!("{COMPAT_ENV}: expected 3 or 4, got {v:?}"))
+            Error::Usage(format!(
+                "{COMPAT_ENV}: expected 3.0, 3 or 4, got {v:?}"
+            ))
         }),
     }
 }
@@ -293,12 +295,16 @@ pub fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
         match p {
             Print::Issuer => {
                 out.extend_from_slice(b"issuer=");
-                out.extend_from_slice(&cert.issuer.to_openssl()?);
+                out.extend_from_slice(
+                    &cert.issuer.to_openssl(compat.name_style())?,
+                );
                 out.push(b'\n');
             }
             Print::Subject => {
                 out.extend_from_slice(b"subject=");
-                out.extend_from_slice(&cert.subject.to_openssl()?);
+                out.extend_from_slice(
+                    &cert.subject.to_openssl(compat.name_style())?,
+                );
                 out.push(b'\n');
             }
             Print::Serial => {

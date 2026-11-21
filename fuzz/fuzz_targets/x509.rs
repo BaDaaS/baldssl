@@ -12,7 +12,7 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(cert.der, data);
         let _ = print_text(&cert, Compat::V3);
         let _ = print_text(&cert, Compat::V4);
-        let _ = cert.issuer.to_openssl();
-        let _ = cert.subject.to_openssl();
+        let _ = cert.issuer.to_openssl(baldssl_x509::name::NameStyle::Oneline);
+        let _ = cert.subject.to_openssl(baldssl_x509::name::NameStyle::Utf8);
     }
 });

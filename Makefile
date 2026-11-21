@@ -1,6 +1,7 @@
 NIGHTLY_RUST_VERSION ?= nightly
 TAPLO_CLI_VERSION ?= 0.9.3
 # The OpenSSL binaries the golden files and the interop tests use.
+OPENSSL_30 ?= openssl
 OPENSSL_3 ?= openssl
 OPENSSL_4 ?= openssl
 OPENSSL ?= openssl
@@ -126,8 +127,8 @@ interop: build ## Diff baldssl against $(OPENSSL), both directions
 	scripts/interop.sh $(OPENSSL) $(BALDSSL)
 
 .PHONY: golden
-golden: ## Regenerate golden files from $(OPENSSL_3) and $(OPENSSL_4)
-	scripts/gen-golden.sh $(OPENSSL_3) $(OPENSSL_4)
+golden: ## Regenerate golden files from OpenSSL 3.0, 3.5 and 4.1
+	scripts/gen-golden.sh $(OPENSSL_30) $(OPENSSL_3) $(OPENSSL_4)
 
 .PHONY: objects
 objects: ## Regenerate the OID name table from OPENSSL_INCLUDE/obj_mac.h

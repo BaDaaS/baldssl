@@ -213,31 +213,25 @@ jobs:
           path: target/coverage/
 
   # Differential tests against real OpenSSL builds, both directions (see
-  # scripts/interop.sh). 3.5 and 4.1 are the supported lines and must pass;
-  # the others are informational, to see drift before supporting them.
+  # scripts/interop.sh). Every listed release must pass; 3.0 runs with the
+  # 3.0 compatibility profile.
   interop:
     name: interop (OpenSSL ${{ matrix.version }})
     runs-on: ubuntu-26.04
-    continue-on-error: ${{ !matrix.required }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - version: 3.5.9
             sha256: 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
-            required: true
           - version: 4.1.0
             sha256: 50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
-            required: true
           - version: 3.0.22
             sha256: 67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
-            required: false
           - version: 3.6.5
             sha256: a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98
-            required: false
           - version: 4.0.3
             sha256: 325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9
-            required: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -296,6 +290,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - id: v30
+        uses: ./.github/actions/build-openssl
+        with:
+          version: 3.0.22
+          sha256: 67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
       - id: v3
         uses: ./.github/actions/build-openssl
         with:
@@ -308,10 +307,12 @@ jobs:
           sha256: 50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
       - name: Regenerate and compare
         env:
+          OPENSSL_30: ${{ steps.v30.outputs.openssl }}
           OPENSSL_3: ${{ steps.v3.outputs.openssl }}
           OPENSSL_4: ${{ steps.v4.outputs.openssl }}
         run: |
-          make golden OPENSSL_3="$OPENSSL_3" OPENSSL_4="$OPENSSL_4"
+          make golden OPENSSL_30="$OPENSSL_30" OPENSSL_3="$OPENSSL_3" \
+            OPENSSL_4="$OPENSSL_4"
           git diff --exit-code -- tests/fixtures/golden
 
   # The Lean 4 skeleton must keep building against the pinned Aeneas.

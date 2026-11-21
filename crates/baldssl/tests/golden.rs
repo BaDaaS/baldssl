@@ -58,7 +58,7 @@ fn certs() -> Vec<PathBuf> {
 fn matches_openssl_golden_files() {
     let mut checked = 0;
     let mut failures = Vec::new();
-    for (profile, compat) in [("v3", "3"), ("v4", "4")] {
+    for (profile, compat) in [("v30", "3.0"), ("v3", "3"), ("v4", "4")] {
         for cert in certs() {
             let stem = cert.file_stem().unwrap().to_string_lossy().into_owned();
             for (case, args) in cases() {

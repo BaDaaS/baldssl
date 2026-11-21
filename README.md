@@ -26,14 +26,21 @@ uses nightly `rustfmt` and `taplo`; `make setup` installs the tools.
 
 ## OpenSSL compatibility profiles
 
-OpenSSL 3.x and 4.x print `-text` differently (hex dump geometry, the RSA
-modulus sign byte, the EC key header), so the printer takes a profile:
-`baldssl_x509::text::Compat` (`V3`, `V4`), chosen by the CLI from
-`BALDSSL_OPENSSL_COMPAT`. Golden files exist per profile
-(`tests/fixtures/golden/v3`, `v4`, recorded from OpenSSL 3.5.9 and 4.1.0), and
-`scripts/interop.sh` picks the profile from the version of the OpenSSL under
-test. CI requires 3.5.9 and 4.1.0 to pass; 3.0.22, 3.6.5 and 4.0.3 run as
-informational jobs.
+OpenSSL releases print `-text` differently, so the printer takes a profile,
+`baldssl_x509::text::Compat`, chosen by the CLI from `BALDSSL_OPENSSL_COMPAT`:
+
+| Profile | Release line | Differences                                                                        |
+| ------- | ------------ | ---------------------------------------------------------------------------------- |
+| `3.0`   | OpenSSL 3.0  | names in the older escaped style (`CN = x`, `\XX` escapes, quoted values)          |
+| `3`     | OpenSSL 3.5  | the default                                                                        |
+| `4`     | OpenSSL 4.x  | hex dump geometry, no RSA modulus sign byte, EC key header with the security level |
+
+Golden files exist per profile (`tests/fixtures/golden/v30`, `v3`, `v4`,
+recorded from OpenSSL 3.0.22, 3.5.9 and 4.1.0), and `scripts/interop.sh` picks
+the profile from the version of the OpenSSL under test. CI requires 3.0.22,
+3.5.9, 3.6.5, 4.0.3 and 4.1.0 to pass. One exception is documented in the
+script: OpenSSL 3.0's `x509` silently ignores unknown options, which baldssl
+rejects.
 
 Rule for new output: never print something OpenSSL would print differently.
 Unimplemented cases return `Error::Unsupported`; the status of each command is

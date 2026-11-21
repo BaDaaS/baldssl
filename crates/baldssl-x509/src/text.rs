@@ -12,7 +12,7 @@ use baldssl_core::{
     hex::{self, Case},
 };
 
-use crate::{cert::Certificate, ext, objects};
+use crate::{cert::Certificate, ext, name::NameStyle, objects};
 
 /// Which OpenSSL release line's `-text` layout to reproduce. The two lines
 /// differ only in hex-dump geometry and the EC key header; everything else
@@ -20,7 +20,10 @@ use crate::{cert::Certificate, ext, objects};
 /// binaries of that line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Compat {
-    /// OpenSSL 3.0 to 3.6.
+    /// OpenSSL 3.0, whose names use the older escaped style
+    /// ([`NameStyle::Oneline`]).
+    V30,
+    /// OpenSSL 3.2 to 3.6.
     #[default]
     V3,
     /// OpenSSL 4.0 and later.
@@ -31,7 +34,7 @@ impl Compat {
     /// Bytes per line in `ASN1_buf_print` (keys, modulus).
     fn key_bytes_per_line(self) -> usize {
         match self {
-            Compat::V3 => 15,
+            Compat::V30 | Compat::V3 => 15,
             Compat::V4 => 16,
         }
     }
@@ -39,7 +42,7 @@ impl Compat {
     /// Bytes per line in `X509_signature_dump`.
     fn signature_bytes_per_line(self) -> usize {
         match self {
-            Compat::V3 => 18,
+            Compat::V30 | Compat::V3 => 18,
             Compat::V4 => 24,
         }
     }
@@ -47,13 +50,27 @@ impl Compat {
     /// Whether a bignum with its top bit set is printed with a leading
     /// `00:` (the two's-complement sign byte).
     fn bn_sign_byte(self) -> bool {
-        self == Compat::V3
+        self != Compat::V4
     }
 
-    /// Parses `3` or `4` (also accepts `3.x` / `4.x` version strings).
+    /// How this release line prints names.
+    #[must_use]
+    pub fn name_style(self) -> NameStyle {
+        match self {
+            Compat::V30 => NameStyle::Oneline,
+            Compat::V3 | Compat::V4 => NameStyle::Utf8,
+        }
+    }
+
+    /// Parses a profile (`3.0`, `3` or `4`) or an OpenSSL version
+    /// (`3.0.22`, `3.5.9`, `4.1.0`).
     #[must_use]
     pub fn from_version(s: &str) -> Option<Self> {
-        match s.trim().split('.').next()? {
+        let s = s.trim();
+        if s == "3.0" || s.starts_with("3.0.") {
+            return Some(Compat::V30);
+        }
+        match s.split('.').next()? {
             "3" => Some(Compat::V3),
             "4" => Some(Compat::V4),
             _ => None,
@@ -315,7 +332,7 @@ fn print_public_key(
                 return Err(Error::invalid("EC point encoding"));
             }
             let size = match compat {
-                Compat::V3 => format!("{} bit", c.bits),
+                Compat::V30 | Compat::V3 => format!("{} bit", c.bits),
                 Compat::V4 => format!(
                     "{} bit field, {} bit security level",
                     c.bits, c.security
@@ -375,13 +392,13 @@ pub fn print_text(cert: &Certificate<'_>, compat: Compat) -> Result<Vec<u8>> {
     out.extend_from_slice(b"        Signature Algorithm: ");
     out.extend_from_slice(signature_name(&cert.tbs_signature)?.as_bytes());
     out.extend_from_slice(b"\n        Issuer: ");
-    out.extend_from_slice(&cert.issuer.to_openssl()?);
+    out.extend_from_slice(&cert.issuer.to_openssl(compat.name_style())?);
     out.extend_from_slice(b"\n        Validity\n            Not Before: ");
     out.extend_from_slice(time_rfc822(&cert.validity.not_before).as_bytes());
     out.extend_from_slice(b"\n            Not After : ");
     out.extend_from_slice(time_rfc822(&cert.validity.not_after).as_bytes());
     out.extend_from_slice(b"\n        Subject: ");
-    out.extend_from_slice(&cert.subject.to_openssl()?);
+    out.extend_from_slice(&cert.subject.to_openssl(compat.name_style())?);
     out.extend_from_slice(
         b"\n        Subject Public Key Info:\n            Public Key Algorithm: ",
     );
@@ -523,5 +540,8 @@ mod tests {
         assert_eq!(Compat::from_version("4.1.0"), Some(Compat::V4));
         assert_eq!(Compat::from_version("3"), Some(Compat::V3));
         assert_eq!(Compat::from_version("1.1.1"), None);
+        assert_eq!(Compat::from_version("3.0"), Some(Compat::V30));
+        assert_eq!(Compat::from_version("3.0.22"), Some(Compat::V30));
+        assert_eq!(Compat::from_version("3.5.9"), Some(Compat::V3));
     }
 }
