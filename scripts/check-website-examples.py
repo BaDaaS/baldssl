@@ -5,10 +5,13 @@ Reads website/src/examples.json and runs the examples in order, in one fresh
 directory (later tasks use the files earlier tasks create), exactly as a
 reader would paste them into bash:
 
+- every command is displayed as lines of at most MAX_WIDTH characters joined
+  by backslash continuations, and runs exactly as displayed;
 - every command must succeed with the given OpenSSL as `openssl`;
-- a task with status "supported" is also run with baldssl as `openssl`, on a
-  copy of the directory as it was before the task, and must exit the same way
-  and produce the same stdout and the same files, byte for byte;
+- each task is also shown with `baldssl` in place of `openssl` (the page's
+  toggle); for a task with status "supported" that variant is run, on a copy
+  of the directory as it was before the task, and must exit the same way and
+  produce the same stdout and the same files, byte for byte;
 - a deterministic task with status "not-yet" fails the check if baldssl
   already reproduces it, so the status is updated when a feature lands;
 - `usage` and `compatibility` commands run with baldssl as `baldssl`;
@@ -23,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +35,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = ROOT / "website" / "src" / "examples.json"
+
+# Characters per displayed line: what fits a 375 px phone screen in the
+# website's code blocks.
+MAX_WIDTH = 38
+
+# The program name `openssl`, where the shell runs it.
+PROGRAM = re.compile(r"(?<![\w./-])openssl(?= )")
+
+
+def displayed(lines: list[str]) -> list[str]:
+    """Checks the display rules and returns the problems found."""
+    problems = []
+    for i, line in enumerate(lines):
+        if len(line) > MAX_WIDTH:
+            problems.append(f"line {i + 1} is {len(line)} characters")
+        continued = line.endswith(" \\")
+        if continued != (i < len(lines) - 1):
+            problems.append(f"line {i + 1}: continuation backslash")
+    return problems
+
+
+def baldssl_variant(command: str) -> str:
+    """The command as the website shows it with the toggle on baldssl."""
+    return PROGRAM.sub("baldssl", command)
 
 
 def bin_dir(base: Path, name: str, links: dict[str, Path]) -> Path:
@@ -90,10 +118,12 @@ def main() -> int:
         work = base / "work"
         work.mkdir()
         real = bin_dir(base, "real", {"openssl": openssl, "baldssl": baldssl})
-        dropin = bin_dir(base, "dropin", {"openssl": baldssl, "baldssl": baldssl})
 
         for ex in examples:
-            ident, section, command = ex["id"], ex["section"], ex["command"]
+            ident, section, lines = ex["id"], ex["section"], ex["lines"]
+            command = "\n".join(lines)
+            for problem in displayed(lines):
+                failures.append(f"{ident}: {problem}")
             if section == "install" and not args.install:
                 print(f"skip  {ident} (pass --install to run it)")
                 continue
@@ -117,7 +147,7 @@ def main() -> int:
                 print(f"ok    {ident}")
                 continue
 
-            mine = run(command, shadow, dropin, profile)
+            mine = run(baldssl_variant(command), shadow, real, profile)
             same = (
                 mine.returncode == 0
                 and mine.stdout == ran.stdout

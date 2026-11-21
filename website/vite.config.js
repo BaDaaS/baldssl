@@ -45,15 +45,17 @@ const availability = versions =>
     ? '<span class="text-muted">3.5, 4.1</span>'
     : `<span class="font-medium text-foreground">${versions[0]} only</span>`;
 
+// On small screens the OpenSSL and Notes columns fold into a line under the
+// description, so the status column stays visible without scrolling.
 const standardRows = commands =>
   commands
     .map(
       c => `<tr class="border-t border-border align-top">
-  <td class="py-3 pr-4 font-mono text-sm font-medium whitespace-nowrap text-foreground">${escapeHtml(c.name)}</td>
-  <td class="py-3 pr-4 text-sm text-muted">${inline(c.description)}</td>
-  <td class="py-3 pr-4 text-sm whitespace-nowrap">${availability(c.openssl)}</td>
-  <td class="py-3 pr-4">${badge(c.status)}</td>
-  <td class="py-3 text-sm text-muted">${inline(c.note)}</td>
+  <td class="py-3 pr-3 font-mono text-sm font-medium whitespace-nowrap text-foreground">${escapeHtml(c.name)}</td>
+  <td class="py-3 pr-3 text-sm text-muted">${inline(c.description)}<span class="mt-1 block text-xs sm:hidden">OpenSSL ${availability(c.openssl)}${c.note ? `. ${inline(c.note)}` : ''}</span></td>
+  <td class="hidden py-3 pr-4 text-sm whitespace-nowrap sm:table-cell">${availability(c.openssl)}</td>
+  <td class="py-3 pr-3">${badge(c.status)}</td>
+  <td class="hidden py-3 text-sm text-muted sm:table-cell">${inline(c.note)}</td>
 </tr>`,
     )
     .join('\n');
@@ -69,12 +71,33 @@ const shortcutRows = commands =>
     )
     .join('\n');
 
-// A command, verbatim, with a copy button (shown by src/copy.js). Every
-// command passed here comes from src/examples.json, which CI executes.
-const codeBlock = command => `<div class="relative">
-  <pre class="overflow-x-auto rounded-lg border border-border bg-background p-4 pr-20 font-mono text-sm text-foreground"><code>${escapeHtml(command)}</code></pre>
-  <button type="button" data-copy hidden class="absolute top-2 right-2 rounded-md border border-border bg-surface px-2 py-1 text-xs font-medium text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none">Copy</button>
+// The program name `openssl`, where the shell runs it; the baldssl variant of
+// a task replaces it (scripts/check-website-examples.py runs both).
+const PROGRAM = /(?<![\w./-])openssl(?= )/g;
+
+// A command block: a header with the copy button (shown by src/copy.js), and
+// the command exactly as CI runs it, one displayed line per entry of `lines`.
+// With `tools`, the block holds one <code> per tool, for the toggle.
+const codeBlock = (lines, tools = null) => {
+  const text = lines.join('\n');
+  const codes = tools
+    ? tools
+        .map(
+          (tool, i) =>
+            `<code data-tool="${tool}"${i > 0 ? ' hidden' : ''}>${escapeHtml(
+              tool === 'baldssl' ? text.replace(PROGRAM, 'baldssl') : text,
+            )}</code>`,
+        )
+        .join('')
+    : `<code>${escapeHtml(text)}</code>`;
+  return `<div class="min-w-0 overflow-hidden rounded-lg border border-border bg-background">
+  <div class="flex items-center justify-between border-b border-border px-3 py-1.5">
+    <span class="font-mono text-xs text-muted">bash</span>
+    <button type="button" data-copy hidden class="rounded-md px-2 py-0.5 text-xs font-medium text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none">Copy</button>
+  </div>
+  <pre class="overflow-x-auto px-3 py-3 font-mono text-xs leading-relaxed text-foreground sm:px-4 sm:text-sm">${codes}</pre>
 </div>`;
+};
 
 const TASK_STATUS = {
   supported: ['baldssl: supported', 'bg-success-subtle text-success'],
@@ -83,15 +106,25 @@ const TASK_STATUS = {
 
 const taskCard = ex => {
   const [label, colors] = TASK_STATUS[ex.status];
-  return `<article class="flex flex-col rounded-lg border border-border bg-surface p-6">
-  <div class="flex items-start justify-between gap-4">
+  return `<article class="flex min-w-0 flex-col rounded-lg border border-border bg-surface p-4 sm:p-6">
+  <div class="flex items-start justify-between gap-3">
     <h3 class="font-semibold">${escapeHtml(ex.title)}</h3>
     <span class="inline-flex shrink-0 rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap ${colors}">${label}</span>
   </div>
   <p class="mt-2 text-sm text-muted">${inline(ex.explanation)}</p>
-  <div class="mt-4">${codeBlock(ex.command)}</div>
+  <div class="mt-4">${codeBlock(ex.lines, ['openssl', 'baldssl'])}</div>
 </article>`;
 };
+
+// The openssl / baldssl switch of the Common tasks section (src/copy.js).
+const toolToggle = `<div role="group" aria-label="Show the commands for" data-tool-toggle hidden class="inline-flex shrink-0 rounded-lg border border-border bg-surface p-0.5 text-sm font-medium">
+  ${['openssl', 'baldssl']
+    .map(
+      (tool, i) =>
+        `<button type="button" data-tool-choice="${tool}" aria-pressed="${i === 0}" class="rounded-md px-3 py-1 font-mono text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none aria-pressed:bg-primary aria-pressed:text-on-primary">${tool}</button>`,
+    )
+    .join('')}
+</div>`;
 
 function examples() {
   return {
@@ -101,7 +134,7 @@ function examples() {
     },
     transformIndexHtml(html) {
       const list = JSON.parse(readFileSync(examplesPath, 'utf8')).examples;
-      let out = html.replace(
+      let out = html.replace('<!-- tasks:toggle -->', toolToggle).replace(
         '<!-- tasks -->',
         list
           .filter(e => e.section === 'tasks')
@@ -109,12 +142,9 @@ function examples() {
           .join('\n'),
       );
       for (const ex of list) {
-        out = out.replaceAll(
-          `<!-- example:${ex.id} -->`,
-          codeBlock(ex.command),
-        );
+        out = out.replaceAll(`<!-- example:${ex.id} -->`, codeBlock(ex.lines));
       }
-      const left = out.match(/<!-- (example:[\w-]+|tasks) -->/);
+      const left = out.match(/<!-- (example:[\w-]+|tasks[\w:-]*) -->/);
       if (left) {
         throw new Error(`unknown example placeholder ${left[0]}`);
       }

@@ -1,263 +1,333 @@
 {
-  "comment": "Every command shown on the website. scripts/check-website-examples.py runs them in this order, in one directory, against OpenSSL 3.5 and 4.1 (CI job `website-examples`). A task with status `supported` is also run with baldssl in place of openssl and must produce the same output and files. `deterministic: false` marks commands whose output is random (keys, serials), compared on exit status only. Sections: `tasks` (Common tasks), `install`, `usage`, `compatibility`.",
+  "comment": "Every command shown on the website, as the lines it is displayed in (joined with backslash continuations, at most 38 characters each so they fit a phone screen). scripts/check-website-examples.py runs them in this order, in one directory, against OpenSSL 3.5 and 4.1 (CI job `website examples`). Tasks are shown with openssl or baldssl (a toggle on the page); the baldssl variant replaces the program name. A task with status `supported` must give the same output and files with baldssl; a deterministic `not-yet` task fails the check once baldssl reproduces it. `deterministic: false` marks commands whose output is random (keys, serials). Sections: `tasks`, `install`, `usage`, `compatibility`.",
   "examples": [
     {
       "id": "genpkey-ec",
       "section": "tasks",
       "title": "Create a private key",
       "explanation": "Generates an elliptic-curve private key on the P-256 curve and writes it to key.pem in PKCS#8 PEM format. The file is a secret: anyone holding it can act as you.",
-      "command": "openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out key.pem",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl genpkey -algorithm EC \\",
+        "  -pkeyopt ec_paramgen_curve:P-256 \\",
+        "  -out key.pem"
+      ]
     },
     {
       "id": "genpkey-ed25519",
       "section": "tasks",
       "title": "Create an Ed25519 private key",
       "explanation": "Ed25519 keys are small and fast, and are used for SSH, signatures and recent TLS deployments.",
-      "command": "openssl genpkey -algorithm ED25519 -out ed25519.pem",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": ["openssl genpkey -algorithm ED25519 \\", "  -out ed25519.pem"]
     },
     {
       "id": "genpkey-rsa",
       "section": "tasks",
       "title": "Create an RSA private key",
       "explanation": "RSA is still the most widely deployed key type. 3072 bits is the size NIST SP 800-57 associates with 128-bit security.",
-      "command": "openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out rsa.pem",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl genpkey -algorithm RSA \\",
+        "  -pkeyopt rsa_keygen_bits:3072 \\",
+        "  -out rsa.pem"
+      ]
     },
     {
       "id": "pkey-text",
       "section": "tasks",
       "title": "Inspect a private key",
       "explanation": "Prints the key's type, size and components. Useful to check what a key file actually contains.",
-      "command": "openssl pkey -in key.pem -noout -text",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": ["openssl pkey -in key.pem -noout -text"]
     },
     {
       "id": "pkey-pubout",
       "section": "tasks",
       "title": "Extract the public key",
       "explanation": "Writes the public half of the key, which is safe to share, to pub.pem.",
-      "command": "openssl pkey -in key.pem -pubout -out pub.pem",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": ["openssl pkey -in key.pem -pubout \\", "  -out pub.pem"]
     },
     {
       "id": "req-new",
       "section": "tasks",
       "title": "Create a certificate signing request (CSR)",
       "explanation": "A CSR carries your public key and the name you want certified. You send it to a certificate authority (CA), which returns a signed certificate.",
-      "command": "openssl req -new -key key.pem -subj \"/CN=example.com\" -out request.csr",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl req -new -key key.pem \\",
+        "  -subj \"/CN=example.com\" \\",
+        "  -out request.csr"
+      ]
     },
     {
       "id": "req-text",
       "section": "tasks",
       "title": "Inspect a CSR",
       "explanation": "Shows what a CSR asks for before you submit it.",
-      "command": "openssl req -in request.csr -noout -text",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": ["openssl req -in request.csr \\", "  -noout -text"]
     },
     {
       "id": "ca",
       "section": "tasks",
       "title": "Create a self-signed CA certificate",
       "explanation": "Creates a new key (ca-key.pem) and a certificate for it, signed by itself, valid for 10 years. This is the root of a private certificate authority.",
-      "command": "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout ca-key.pem -out ca.crt -days 3650 -subj \"/CN=Example CA\"",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl req -x509 -newkey ec \\",
+        "  -pkeyopt ec_paramgen_curve:P-256 \\",
+        "  -noenc -keyout ca-key.pem \\",
+        "  -out ca.crt -days 3650 \\",
+        "  -subj \"/CN=Example CA\""
+      ]
     },
     {
       "id": "sign",
       "section": "tasks",
       "title": "Sign a CSR with your CA",
       "explanation": "Issues a certificate valid for 90 days for the request, signed by the CA. -CAcreateserial keeps the serial numbers in ca.srl.",
-      "command": "openssl x509 -req -in request.csr -CA ca.crt -CAkey ca-key.pem -CAcreateserial -days 90 -out cert.crt",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl x509 -req -in request.csr \\",
+        "  -CA ca.crt -CAkey ca-key.pem \\",
+        "  -CAcreateserial -days 90 \\",
+        "  -out cert.crt"
+      ]
     },
     {
       "id": "x509-text",
       "section": "tasks",
       "title": "Read a certificate",
       "explanation": "Prints every field of a certificate: who it is for, who issued it, when it expires, its public key and its extensions.",
-      "command": "openssl x509 -in cert.crt -noout -text",
       "status": "supported",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl x509 -in cert.crt \\", "  -noout -text"]
     },
     {
       "id": "x509-names",
       "section": "tasks",
       "title": "Show who a certificate is for and who issued it",
       "explanation": "The subject is the certificate's owner, the issuer is the CA that signed it.",
-      "command": "openssl x509 -in cert.crt -noout -subject -issuer",
       "status": "supported",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl x509 -in cert.crt \\", "  -noout -subject -issuer"]
     },
     {
       "id": "x509-dates",
       "section": "tasks",
       "title": "Check when a certificate expires",
       "explanation": "Prints the start and end of the validity period. Expired certificates are a common cause of outages.",
-      "command": "openssl x509 -in cert.crt -noout -dates",
       "status": "supported",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl x509 -in cert.crt \\", "  -noout -dates"]
     },
     {
       "id": "x509-fingerprint",
       "section": "tasks",
       "title": "Compute a certificate's fingerprint",
       "explanation": "The SHA-256 hash of the certificate, used to compare or pin certificates.",
-      "command": "openssl x509 -in cert.crt -noout -fingerprint -sha256",
       "status": "supported",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl x509 -in cert.crt \\", "  -noout -fingerprint -sha256"]
     },
     {
       "id": "x509-to-der",
       "section": "tasks",
       "title": "Convert a certificate from PEM to DER",
       "explanation": "PEM is the text form (BEGIN CERTIFICATE ...), DER the binary form some systems (Java, Windows) expect.",
-      "command": "openssl x509 -in cert.crt -outform DER -out cert.der",
       "status": "supported",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl x509 -in cert.crt \\", "  -outform DER -out cert.der"]
     },
     {
       "id": "x509-from-der",
       "section": "tasks",
       "title": "Convert a certificate from DER to PEM",
       "explanation": "The reverse conversion, back to the text form.",
-      "command": "openssl x509 -in cert.der -inform DER -out cert.pem",
       "status": "supported",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl x509 -in cert.der \\", "  -inform DER -out cert.pem"]
     },
     {
       "id": "verify",
       "section": "tasks",
       "title": "Verify a certificate against a CA",
       "explanation": "Checks the signature and the validity period, and prints cert.crt: OK when the chain is valid.",
-      "command": "openssl verify -CAfile ca.crt cert.crt",
       "status": "not-yet",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl verify -CAfile ca.crt \\", "  cert.crt"]
     },
     {
       "id": "key-matches-cert",
       "section": "tasks",
       "title": "Check that a key matches a certificate",
       "explanation": "A certificate and a key belong together when their public keys are equal. Writes both public keys and prints match when they are identical; any failing step stops the command.",
-      "command": "openssl x509 -in cert.crt -noout -pubkey > cert-pub.pem && openssl pkey -in key.pem -pubout > key-pub.pem && cmp cert-pub.pem key-pub.pem && echo match",
       "status": "not-yet",
-      "deterministic": true
+      "deterministic": true,
+      "lines": [
+        "openssl x509 -in cert.crt \\",
+        "  -noout -pubkey > cert-pub.pem \\",
+        "  && openssl pkey -in key.pem \\",
+        "  -pubout > key-pub.pem \\",
+        "  && cmp cert-pub.pem key-pub.pem \\",
+        "  && echo match"
+      ]
     },
     {
       "id": "pkcs12-export",
       "section": "tasks",
       "title": "Bundle a key and its certificates into PKCS#12",
       "explanation": "A .p12 (or .pfx) file holds a key and its certificate chain, protected by a password. Browsers, Windows and Java import this format.",
-      "command": "openssl pkcs12 -export -inkey key.pem -in cert.crt -certfile ca.crt -out bundle.p12 -passout pass:changeit",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl pkcs12 -export \\",
+        "  -inkey key.pem -in cert.crt \\",
+        "  -certfile ca.crt \\",
+        "  -out bundle.p12 \\",
+        "  -passout pass:changeit"
+      ]
     },
     {
       "id": "pkcs12-read",
       "section": "tasks",
       "title": "Extract a PKCS#12 bundle",
       "explanation": "Writes the key and certificates of a .p12 file to a PEM file, without encrypting the key.",
-      "command": "openssl pkcs12 -in bundle.p12 -passin pass:changeit -noenc -out bundle.pem",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl pkcs12 -in bundle.p12 \\",
+        "  -passin pass:changeit \\",
+        "  -noenc -out bundle.pem"
+      ]
     },
     {
       "id": "s-client",
       "section": "tasks",
       "title": "See the certificate a server presents",
       "explanation": "Connects to a TLS server and prints who its certificate is for, who issued it and when it expires.",
-      "command": "openssl s_client -connect github.com:443 -servername github.com </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer -dates",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl s_client \\",
+        "  -connect github.com:443 \\",
+        "  -servername github.com \\",
+        "  </dev/null 2>/dev/null \\",
+        "  | openssl x509 -noout \\",
+        "  -subject -issuer -dates"
+      ]
     },
     {
       "id": "dgst",
       "section": "tasks",
       "title": "Hash a file",
       "explanation": "Prints the SHA-256 digest of a file, to check that a download is intact.",
-      "command": "openssl dgst -sha256 cert.pem",
       "status": "not-yet",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl dgst -sha256 cert.pem"]
     },
     {
       "id": "rand",
       "section": "tasks",
       "title": "Generate random bytes",
       "explanation": "Prints 32 random bytes in hexadecimal, for example as a secret token.",
-      "command": "openssl rand -hex 32",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": ["openssl rand -hex 32"]
     },
     {
       "id": "enc",
       "section": "tasks",
       "title": "Encrypt a file with a password",
       "explanation": "Encrypts with AES-256 and derives the key from the password with PBKDF2.",
-      "command": "openssl enc -aes-256-cbc -pbkdf2 -salt -in cert.pem -out cert.pem.enc -pass pass:changeit",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": [
+        "openssl enc -aes-256-cbc -pbkdf2 \\",
+        "  -salt -in cert.pem \\",
+        "  -out cert.pem.enc \\",
+        "  -pass pass:changeit"
+      ]
     },
     {
       "id": "dec",
       "section": "tasks",
       "title": "Decrypt a file",
       "explanation": "Decrypts the file encrypted above, with the same password and options.",
-      "command": "openssl enc -d -aes-256-cbc -pbkdf2 -in cert.pem.enc -out cert.pem.dec -pass pass:changeit",
       "status": "not-yet",
-      "deterministic": true
+      "deterministic": true,
+      "lines": [
+        "openssl enc -d -aes-256-cbc \\",
+        "  -pbkdf2 -in cert.pem.enc \\",
+        "  -out cert.pem.dec \\",
+        "  -pass pass:changeit"
+      ]
     },
     {
       "id": "base64",
       "section": "tasks",
       "title": "Encode a file in base64",
       "explanation": "Turns binary data into text that can be pasted into an email or a configuration file.",
-      "command": "openssl base64 -in cert.der -out cert.der.b64",
       "status": "not-yet",
-      "deterministic": true
+      "deterministic": true,
+      "lines": ["openssl base64 -in cert.der \\", "  -out cert.der.b64"]
     },
     {
       "id": "passwd",
       "section": "tasks",
       "title": "Hash a password for /etc/shadow",
       "explanation": "Produces a SHA-512 crypt hash, the format Linux uses for login passwords.",
-      "command": "openssl passwd -6 -salt examplesalt 'correct horse battery staple'",
       "status": "not-yet",
-      "deterministic": true
+      "deterministic": true,
+      "lines": [
+        "openssl passwd -6 \\",
+        "  -salt examplesalt \\",
+        "  'correct horse battery staple'"
+      ]
     },
     {
       "id": "version",
       "section": "tasks",
       "title": "Show the OpenSSL version",
       "explanation": "Prints the installed version, the first thing to check when a command behaves differently between machines.",
-      "command": "openssl version",
       "status": "not-yet",
-      "deterministic": false
+      "deterministic": false,
+      "lines": ["openssl version"]
     },
     {
       "id": "install",
       "section": "install",
-      "command": "cargo install --git https://github.com/BaDaaS/baldssl baldssl"
+      "lines": [
+        "cargo install \\",
+        "  --git \\",
+        "  https://github.com/BaDaaS/baldssl \\",
+        "  baldssl"
+      ]
     },
     {
       "id": "usage",
       "section": "usage",
-      "command": "baldssl x509 -in cert.crt -noout -text"
+      "lines": ["baldssl x509 -in cert.crt \\", "  -noout -text"]
     },
     {
       "id": "compat-4",
       "section": "compatibility",
-      "command": "BALDSSL_OPENSSL_COMPAT=4 baldssl x509 -in cert.crt -noout -text"
+      "lines": [
+        "BALDSSL_OPENSSL_COMPAT=4 \\",
+        "  baldssl x509 -in cert.crt \\",
+        "  -noout -text"
+      ]
     }
   ]
 }
