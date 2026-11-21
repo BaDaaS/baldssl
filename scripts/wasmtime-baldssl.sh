@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-WASM=${BALDSSL_WASM:-$ROOT/target/wasm32-wasip2/release/baldssl.wasm}
+WASM=${BALDSSL_WASM:-$ROOT/target/wasm32-wasip1/release/baldssl.wasm}
 
 # The whole host filesystem is visible at the same paths, as for a native
 # process; the compatibility profile is the one environment variable read.

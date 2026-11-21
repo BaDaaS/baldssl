@@ -80,13 +80,13 @@ ARMv7 and ARMv6 (Raspberry Pi with a 32-bit OS), riscv64, and natively for
 ### WebAssembly
 
 The libraries build for `wasm32-unknown-unknown` (the browser target), and the
-whole CLI builds for `wasm32-wasip2`. CI runs the library tests as WebAssembly
+whole CLI builds for `wasm32-wasip1`. CI runs the library tests as WebAssembly
 and runs the golden-file suite against the WebAssembly CLI through `wasmtime`,
 so the WebAssembly build is checked against OpenSSL's output like the native
 one:
 
 ```sh
-make build-wasm   # target/wasm32-wasip2/release/baldssl.wasm
+make build-wasm   # target/wasm32-wasip1/release/baldssl.wasm
 make test-wasm    # needs wasmtime
 scripts/wasmtime-baldssl.sh x509 -in cert.crt -noout -text
 ```
