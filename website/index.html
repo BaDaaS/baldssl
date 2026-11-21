@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>baldssl: the openssl command line, reimplemented in Rust</title>
+    <meta
+      name="description"
+      content="baldssl reimplements the openssl command-line tool in Rust, with no third-party dependencies and byte-for-byte compatible output with OpenSSL 3.5 and 4.1."
+    />
+    <link rel="icon" type="image/svg+xml" href="./res/baldssl-favicon.svg" />
+    <link rel="stylesheet" href="./src/app.css" />
+  </head>
+  <body class="bg-background font-sans text-foreground antialiased">
+    <header class="w-full border-b border-border">
+      <div
+        class="mx-auto flex max-w-7xl items-center justify-between px-6 py-4 lg:px-8"
+      >
+        <a
+          href="./"
+          class="flex items-center gap-2 rounded-md focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+        >
+          <img src="./res/baldssl-bouncer.svg" alt="" class="h-8 w-auto" />
+          <span class="font-mono text-lg font-semibold">baldssl</span>
+        </a>
+        <nav class="flex items-center gap-6 text-sm font-medium">
+          <a
+            href="#compatibility"
+            class="rounded-md text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+            >Compatibility</a
+          >
+          <a
+            href="#commands"
+            class="rounded-md text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+            >Commands</a
+          >
+          <a
+            href="https://github.com/BaDaaS/baldssl"
+            class="rounded-md text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+            >GitHub</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <main class="w-full">
+      <section class="w-full">
+        <div class="mx-auto max-w-7xl px-6 py-20 text-center lg:px-8 lg:py-28">
+          <h1 class="sr-only">baldssl</h1>
+          <img
+            src="./res/baldssl-lockup-light.svg"
+            alt="baldssl"
+            class="mx-auto h-24 w-auto sm:h-32 dark:hidden"
+          />
+          <img
+            src="./res/baldssl-lockup-dark.svg"
+            alt="baldssl"
+            class="mx-auto hidden h-24 w-auto sm:h-32 dark:block"
+          />
+          <p class="mx-auto mt-8 max-w-2xl text-lg text-muted">
+            A reimplementation of the <code class="font-mono">openssl</code>
+            command-line tool in Rust, with no third-party dependencies. The
+            goal is the same arguments and the same output bytes as OpenSSL,
+            starting with what is needed to run a certificate authority.
+          </p>
+          <div class="mt-10 flex flex-wrap justify-center gap-4">
+            <a
+              href="https://github.com/BaDaaS/baldssl"
+              class="rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary transition-colors duration-200 hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:outline-none"
+              >Source on GitHub</a
+            >
+            <a
+              href="#commands"
+              class="rounded-lg border border-border bg-surface px-5 py-2.5 text-sm font-semibold transition-colors duration-200 hover:bg-muted-subtle focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:outline-none"
+              >Command status</a
+            >
+          </div>
+          <pre
+            class="mx-auto mt-12 max-w-2xl overflow-x-auto rounded-lg border border-border bg-surface p-4 text-left font-mono text-sm"
+          ><code>cargo install --git https://github.com/BaDaaS/baldssl baldssl
+baldssl x509 -in cert.crt -noout -text</code></pre>
+        </div>
+      </section>
+
+      <section class="w-full border-t border-border bg-surface">
+        <div class="mx-auto max-w-7xl px-6 py-16 lg:px-8">
+          <h2 class="text-2xl font-semibold">What it is</h2>
+          <div class="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            <div class="rounded-lg border border-border p-6">
+              <h3 class="font-semibold">No third-party dependencies</h3>
+              <p class="mt-2 text-sm text-muted">
+                Base64, PEM, DER, SHA-1 and SHA-2 and argument parsing are
+                implemented in the repository. CI fails if any external crate
+                reaches the build.
+              </p>
+            </div>
+            <div class="rounded-lg border border-border p-6">
+              <h3 class="font-semibold">OpenSSL-exact output</h3>
+              <p class="mt-2 text-sm text-muted">
+                Output matches OpenSSL 3.5 and 4.1 byte for byte. Inputs baldssl
+                cannot yet print exactly are rejected as unsupported.
+              </p>
+            </div>
+            <div class="rounded-lg border border-border p-6">
+              <h3 class="font-semibold">Tested against OpenSSL</h3>
+              <p class="mt-2 text-sm text-muted">
+                Golden files, live differential tests against OpenSSL builds in
+                both directions, property tests, fuzzing and mutation testing.
+              </p>
+            </div>
+            <div class="rounded-lg border border-border p-6">
+              <h3 class="font-semibold">Portable</h3>
+              <p class="mt-2 text-sm text-muted">
+                Tested on Linux, macOS and Windows on x86_64 and aarch64, and on
+                32-bit ARM (Raspberry Pi), riscv64 and 32-bit x86, and as
+                WebAssembly.
+              </p>
+            </div>
+          </div>
+          <p class="mt-8 max-w-prose text-sm text-muted">
+            Formal verification is planned: the parsers are written in the Rust
+            subset that Aeneas extracts to Lean 4.
+          </p>
+        </div>
+      </section>
+
+      <section id="compatibility" class="w-full border-t border-border">
+        <div class="mx-auto max-w-7xl px-6 py-16 lg:px-8">
+          <h2 class="text-2xl font-semibold">Compatibility</h2>
+          <div class="mt-6 grid gap-10 lg:grid-cols-2">
+            <div class="max-w-prose text-sm text-muted">
+              <p>
+                OpenSSL 3.x and 4.x print
+                <code class="font-mono text-foreground">-text</code>
+                differently (hex dump widths, the RSA modulus sign byte, the EC
+                key header). baldssl reproduces either; the profile is selected
+                with an environment variable, so scripts that call
+                <code class="font-mono text-foreground">openssl</code> need no
+                new flags.
+              </p>
+              <pre
+                class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface p-4 font-mono text-sm text-foreground"
+              ><code>baldssl x509 -in cert.crt -text            # OpenSSL 3.x (default)
+BALDSSL_OPENSSL_COMPAT=4 baldssl x509 ...  # OpenSSL 4.x</code></pre>
+            </div>
+            <div class="max-w-prose text-sm text-muted">
+              <h3 class="font-semibold text-foreground">
+                Intentional differences
+              </h3>
+              <ul class="mt-3 list-disc space-y-2 pl-5">
+                <li>
+                  <code class="font-mono text-foreground">-fingerprint</code>
+                  defaults to SHA-256 (OpenSSL: SHA-1).
+                </li>
+                <li>A missing input file exits with 2 (OpenSSL: 1).</li>
+                <li>
+                  Serial numbers follow the LP64 layout of Linux and macOS.
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="commands" class="w-full border-t border-border bg-surface">
+        <div class="mx-auto max-w-7xl px-6 py-16 lg:px-8">
+          <h2 class="text-2xl font-semibold">Commands</h2>
+          <p class="mt-3 max-w-prose text-sm text-muted">
+            Every command of OpenSSL 3.5 and 4.1, with the description from
+            OpenSSL's manual pages, and its status in baldssl.
+            <!-- commands:summary -->
+          </p>
+
+          <h3 class="mt-10 font-semibold">
+            Standard commands (<!-- commands:standard-count -->)
+          </h3>
+          <div class="mt-4 overflow-x-auto">
+            <table class="w-full min-w-3xl text-left">
+              <caption class="sr-only">
+                OpenSSL standard commands and their status in baldssl
+              </caption>
+              <thead>
+                <tr class="text-xs tracking-wide text-muted uppercase">
+                  <th scope="col" class="pr-4 pb-2 font-medium">Command</th>
+                  <th scope="col" class="pr-4 pb-2 font-medium">Description</th>
+                  <th scope="col" class="pr-4 pb-2 font-medium">OpenSSL</th>
+                  <th scope="col" class="pr-4 pb-2 font-medium">baldssl</th>
+                  <th scope="col" class="pb-2 font-medium">Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- commands:standard -->
+              </tbody>
+            </table>
+          </div>
+
+          <div class="mt-14 grid gap-10 lg:grid-cols-2">
+            <div>
+              <h3 class="font-semibold">Message digest commands</h3>
+              <table class="mt-4 w-full text-left">
+                <caption class="sr-only">
+                  OpenSSL digest shortcut commands and their status in baldssl
+                </caption>
+                <thead>
+                  <tr class="text-xs tracking-wide text-muted uppercase">
+                    <th scope="col" class="pr-4 pb-2 font-medium">Command</th>
+                    <th scope="col" class="pr-4 pb-2 font-medium">
+                      Description
+                    </th>
+                    <th scope="col" class="pb-2 font-medium">baldssl</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <!-- commands:digest -->
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h3 class="font-semibold">Cipher commands</h3>
+              <table class="mt-4 w-full text-left">
+                <caption class="sr-only">
+                  OpenSSL cipher shortcut commands and their status in baldssl
+                </caption>
+                <thead>
+                  <tr class="text-xs tracking-wide text-muted uppercase">
+                    <th scope="col" class="pr-4 pb-2 font-medium">Command</th>
+                    <th scope="col" class="pr-4 pb-2 font-medium">
+                      Description
+                    </th>
+                    <th scope="col" class="pb-2 font-medium">baldssl</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <!-- commands:cipher -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="w-full border-t border-border">
+      <div
+        class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-8 text-sm text-muted lg:px-8"
+      >
+        <p>baldssl is MIT licensed. Copyright 2026 BaDaaS.</p>
+        <a
+          href="https://github.com/BaDaaS/baldssl"
+          class="rounded-md transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+          >github.com/BaDaaS/baldssl</a
+        >
+      </div>
+    </footer>
+  </body>
+</html>

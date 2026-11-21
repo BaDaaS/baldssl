@@ -2,6 +2,7 @@
 # - cargo: the workspace (only `proptest`, a dev-dependency, since the
 #   shipped crates have no third-party dependencies) and fuzz/ (its own
 #   lockfile, `libfuzzer-sys`).
+# - npm: the website build tools (vite, tailwindcss).
 # - github-actions: the SHA-pinned actions in the workflows and in the
 #   composite action; Dependabot updates the SHA and its `# vX.Y.Z` comment
 #   together.
@@ -18,6 +19,12 @@ updates:
       interval: weekly
     commit-message:
       prefix: deps
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: website
   - package-ecosystem: github-actions
     directories:
       - /

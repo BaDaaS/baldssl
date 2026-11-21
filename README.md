@@ -77,6 +77,35 @@ aarch64, with Rust stable, beta and nightly. Cross jobs run it under QEMU for
 ARMv7 and ARMv6 (Raspberry Pi with a 32-bit OS), riscv64, and natively for
 32-bit x86 on Linux and Windows.
 
+### WebAssembly
+
+The libraries build for `wasm32-unknown-unknown` (the browser target), and the
+whole CLI builds for `wasm32-wasip2`. CI runs the library tests as WebAssembly
+and runs the golden-file suite against the WebAssembly CLI through `wasmtime`,
+so the WebAssembly build is checked against OpenSSL's output like the native
+one:
+
+```sh
+make build-wasm   # target/wasm32-wasip2/release/baldssl.wasm
+make test-wasm    # needs wasmtime
+scripts/wasmtime-baldssl.sh x509 -in cert.crt -noout -text
+```
+
+## website
+
+The website (`website/`, plain HTML and Tailwind CSS, built with Vite) is
+published on GitHub Pages at <https://badaas.be/baldssl/>. It lists every
+OpenSSL command with its status in baldssl, generated from
+`website/src/commands.json`:
+
+```sh
+make website-install website-build   # website/dist
+make website-commands OPENSSL_3=... OPENSSL_4=...   # refresh the table
+```
+
+A test (`crates/baldssl/tests/commands.rs`) fails if the table marks a command
+as implemented that the binary does not dispatch, or the reverse.
+
 ## layout
 
 | Crate            | Contents                                                      |

@@ -50,7 +50,15 @@ Every `unsupported` error baldssl reports corresponds to an entry here.
 ## compatibility
 
 - [ ] Decide on OpenSSL 3.0, 3.6 and 4.0 (CI runs them as informational).
+      OpenSSL 3.0 differs only in names: `CN = x` (spaces around `=`) where 3.5
+      and 4.1 print `CN=x`; a third profile would cover it.
 - [ ] Windows `long` (LLP64) serial-number layout as an option.
+
+## WebAssembly and the website
+
+- [ ] Run the CLI in the browser on the website (the libraries already build for
+      `wasm32-unknown-unknown`): an in-memory entry point taking the arguments
+      and input files, returning stdout, stderr and the exit code.
 
 ## verification (Lean 4)
 

@@ -4,3 +4,7 @@ proofs/.lake/
 tests/fixtures/
 *.lock
 CHANGELOG.md
+website/dist/
+website/node_modules/
+website/package-lock.json
+website/src/commands.json

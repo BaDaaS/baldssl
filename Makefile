@@ -29,6 +29,20 @@ build-release: ## Build in release mode
 check: ## Check for compilation errors
 	cargo check --workspace --all-targets
 
+.PHONY: build-wasm
+build-wasm: ## Build the libraries (browser) and the CLI (WASI) for WebAssembly
+	cargo build --target wasm32-unknown-unknown \
+		-p baldssl-core -p baldssl-crypto -p baldssl-x509
+	cargo build --release --target wasm32-wasip2 -p baldssl
+
+.PHONY: test-wasm
+test-wasm: build-wasm ## Run the library tests and the golden suite as WebAssembly (needs wasmtime)
+	CARGO_TARGET_WASM32_WASIP2_RUNNER="wasmtime run --dir /" \
+		cargo test --target wasm32-wasip2 \
+		-p baldssl-core -p baldssl-crypto -p baldssl-x509
+	BALDSSL_BIN=$(CURDIR)/scripts/wasmtime-baldssl.sh \
+		cargo test -p baldssl --test golden --test commands
+
 .PHONY: check-aeneas
 check-aeneas: ## Check the Lean-extraction subset builds with --cfg aeneas
 	RUSTFLAGS="--cfg aeneas" cargo check -p baldssl-core -p baldssl-crypto \
@@ -120,6 +134,25 @@ objects: ## Regenerate the OID name table from OPENSSL_INCLUDE/obj_mac.h
 	scripts/gen-objects.py $(OPENSSL_INCLUDE)/openssl/obj_mac.h \
 		"$$($(OPENSSL_3) version | awk '{print $$2}')" \
 		> crates/baldssl-x509/src/objects_table.rs
+
+# --- Website ----------------------------------------------------------------
+
+.PHONY: website-install
+website-install: ## Install the website build tools (npm ci)
+	cd website && npm ci
+
+.PHONY: website-dev
+website-dev: ## Serve the website locally with live reload
+	cd website && npx vite
+
+.PHONY: website-build
+website-build: ## Build the static website into website/dist
+	cd website && npx vite build
+
+.PHONY: website-commands
+website-commands: ## Regenerate website/src/commands.json from OpenSSL
+	scripts/gen-commands.py $(OPENSSL_3) $(OPENSSL_4) \
+		website/src/commands.json
 
 # --- Lean 4 -----------------------------------------------------------------
 
