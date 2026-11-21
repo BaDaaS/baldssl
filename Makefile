@@ -1,0 +1,144 @@
+NIGHTLY_RUST_VERSION ?= nightly
+TAPLO_CLI_VERSION ?= 0.9.3
+# The OpenSSL binaries the golden files and the interop tests use.
+OPENSSL_3 ?= openssl
+OPENSSL_4 ?= openssl
+OPENSSL ?= openssl
+BALDSSL ?= target/debug/baldssl
+FUZZ_TARGET ?= x509
+FUZZ_SECONDS ?= 60
+SHELL_SCRIPTS := $(wildcard scripts/*.sh)
+
+.PHONY: help
+help: ## Ask for help!
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+		awk 'BEGIN {FS = ":.*?## "}; \
+		{printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# --- Build -------------------------------------------------------------------
+
+.PHONY: build
+build: ## Build in debug mode
+	cargo build --workspace
+
+.PHONY: build-release
+build-release: ## Build in release mode
+	cargo build --workspace --release
+
+.PHONY: check
+check: ## Check for compilation errors
+	cargo check --workspace --all-targets
+
+.PHONY: check-aeneas
+check-aeneas: ## Check the Lean-extraction subset builds with --cfg aeneas
+	RUSTFLAGS="--cfg aeneas" cargo check -p baldssl-core -p baldssl-crypto \
+		--target-dir target/aeneas
+
+.PHONY: doc
+doc: ## Build the API documentation, warnings as errors
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+# --- Formatting and lints ----------------------------------------------------
+
+.PHONY: format
+format: format-md ## Format Rust (nightly rustfmt), TOML (taplo), markdown
+	cargo +$(NIGHTLY_RUST_VERSION) fmt --all
+	taplo format
+
+.PHONY: check-format
+check-format: check-md ## Check Rust, TOML and markdown formatting
+	cargo +$(NIGHTLY_RUST_VERSION) fmt --all -- --check
+	taplo format --check
+
+.PHONY: format-md
+format-md: ## Format markdown with prettier
+	npx --yes prettier@3 --write "**/*.md"
+
+.PHONY: check-md
+check-md: ## Check markdown formatting with prettier
+	npx --yes prettier@3 --check "**/*.md"
+
+.PHONY: lint
+lint: ## Run clippy, warnings as errors
+	cargo clippy --workspace --all-targets -- -D warnings
+
+.PHONY: lint-beta
+lint-beta: ## Run clippy with the beta toolchain
+	cargo +beta clippy --workspace --all-targets -- -D warnings
+
+.PHONY: lint-shell
+lint-shell: ## Lint shell scripts with shellcheck
+	shellcheck $(SHELL_SCRIPTS)
+
+.PHONY: check-no-deps
+check-no-deps: ## Fail if any third-party crate is a normal/build dependency
+	@external=$$(cargo tree --workspace -e normal,build --prefix none \
+		--format '{p}' | sort -u | grep -v '^$$' | \
+		grep -vE '\((/|[A-Za-z]:)' || true); \
+	if [ -n "$$external" ]; then \
+		echo "third-party dependencies are not allowed:"; \
+		echo "$$external"; exit 1; \
+	fi; \
+	echo "no third-party dependencies"
+
+# --- Tests -------------------------------------------------------------------
+
+.PHONY: test
+test: ## Run all tests (unit, property, golden)
+	cargo test --workspace
+
+.PHONY: test-release
+test-release: ## Run all tests in release mode
+	cargo test --workspace --release
+
+.PHONY: coverage
+coverage: ## Coverage report (Cobertura XML + HTML) in target/coverage
+	cargo tarpaulin --workspace --engine llvm --out Xml --out Html \
+		--output-dir target/coverage
+
+.PHONY: mutants
+mutants: ## Mutation testing (slow); survivors are missing tests
+	cargo mutants --workspace
+
+.PHONY: fuzz
+fuzz: ## Fuzz a target: make fuzz FUZZ_TARGET=x509 FUZZ_SECONDS=60
+	mkdir -p fuzz/corpus/$(FUZZ_TARGET)
+	cd fuzz && cargo +$(NIGHTLY_RUST_VERSION) fuzz run $(FUZZ_TARGET) \
+		corpus/$(FUZZ_TARGET) seeds/$(FUZZ_TARGET) \
+		-- -max_total_time=$(FUZZ_SECONDS)
+
+.PHONY: interop
+interop: build ## Diff baldssl against $(OPENSSL), both directions
+	scripts/interop.sh $(OPENSSL) $(BALDSSL)
+
+.PHONY: golden
+golden: ## Regenerate golden files from $(OPENSSL_3) and $(OPENSSL_4)
+	scripts/gen-golden.sh $(OPENSSL_3) $(OPENSSL_4)
+
+.PHONY: objects
+objects: ## Regenerate the OID name table from OPENSSL_INCLUDE/obj_mac.h
+	scripts/gen-objects.py $(OPENSSL_INCLUDE)/openssl/obj_mac.h \
+		"$$($(OPENSSL_3) version | awk '{print $$2}')" \
+		> crates/baldssl-x509/src/objects_table.rs
+
+# --- Lean 4 -----------------------------------------------------------------
+
+.PHONY: lean
+lean: ## Build the Lean 4 skeleton in proofs/ (Aeneas library, Mathlib cache)
+	cd proofs && lake exe cache get && lake build
+
+# --- Aggregate ---------------------------------------------------------------
+
+.PHONY: ci
+ci: check-format lint test doc check-no-deps check-aeneas lint-shell ## Run the CI checks locally
+
+.PHONY: clean
+clean: ## Remove build artifacts
+	cargo clean
+
+.PHONY: setup
+setup: ## Install the development tools
+	rustup toolchain install $(NIGHTLY_RUST_VERSION) --component rustfmt
+	rustup toolchain install beta --component clippy
+	cargo install taplo-cli --version $(TAPLO_CLI_VERSION) --locked
+	cargo install cargo-tarpaulin cargo-mutants cargo-fuzz --locked

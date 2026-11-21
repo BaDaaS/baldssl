@@ -1,0 +1,258 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  # Clippy and the full test suite (unit, property, golden files) on every
+  # native platform, under the pinned stable, beta and nightly.
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.toolchain == 'nightly' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest # Linux x86_64
+          - ubuntu-24.04-arm # Linux aarch64 (Raspberry Pi 3/4/5, 64-bit OS)
+          - macos-latest # macOS aarch64
+          - macos-15-intel # macOS x86_64
+          - windows-latest # Windows x86_64
+          - windows-11-arm # Windows aarch64
+        toolchain: ["1.100.0", beta, nightly]
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal \
+            --component clippy
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Lint
+        shell: bash
+        run: make lint
+      - name: Test
+        shell: bash
+        run: make test
+
+  # 32-bit and other architectures: cross-compiled, tests run under QEMU
+  # (Linux) or natively (32-bit x86).
+  cross:
+    name: cross (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Raspberry Pi 2/3/4 with a 32-bit OS (ARMv7).
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            apt: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+            linker: arm-linux-gnueabihf-gcc
+            sysroot: /usr/arm-linux-gnueabihf
+          # Raspberry Pi Zero/1 (ARMv6). Linked against Ubuntu's armhf libc,
+          # so this checks code generation and the test suite, not
+          # Raspberry Pi OS's ARMv6 userland.
+          - target: arm-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            apt: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+            linker: arm-linux-gnueabihf-gcc
+            sysroot: /usr/arm-linux-gnueabihf
+          - target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-latest
+            apt: gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
+            linker: riscv64-linux-gnu-gcc
+            sysroot: /usr/riscv64-linux-gnu
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            apt: gcc-multilib
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+    env:
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install Rust
+        shell: bash
+        run: rustup target add "$CARGO_BUILD_TARGET"
+      - name: Install cross toolchain and QEMU
+        if: matrix.apt
+        env:
+          APT: ${{ matrix.apt }}
+          LINKER: ${{ matrix.linker }}
+          SYSROOT: ${{ matrix.sysroot }}
+        run: |
+          sudo apt-get update
+          # shellcheck disable=SC2086 # APT is a package list
+          sudo apt-get install -y --no-install-recommends $APT
+          if [ -n "$LINKER" ]; then
+            sudo apt-get install -y --no-install-recommends qemu-user-static \
+              binfmt-support
+            var=$(echo "$CARGO_BUILD_TARGET" | tr 'a-z-' 'A-Z_')
+            echo "CARGO_TARGET_${var}_LINKER=$LINKER" >> "$GITHUB_ENV"
+            # binfmt_misc runs foreign binaries through QEMU, including the
+            # baldssl binary the golden tests spawn; QEMU_LD_PREFIX points
+            # it at the target's dynamic loader and libc.
+            echo "QEMU_LD_PREFIX=$SYSROOT" >> "$GITHUB_ENV"
+          fi
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Test
+        shell: bash
+        run: make test
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install nightly rustfmt
+        run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
+        with:
+          tool: taplo-cli@0.9.3
+      - run: make check-format
+
+  # Zero-dependency policy, docs, the `--cfg aeneas` build, shell scripts.
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - run: make check-no-deps
+      - run: make doc
+      - run: make check-aeneas
+      - run: make lint-shell
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
+        with:
+          tool: cargo-tarpaulin
+      - run: make coverage
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: target/coverage/
+
+  # Differential tests against real OpenSSL builds, both directions (see
+  # scripts/interop.sh). 3.5 and 4.1 are the supported lines and must pass;
+  # the others are informational, to see drift before supporting them.
+  interop:
+    name: interop (OpenSSL ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 3.5.9
+            sha256: 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
+            required: true
+          - version: 4.1.0
+            sha256: 50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
+            required: true
+          - version: 3.0.22
+            sha256: 67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
+            required: false
+          - version: 3.6.5
+            sha256: a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98
+            required: false
+          - version: 4.0.3
+            sha256: 325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9
+            required: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - id: openssl
+        uses: ./.github/actions/build-openssl
+        with:
+          version: ${{ matrix.version }}
+          sha256: ${{ matrix.sha256 }}
+      - name: Interop
+        env:
+          OPENSSL: ${{ steps.openssl.outputs.openssl }}
+        run: make interop OPENSSL="$OPENSSL"
+
+  # The committed golden files must be exactly what the supported OpenSSL
+  # releases print today.
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: v3
+        uses: ./.github/actions/build-openssl
+        with:
+          version: 3.5.9
+          sha256: 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
+      - id: v4
+        uses: ./.github/actions/build-openssl
+        with:
+          version: 4.1.0
+          sha256: 50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
+      - name: Regenerate and compare
+        env:
+          OPENSSL_3: ${{ steps.v3.outputs.openssl }}
+          OPENSSL_4: ${{ steps.v4.outputs.openssl }}
+        run: |
+          make golden OPENSSL_3="$OPENSSL_3" OPENSSL_4="$OPENSSL_4"
+          git diff --exit-code -- tests/fixtures/golden
+
+  # The Lean 4 skeleton must keep building against the pinned Aeneas.
+  lean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: leanprover/lean-action@ba3fdfe5c4476c925da13bf11a005ddb47e47aee # v1.7.1
+        with:
+          lake-package-directory: proofs
+          auto-config: false
+          use-mathlib-cache: false
+      - run: make lean

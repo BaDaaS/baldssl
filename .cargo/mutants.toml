@@ -1,0 +1,4 @@
+# cargo-mutants: generated code and pure re-exports are not worth mutating.
+exclude_globs = ["crates/baldssl-x509/src/objects_table.rs"]
+timeout_multiplier = 3.0
+test_workspace = true

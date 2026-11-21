@@ -1,0 +1,25 @@
+name: Changelog
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-changelog-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download script
+        run: |
+          curl -sSfLO https://raw.githubusercontent.com/dannywillems/toolbox/a6ea0c82a7644206d464052d6210ddc8ee64f9d5/changelog/check-commit.sh
+          chmod +x check-commit.sh
+      - name: Check CHANGELOG.md hygiene
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./check-commit.sh "$BASE_SHA"

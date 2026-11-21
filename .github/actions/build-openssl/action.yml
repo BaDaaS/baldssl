@@ -1,0 +1,54 @@
+name: Build OpenSSL
+description: >
+  Builds a pinned OpenSSL release from source (checksum-verified, cached) and
+  exposes its binary as the `openssl` output.
+inputs:
+  version:
+    description: OpenSSL version, e.g. 3.5.9
+    required: true
+  sha256:
+    description: SHA-256 of openssl-<version>.tar.gz
+    required: true
+outputs:
+  openssl:
+    description: Path to the built openssl binary
+    value: ${{ steps.paths.outputs.openssl }}
+runs:
+  using: composite
+  steps:
+    - id: paths
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        prefix="$HOME/openssl-$VERSION"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "openssl=$prefix/bin/openssl" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.paths.outputs.prefix }}
+        key: openssl-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.sha256 }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+        PREFIX: ${{ steps.paths.outputs.prefix }}
+      run: |
+        set -euo pipefail
+        tarball="openssl-$VERSION.tar.gz"
+        curl -sSfLO "https://github.com/openssl/openssl/releases/download/openssl-$VERSION/$tarball"
+        echo "$SHA256  $tarball" | sha256sum -c -
+        tar xzf "$tarball"
+        cd "openssl-$VERSION"
+        # The rpath lets several versions coexist in one job without
+        # LD_LIBRARY_PATH: each binary loads its own libcrypto.
+        ./Configure --prefix="$PREFIX" --openssldir="$PREFIX/ssl" \
+          --libdir=lib no-tests no-docs "-Wl,-rpath,$PREFIX/lib"
+        make -j"$(nproc)"
+        make install_sw
+    - shell: bash
+      env:
+        OPENSSL: ${{ steps.paths.outputs.openssl }}
+      run: '"$OPENSSL" version'
