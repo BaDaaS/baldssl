@@ -7,7 +7,9 @@
 //! cofactor is 1). A point is a zero of $f(x, y) = y^2 - x^3 + 3x - b$ with
 //! coordinates in $\mathbb{F}_p$, together with one point at infinity $O$,
 //! the identity, which no zero of $f$ represents. The parameters of each
-//! curve are defined once, in [`params`].
+//! curve, with its base and scalar fields, are defined once, in its own
+//! module: [`p256`], [`p384`], [`p521`]; [`params`] says what a curve is to
+//! the models.
 //!
 //! # Models
 //!
@@ -62,10 +64,16 @@ pub mod affine;
 pub mod jacobian;
 pub mod maps;
 pub mod mul;
+pub mod p256;
+pub mod p384;
+pub mod p521;
 pub mod params;
 pub mod projective;
 
-pub use params::{CurveParams, P256, P384, P521};
+pub use p256::P256;
+pub use p384::P384;
+pub use p521::P521;
+pub use params::CurveParams;
 
 #[cfg(test)]
 mod tests;

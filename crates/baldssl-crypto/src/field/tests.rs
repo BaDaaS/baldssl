@@ -15,9 +15,13 @@
 use proptest::prelude::*;
 
 use super::{Fp, Modulus};
-use crate::fields::{
-    Curve25519Base, Ed25519Scalar, P256Base, P256Scalar, P384Base, P384Scalar,
-    P521Base, P521Scalar,
+use crate::{
+    curves::{
+        p256::{P256Base, P256Scalar},
+        p384::{P384Base, P384Scalar},
+        p521::{P521Base, P521Scalar},
+    },
+    fields::{Curve25519Base, Ed25519Scalar},
 };
 
 /// A natural number, little-endian 64-bit limbs without leading zeros.
