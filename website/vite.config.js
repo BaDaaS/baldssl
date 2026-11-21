@@ -9,6 +9,9 @@ import { defineConfig } from 'vite';
 const commandsPath = fileURLToPath(
   new URL('./src/commands.json', import.meta.url),
 );
+const examplesPath = fileURLToPath(
+  new URL('./src/examples.json', import.meta.url),
+);
 
 const escapeHtml = s =>
   s
@@ -66,6 +69,60 @@ const shortcutRows = commands =>
     )
     .join('\n');
 
+// A command, verbatim, with a copy button (shown by src/copy.js). Every
+// command passed here comes from src/examples.json, which CI executes.
+const codeBlock = command => `<div class="relative">
+  <pre class="overflow-x-auto rounded-lg border border-border bg-background p-4 pr-20 font-mono text-sm text-foreground"><code>${escapeHtml(command)}</code></pre>
+  <button type="button" data-copy hidden class="absolute top-2 right-2 rounded-md border border-border bg-surface px-2 py-1 text-xs font-medium text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none">Copy</button>
+</div>`;
+
+const TASK_STATUS = {
+  supported: ['baldssl: supported', 'bg-success-subtle text-success'],
+  'not-yet': ['baldssl: not yet', 'bg-muted-subtle text-muted'],
+};
+
+const taskCard = ex => {
+  const [label, colors] = TASK_STATUS[ex.status];
+  return `<article class="flex flex-col rounded-lg border border-border bg-surface p-6">
+  <div class="flex items-start justify-between gap-4">
+    <h3 class="font-semibold">${escapeHtml(ex.title)}</h3>
+    <span class="inline-flex shrink-0 rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap ${colors}">${label}</span>
+  </div>
+  <p class="mt-2 text-sm text-muted">${inline(ex.explanation)}</p>
+  <div class="mt-4">${codeBlock(ex.command)}</div>
+</article>`;
+};
+
+function examples() {
+  return {
+    name: 'baldssl-examples',
+    configureServer(server) {
+      server.watcher.add(examplesPath);
+    },
+    transformIndexHtml(html) {
+      const list = JSON.parse(readFileSync(examplesPath, 'utf8')).examples;
+      let out = html.replace(
+        '<!-- tasks -->',
+        list
+          .filter(e => e.section === 'tasks')
+          .map(taskCard)
+          .join('\n'),
+      );
+      for (const ex of list) {
+        out = out.replaceAll(
+          `<!-- example:${ex.id} -->`,
+          codeBlock(ex.command),
+        );
+      }
+      const left = out.match(/<!-- (example:[\w-]+|tasks) -->/);
+      if (left) {
+        throw new Error(`unknown example placeholder ${left[0]}`);
+      }
+      return out;
+    },
+  };
+}
+
 function commandTables() {
   return {
     name: 'baldssl-command-tables',
@@ -94,5 +151,5 @@ function commandTables() {
 export default defineConfig({
   // Relative URLs: the site is served from /baldssl/ on GitHub Pages.
   base: './',
-  plugins: [tailwindcss(), commandTables()],
+  plugins: [tailwindcss(), commandTables(), examples()],
 });

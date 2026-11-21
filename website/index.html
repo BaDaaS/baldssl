@@ -30,6 +30,11 @@
             >Compatibility</a
           >
           <a
+            href="#tasks"
+            class="rounded-md text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
+            >Common tasks</a
+          >
+          <a
             href="#commands"
             class="rounded-md text-muted transition-colors duration-200 hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus focus-visible:outline-none"
             >Commands</a
@@ -75,10 +80,10 @@
               >Command status</a
             >
           </div>
-          <pre
-            class="mx-auto mt-12 max-w-2xl overflow-x-auto rounded-lg border border-border bg-surface p-4 text-left font-mono text-sm"
-          ><code>cargo install --git https://github.com/BaDaaS/baldssl baldssl
-baldssl x509 -in cert.crt -noout -text</code></pre>
+          <div class="mx-auto mt-12 max-w-2xl space-y-3 text-left">
+            <!-- example:install -->
+            <!-- example:usage -->
+          </div>
         </div>
       </section>
 
@@ -138,10 +143,10 @@ baldssl x509 -in cert.crt -noout -text</code></pre>
                 <code class="font-mono text-foreground">openssl</code> need no
                 new flags.
               </p>
-              <pre
-                class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface p-4 font-mono text-sm text-foreground"
-              ><code>baldssl x509 -in cert.crt -text            # OpenSSL 3.x (default)
-BALDSSL_OPENSSL_COMPAT=4 baldssl x509 ...  # OpenSSL 4.x</code></pre>
+              <p class="mt-4">OpenSSL 3.x layout (the default):</p>
+              <div class="mt-2"><!-- example:usage --></div>
+              <p class="mt-4">OpenSSL 4.x layout:</p>
+              <div class="mt-2"><!-- example:compat-4 --></div>
               <p class="mt-4">
                 Supported and checked against real OpenSSL builds in CI: OpenSSL
                 3.5.9 (profile 3) and 4.1.0 (profile 4).
@@ -184,6 +189,24 @@ BALDSSL_OPENSSL_COMPAT=4 baldssl x509 ...  # OpenSSL 4.x</code></pre>
                 error rather than printed differently from OpenSSL.
               </p>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tasks" class="w-full border-t border-border">
+        <div class="mx-auto max-w-7xl px-6 py-16 lg:px-8">
+          <h2 class="text-2xl font-semibold">Common tasks</h2>
+          <p class="mt-3 max-w-prose text-sm text-muted">
+            The OpenSSL commands most people need, with what each one does. Run
+            them in order in an empty directory: later tasks use the files
+            earlier ones create. Where baldssl supports a task, the same command
+            works with <code class="font-mono text-foreground">baldssl</code> in
+            place of <code class="font-mono text-foreground">openssl</code>,
+            with identical output. CI runs every command on this page against
+            OpenSSL 3.5 and 4.1, and the supported ones against baldssl too.
+          </p>
+          <div class="mt-10 grid gap-6 lg:grid-cols-2">
+            <!-- tasks -->
           </div>
         </div>
       </section>
@@ -278,5 +301,6 @@ BALDSSL_OPENSSL_COMPAT=4 baldssl x509 ...  # OpenSSL 4.x</code></pre>
         >
       </div>
     </footer>
+    <script type="module" src="./src/copy.js"></script>
   </body>
 </html>
