@@ -149,6 +149,11 @@ website-dev: ## Serve the website locally with live reload
 website-build: ## Build the static website into website/dist
 	cd website && npx vite build
 
+.PHONY: website-examples
+website-examples: build ## Run every command shown on the website ($(OPENSSL))
+	scripts/check-website-examples.py --openssl $(OPENSSL) \
+		--baldssl $(BALDSSL) $(if $(INSTALL),--install)
+
 .PHONY: website-commands
 website-commands: ## Regenerate website/src/commands.json from OpenSSL
 	scripts/gen-commands.py $(OPENSSL_3) $(OPENSSL_4) \

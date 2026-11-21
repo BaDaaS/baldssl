@@ -255,6 +255,39 @@ jobs:
           OPENSSL: ${{ steps.openssl.outputs.openssl }}
         run: make interop OPENSSL="$OPENSSL"
 
+  # Every command on the website, run as a reader would paste it: against
+  # OpenSSL, and against baldssl where the website says it is supported.
+  website-examples:
+    name: website examples (OpenSSL ${{ matrix.version }})
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 3.5.9
+            sha256: 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
+            install: "1"
+          - version: 4.1.0
+            sha256: 50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
+            install: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - id: openssl
+        uses: ./.github/actions/build-openssl
+        with:
+          version: ${{ matrix.version }}
+          sha256: ${{ matrix.sha256 }}
+      - name: Run the website's commands
+        env:
+          OPENSSL: ${{ steps.openssl.outputs.openssl }}
+          INSTALL: ${{ matrix.install }}
+        run: make website-examples OPENSSL="$OPENSSL" INSTALL="$INSTALL"
+
   # The committed golden files must be exactly what the supported OpenSSL
   # releases print today.
   golden:
