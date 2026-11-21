@@ -9,12 +9,19 @@ use std::{
     process::{Command, Output},
 };
 
+/// The binary under test: the native build, or whatever `BALDSSL_BIN` names
+/// (e.g. `scripts/wasmtime-baldssl.sh`, to run the WebAssembly build).
+fn binary() -> std::ffi::OsString {
+    std::env::var_os("BALDSSL_BIN")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_baldssl").into())
+}
+
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
 
 fn baldssl(args: &[&str], compat: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_baldssl"))
+    Command::new(binary())
         .args(args)
         .env("BALDSSL_OPENSSL_COMPAT", compat)
         .output()
