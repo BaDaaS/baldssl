@@ -3,6 +3,7 @@ resolver = "3"
 # fuzz/ needs nightly and its own lockfile; proofs/ is a Lean project.
 exclude = ["fuzz", "proofs"]
 members = [
+  "crates/baldssl",
   "crates/baldssl-core",
   "crates/baldssl-crypto",
   "crates/baldssl-x509",

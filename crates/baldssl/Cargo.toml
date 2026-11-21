@@ -1,0 +1,23 @@
+[package]
+name = "baldssl"
+description = "A Rust reimplementation of the OpenSSL command-line tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "baldssl"
+path = "src/main.rs"
+
+[dependencies]
+baldssl-core.workspace = true
+baldssl-crypto.workspace = true
+baldssl-x509.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
