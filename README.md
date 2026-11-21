@@ -16,16 +16,21 @@ top of the same library crates.
 
 ## status
 
-| Command                                                                                                                     | Status                          |
-| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `x509` (display: `-text -noout -subject -issuer -serial -startdate -enddate -dates -fingerprint -in -out -inform -outform`) | implemented                     |
-| `req`, `genpkey`, `ca`, `x509 -req`/signing, `verify`                                                                       | planned, see [TODO.md](TODO.md) |
+The status of every OpenSSL command in baldssl (supported, partial, planned, not
+started) is tracked on the website:
+[badaas.be/baldssl/#commands](https://badaas.be/baldssl/#commands). Today `x509`
+is implemented for display
+(`-text -noout -subject -issuer -serial -startdate -enddate -dates -fingerprint -in -out -inform -outform`);
+the roadmap is in [TODO.md](TODO.md).
 
 Public keys printed by `x509 -text`: P-256, P-384, P-521, Ed25519, and RSA
 (display only). Anything else is rejected with an `unsupported` error rather
 than printed differently from OpenSSL.
 
 ## OpenSSL compatibility profiles
+
+Also on the website:
+[badaas.be/baldssl/#compatibility](https://badaas.be/baldssl/#compatibility).
 
 OpenSSL 3.x and 4.x print `-text` differently (hex dumps of 15 vs 16 bytes per
 line, signatures of 18 vs 24, the RSA modulus sign byte, the EC key header).
