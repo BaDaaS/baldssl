@@ -2,6 +2,10 @@
   <img src="website/res/baldssl-lockup-light.svg" alt="baldssl" width="420">
 </p>
 
+<p align="center">
+  <a href="https://badaas.be/baldssl/">badaas.be/baldssl</a>
+</p>
+
 A reimplementation of the `openssl` command-line tool in Rust, with no
 third-party dependencies, intended to be verified incrementally in Lean 4.
 
