@@ -469,5 +469,83 @@ impl<M: Modulus<N>, const N: usize> fmt::Debug for Fp<M, N> {
     }
 }
 
+/// The operations the curve code uses, implemented by every [`Fp`]; lets a
+/// curve be generic over its fields whatever their limb count.
+pub trait PrimeField:
+    Copy
+    + Eq
+    + fmt::Debug
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Neg<Output = Self>
+{
+    /// Zero.
+    const ZERO: Self;
+    /// One.
+    const ONE: Self;
+    /// The number of bits of the modulus.
+    const BITS: u32;
+    /// The length of the canonical big-endian encoding.
+    const BYTES: usize;
+    /// See [`Fp::from_u64`].
+    fn from_u64(v: u64) -> Self;
+    /// See [`Fp::from_bytes_be`].
+    fn from_bytes_be(bytes: &[u8]) -> (Self, Choice);
+    /// See [`Fp::to_bytes_be`].
+    fn to_bytes_be(&self) -> Vec<u8>;
+    /// See [`Fp::double`].
+    #[must_use]
+    fn double(&self) -> Self;
+    /// See [`Fp::square`].
+    #[must_use]
+    fn square(&self) -> Self;
+    /// See [`Fp::invert`].
+    #[must_use]
+    fn invert(&self) -> Self;
+    /// See [`Fp::is_zero`].
+    fn is_zero(&self) -> Choice;
+    /// See [`Fp::ct_eq`].
+    fn ct_eq(&self, other: &Self) -> Choice;
+    /// See [`Fp::select`].
+    #[must_use]
+    fn select(a: &Self, b: &Self, choice: Choice) -> Self;
+}
+
+impl<M: Modulus<N>, const N: usize> PrimeField for Fp<M, N> {
+    const ZERO: Self = Fp::<M, N>::ZERO;
+    const ONE: Self = Fp::<M, N>::ONE;
+    const BITS: u32 = Fp::<M, N>::BITS;
+    const BYTES: usize = Fp::<M, N>::BYTES;
+
+    fn from_u64(v: u64) -> Self {
+        Fp::from_u64(v)
+    }
+    fn from_bytes_be(bytes: &[u8]) -> (Self, Choice) {
+        Fp::from_bytes_be(bytes)
+    }
+    fn to_bytes_be(&self) -> Vec<u8> {
+        Fp::to_bytes_be(self)
+    }
+    fn double(&self) -> Self {
+        Fp::double(self)
+    }
+    fn square(&self) -> Self {
+        Fp::square(self)
+    }
+    fn invert(&self) -> Self {
+        Fp::invert(self)
+    }
+    fn is_zero(&self) -> Choice {
+        Fp::is_zero(self)
+    }
+    fn ct_eq(&self, other: &Self) -> Choice {
+        Fp::ct_eq(self, other)
+    }
+    fn select(a: &Self, b: &Self, choice: Choice) -> Self {
+        Fp::select(a, b, choice)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests;

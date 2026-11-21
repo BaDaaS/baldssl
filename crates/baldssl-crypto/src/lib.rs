@@ -22,6 +22,7 @@
 #![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
 
 pub mod ct;
+pub mod curves;
 pub mod field;
 pub mod fields;
 pub mod os_rng;
