@@ -4,6 +4,7 @@ resolver = "3"
 exclude = ["fuzz", "proofs"]
 members = [
   "crates/baldssl-core",
+  "crates/baldssl-crypto",
 ]
 
 [workspace.package]
@@ -18,6 +19,7 @@ repository = "https://github.com/BaDaaS/baldssl"
 # audited and, incrementally, verified in Lean 4 through Aeneas.
 [workspace.dependencies]
 baldssl-core = { path = "crates/baldssl-core", version = "0.1.0" }
+baldssl-crypto = { path = "crates/baldssl-crypto", version = "0.1.0" }
 
 # Test-only. `make check-no-deps` asserts no third-party crate reaches a
 # normal or build dependency edge.
