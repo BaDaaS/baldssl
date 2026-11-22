@@ -1,4 +1,8 @@
-//! The maps between the models, as `From` impls:
+//! The maps between the models, as `From` impls: the arrows of the groupoid
+//! of models of a curve, each an isomorphism of groups (the tests check that
+//! they commute with the operations). The model traits' `from_affine` and
+//! `to_affine` are these maps.
+//!
 //!
 //! - affine to projective: $(x, y) \mapsto (x : y : 1)$, the identity to
 //!   $(0 : 1 : 0)$;
@@ -17,15 +21,15 @@
 
 use core::marker::PhantomData;
 
-use super::{
-    affine::Affine, jacobian::Jacobian, params::CurveParams,
-    projective::Projective,
+use super::{affine::Affine, jacobian::Jacobian, projective::Projective};
+use crate::{
+    algebra::{curve::ShortWeierstrass, field::Field, model::CurveModel},
+    ct::CtSelect,
 };
-use crate::field::PrimeField;
 
 impl<C> From<Affine<C>> for Projective<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     fn from(p: Affine<C>) -> Self {
         let point = Projective::new(p.x, p.y, C::Base::ONE);
@@ -35,7 +39,7 @@ where
 
 impl<C> From<Projective<C>> for Affine<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     fn from(p: Projective<C>) -> Self {
         let zinv = p.z.invert();
@@ -51,7 +55,7 @@ where
 
 impl<C> From<Affine<C>> for Jacobian<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     fn from(p: Affine<C>) -> Self {
         let point = Jacobian::<C>::new(p.x, p.y, C::Base::ONE);
@@ -66,7 +70,7 @@ where
 
 impl<C> From<Jacobian<C>> for Affine<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     fn from(p: Jacobian<C>) -> Self {
         let zinv = p.z.invert();
@@ -83,7 +87,7 @@ where
 
 impl<C> From<Jacobian<C>> for Projective<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     fn from(p: Jacobian<C>) -> Self {
         let point = Projective::new(p.x * p.z, p.y, p.z.square() * p.z);
@@ -93,7 +97,7 @@ where
 
 impl<C> From<Projective<C>> for Jacobian<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     fn from(p: Projective<C>) -> Self {
         Jacobian::new(p.x * p.z, p.y * p.z.square(), p.z)

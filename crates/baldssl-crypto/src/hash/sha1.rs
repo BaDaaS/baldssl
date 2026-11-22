@@ -1,10 +1,12 @@
-//! SHA-1, FIPS 180-4 sections 5.3.1 and 6.1.
+//! SHA-1, [FIPS 180-4][fips180] sections 5.3.1 and 6.1.
 //!
 //! SHA-1 is collision-broken (Stevens et al., "The first collision for full
 //! SHA-1", CRYPTO 2017; Leurent and Peyrin, "SHA-1 is a Shambles", USENIX
 //! Security 2020). It is provided only for fingerprints and for reading
 //! legacy signatures, never for producing new ones.
 //! Single-letter names (`a` to `h`, `w`, `t`) are the specification's.
+//!
+//! [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,

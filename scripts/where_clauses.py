@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Keeps trait bounds on type parameters in `where` clauses.
 
-The project's convention (review of #6): a type parameter is declared bare
+The project's convention: a type parameter is declared bare
 and refined in a `where` clause, never inline:
 
-    impl<C> Affine<C> where C: CurveParams { ... }     # yes
-    impl<C: CurveParams> Affine<C> { ... }             # no
+    impl<C> Affine<C> where C: ShortWeierstrass { ... }     # yes
+    impl<C: ShortWeierstrass> Affine<C> { ... }             # no
 
 Without --fix, lists every inline bound in the given Rust files and exits 1
 if there is one. With --fix, moves each to the item's `where` clause

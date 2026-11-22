@@ -1,4 +1,4 @@
-//! A minimal, strict DER reader (ITU-T X.690, section 10).
+//! A minimal, strict DER reader ([ITU-T X.690][x690], section 10).
 //!
 //! # Why strict
 //!
@@ -17,6 +17,8 @@
 //! self-delimiting (its header determines its length), so the set of encoded
 //! TLVs is a prefix code and every byte string has at most one factorisation
 //! into TLVs. [`Reader`] computes that factorisation one TLV at a time.
+//!
+//! [x690]: https://www.itu.int/rec/T-REC-X.690
 
 use core::fmt::Write as _;
 

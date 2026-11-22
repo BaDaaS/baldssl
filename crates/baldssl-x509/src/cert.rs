@@ -1,8 +1,10 @@
-//! The certificate structure (RFC 5280 section 4.1), decoded from DER.
+//! The certificate structure ([RFC 5280 section 4.1][rfc5280-4.1]), decoded from DER.
 //!
 //! The decoder borrows from the input: every field is a view into the DER
 //! bytes, so the original encoding is kept exactly (needed for fingerprints
 //! and for `-outform DER`, which must reproduce the input byte for byte).
+//!
+//! [rfc5280-4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
 
 use baldssl_core::{
     Error, Result,

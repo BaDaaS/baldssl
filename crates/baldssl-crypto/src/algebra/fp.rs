@@ -8,7 +8,7 @@
 //! $a \mapsto \tilde a$ is a ring isomorphism onto $\mathbb{F}_p$ for the
 //! product $\tilde a \star \tilde b = \tilde a \tilde b R^{-1} \bmod p$, which
 //! the Montgomery reduction computes without dividing by $p$ (Montgomery,
-//! *Modular multiplication without trial division*, Math. Comp. 44 (1985)).
+//! [*Modular multiplication without trial division*][montgomery], Math. Comp. 44 (1985)).
 //! Addition is unchanged, since the map is additive.
 //!
 //! Everything a modulus needs is derived at compile time from its value,
@@ -23,12 +23,14 @@
 //! [`Fp::invert`] is the public $p - 2$. Validity checks when decoding return
 //! a [`Choice`] next to the value.
 //!
-//! The moduli baldssl uses are in [`crate::fields`].
+//! The moduli baldssl uses are defined with their curves, in [`crate::instances`].
 //!
 //! Indexing is into arrays of length `N` by loop counters below `N`, and the
 //! arithmetic is on `u128` products of two `u64`s and explicit wrapping
 //! operations, which cannot overflow: hence the first two allowed lints. The
 //! one-letter names are the notation of the papers cited.
+//!
+//! [montgomery]: https://doi.org/10.1090/S0025-5718-1985-0777282-X
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
@@ -41,7 +43,8 @@ use core::{
     ops::{Add, Mul, Neg, Sub},
 };
 
-use crate::ct::{self, Choice};
+use super::field::{Field, PrimeField};
+use crate::ct::{self, Choice, CtEq, CtSelect};
 
 /// A prime modulus with `N` limbs.
 pub trait Modulus<const N: usize>: 'static {
@@ -224,15 +227,6 @@ impl<M, const N: usize> Fp<M, N>
 where
     M: Modulus<N>,
 {
-    /// Zero.
-    pub const ZERO: Self = Self::from_mont([0; N]);
-    /// One, which is $R \bmod p$ in Montgomery form.
-    pub const ONE: Self = Self::from_mont(Consts::<M, N>::R);
-    /// The number of bits of $p$.
-    pub const BITS: u32 = Consts::<M, N>::BITS;
-    /// The length of the canonical big-endian encoding, $\lceil b / 8 \rceil$.
-    pub const BYTES: usize = (Consts::<M, N>::BITS as usize).div_ceil(8);
-
     const fn from_mont(mont: [u64; N]) -> Self {
         Fp {
             mont,
@@ -248,9 +242,11 @@ where
 
     /// Montgomery multiplication $a b R^{-1} \bmod p$, by coarsely integrated
     /// operand scanning (Koc, Acar and Kaliski, *Analyzing and comparing
-    /// Montgomery multiplication algorithms*, IEEE Micro 16 (1996)). The
+    /// [Montgomery multiplication algorithms*][kak], IEEE Micro 16 (1996)). The
     /// running value stays below $2p < 2R$, so one conditional subtraction
     /// finishes.
+    ///
+    /// [kak]: https://doi.org/10.1109/40.502403
     fn mont_mul(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
         let p = &Consts::<M, N>::P;
         let mut t = [0u64; N];
@@ -286,67 +282,11 @@ where
         out
     }
 
-    /// The element $v \bmod p$.
-    #[must_use]
-    pub fn from_u64(v: u64) -> Self {
-        let mut x = [0u64; N];
-        x[0] = v;
-        // A value below 2^64 may still exceed a one-limb p; the product with
-        // R^2 reduces it fully either way.
-        Self::from_mont(Self::mont_mul(&x, &Consts::<M, N>::R2))
-    }
-
-    /// Decodes the canonical big-endian encoding of [`Self::BYTES`] bytes.
-    /// The [`Choice`] is false, and the element zero, when the length is
-    /// wrong or the value is not below $p$; the check does not branch on the
-    /// value.
-    #[must_use]
-    pub fn from_bytes_be(bytes: &[u8]) -> (Self, Choice) {
-        if bytes.len() != Self::BYTES {
-            return (Self::ZERO, Choice::FALSE);
-        }
-        let mut x = [0u64; N];
-        for (i, &byte) in bytes.iter().rev().enumerate() {
-            x[i / 8] |= u64::from(byte) << ((i % 8) * 8);
-        }
-        let (_, borrow) = sub_limbs(&x, &Consts::<M, N>::P);
-        let valid = Choice::from_bit(borrow);
-        let mont = Self::mont_mul(&x, &Consts::<M, N>::R2);
-        let mut out = [0u64; N];
-        for i in 0..N {
-            out[i] = ct::select(0, mont[i], valid);
-        }
-        (Self::from_mont(out), valid)
-    }
-
     /// The canonical value, little-endian limbs.
     fn canonical(&self) -> [u64; N] {
         let mut one = [0u64; N];
         one[0] = 1;
         Self::mont_mul(&self.mont, &one)
-    }
-
-    /// The canonical big-endian encoding, [`Self::BYTES`] bytes.
-    #[must_use]
-    pub fn to_bytes_be(&self) -> Vec<u8> {
-        let limbs = self.canonical();
-        let mut out = vec![0u8; Self::BYTES];
-        for (i, byte) in out.iter_mut().rev().enumerate() {
-            *byte = limbs[i / 8].to_le_bytes()[i % 8];
-        }
-        out
-    }
-
-    /// $2a$.
-    #[must_use]
-    pub fn double(&self) -> Self {
-        *self + *self
-    }
-
-    /// $a^2$.
-    #[must_use]
-    pub fn square(&self) -> Self {
-        *self * *self
     }
 
     /// $a^e$ for a public exponent, little-endian limbs. Constant time in
@@ -363,42 +303,6 @@ where
             }
         }
         acc
-    }
-
-    /// $a^{-1} = a^{p-2}$ (Fermat's little theorem), and $0$ for $a = 0$.
-    #[must_use]
-    pub fn invert(&self) -> Self {
-        self.pow_vartime(&Consts::<M, N>::P_MINUS_2)
-    }
-
-    /// Whether $a = 0$.
-    #[must_use]
-    pub fn is_zero(&self) -> Choice {
-        let mut acc = 0;
-        for &limb in &self.mont {
-            acc |= limb;
-        }
-        ct::is_zero(acc)
-    }
-
-    /// Whether $a = b$, without branching on the values.
-    #[must_use]
-    pub fn ct_eq(&self, other: &Self) -> Choice {
-        let mut acc = 0;
-        for i in 0..N {
-            acc |= self.mont[i] ^ other.mont[i];
-        }
-        ct::is_zero(acc)
-    }
-
-    /// `a` if `choice` is false, `b` if it is true.
-    #[must_use]
-    pub fn select(a: &Self, b: &Self, choice: Choice) -> Self {
-        let mut out = [0u64; N];
-        for i in 0..N {
-            out[i] = ct::select(a.mont[i], b.mont[i], choice);
-        }
-        Self::from_mont(out)
     }
 }
 
@@ -493,84 +397,106 @@ where
     }
 }
 
-/// The operations the curve code uses, implemented by every [`Fp`]; lets a
-/// curve be generic over its fields whatever their limb count.
-pub trait PrimeField:
-    Copy
-    + Eq
-    + fmt::Debug
-    + Add<Output = Self>
-    + Sub<Output = Self>
-    + Mul<Output = Self>
-    + Neg<Output = Self>
+/// $\mathbb{F}_p$ satisfies the field signature; the laws are checked by
+/// the property tests against a reference arithmetic on integers.
+impl<M, const N: usize> Field for Fp<M, N>
+where
+    M: Modulus<N>,
 {
-    /// Zero.
-    const ZERO: Self;
-    /// One.
-    const ONE: Self;
-    /// The number of bits of the modulus.
-    const BITS: u32;
-    /// The length of the canonical big-endian encoding.
-    const BYTES: usize;
-    /// See [`Fp::from_u64`].
-    fn from_u64(v: u64) -> Self;
-    /// See [`Fp::from_bytes_be`].
-    fn from_bytes_be(bytes: &[u8]) -> (Self, Choice);
-    /// See [`Fp::to_bytes_be`].
-    fn to_bytes_be(&self) -> Vec<u8>;
-    /// See [`Fp::double`].
-    #[must_use]
-    fn double(&self) -> Self;
-    /// See [`Fp::square`].
-    #[must_use]
-    fn square(&self) -> Self;
-    /// See [`Fp::invert`].
-    #[must_use]
-    fn invert(&self) -> Self;
-    /// See [`Fp::is_zero`].
-    fn is_zero(&self) -> Choice;
-    /// See [`Fp::ct_eq`].
-    fn ct_eq(&self, other: &Self) -> Choice;
-    /// See [`Fp::select`].
-    #[must_use]
-    fn select(a: &Self, b: &Self, choice: Choice) -> Self;
+    const ZERO: Self = Self::from_mont([0; N]);
+    /// One is $R \bmod p$ in Montgomery form.
+    const ONE: Self = Self::from_mont(Consts::<M, N>::R);
+
+    /// $a^{-1} = a^{p-2}$ (Fermat's little theorem), and $0$ for $a = 0$.
+    fn invert(&self) -> Self {
+        self.pow_vartime(&Consts::<M, N>::P_MINUS_2)
+    }
+
+    fn is_zero(&self) -> Choice {
+        let mut acc = 0;
+        for &limb in &self.mont {
+            acc |= limb;
+        }
+        ct::is_zero(acc)
+    }
 }
 
+impl<M, const N: usize> CtEq for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    fn ct_eq(&self, other: &Self) -> Choice {
+        let mut acc = 0;
+        for i in 0..N {
+            acc |= self.mont[i] ^ other.mont[i];
+        }
+        ct::is_zero(acc)
+    }
+}
+
+impl<M, const N: usize> CtSelect for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    fn select(a: &Self, b: &Self, choice: Choice) -> Self {
+        let mut out = [0u64; N];
+        for i in 0..N {
+            out[i] = ct::select(a.mont[i], b.mont[i], choice);
+        }
+        Self::from_mont(out)
+    }
+}
+
+/// The canonical representative of an element is its value in $[0, p)$.
 impl<M, const N: usize> PrimeField for Fp<M, N>
 where
     M: Modulus<N>,
 {
-    const ZERO: Self = Fp::<M, N>::ZERO;
-    const ONE: Self = Fp::<M, N>::ONE;
-    const BITS: u32 = Fp::<M, N>::BITS;
-    const BYTES: usize = Fp::<M, N>::BYTES;
+    const BITS: u32 = Consts::<M, N>::BITS;
+    const BYTES: usize = (Consts::<M, N>::BITS as usize).div_ceil(8);
 
     fn from_u64(v: u64) -> Self {
-        Fp::from_u64(v)
+        let mut x = [0u64; N];
+        x[0] = v;
+        // A value below 2^64 may still exceed a one-limb p; the product with
+        // R^2 reduces it fully either way.
+        Self::from_mont(Self::mont_mul(&x, &Consts::<M, N>::R2))
     }
+
     fn from_bytes_be(bytes: &[u8]) -> (Self, Choice) {
-        Fp::from_bytes_be(bytes)
+        if bytes.len() != <Self as PrimeField>::BYTES {
+            return (<Self as Field>::ZERO, Choice::FALSE);
+        }
+        let mut x = [0u64; N];
+        for (i, &byte) in bytes.iter().rev().enumerate() {
+            x[i / 8] |= u64::from(byte) << ((i % 8) * 8);
+        }
+        let (_, borrow) = sub_limbs(&x, &Consts::<M, N>::P);
+        let valid = Choice::from_bit(borrow);
+        let mont = Self::mont_mul(&x, &Consts::<M, N>::R2);
+        let mut out = [0u64; N];
+        for i in 0..N {
+            out[i] = ct::select(0, mont[i], valid);
+        }
+        (Self::from_mont(out), valid)
     }
+
     fn to_bytes_be(&self) -> Vec<u8> {
-        Fp::to_bytes_be(self)
+        let limbs = self.canonical();
+        let mut out = vec![0u8; <Self as PrimeField>::BYTES];
+        for (i, byte) in out.iter_mut().rev().enumerate() {
+            *byte = limbs[i / 8].to_le_bytes()[i % 8];
+        }
+        out
     }
-    fn double(&self) -> Self {
-        Fp::double(self)
-    }
-    fn square(&self) -> Self {
-        Fp::square(self)
-    }
-    fn invert(&self) -> Self {
-        Fp::invert(self)
-    }
-    fn is_zero(&self) -> Choice {
-        Fp::is_zero(self)
-    }
-    fn ct_eq(&self, other: &Self) -> Choice {
-        Fp::ct_eq(self, other)
-    }
-    fn select(a: &Self, b: &Self, choice: Choice) -> Self {
-        Fp::select(a, b, choice)
+
+    fn modulus_be() -> Vec<u8> {
+        let p = Consts::<M, N>::P;
+        let mut out = vec![0u8; <Self as PrimeField>::BYTES];
+        for (i, byte) in out.iter_mut().rev().enumerate() {
+            *byte = p[i / 8].to_le_bytes()[i % 8];
+        }
+        out
     }
 }
 

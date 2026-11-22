@@ -83,7 +83,9 @@ const MONTHS: [&str; 12] = [
     "Nov", "Dec",
 ];
 
-/// `ASN1_TIME_print` (RFC 822 style, the default `-dateopt`).
+/// `ASN1_TIME_print` ([RFC 822][rfc822] style, the default `-dateopt`).
+///
+/// [rfc822]: https://www.rfc-editor.org/rfc/rfc822
 #[must_use]
 pub fn time_rfc822(t: &Time) -> String {
     let month = MONTHS

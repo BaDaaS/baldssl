@@ -32,3 +32,4 @@ Thumbs.db
 
 # Private keys must never be committed (fixtures are certificates only).
 *.key
+__pycache__/

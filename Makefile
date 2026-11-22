@@ -90,6 +90,11 @@ check-where-clauses: ## Fail on trait bounds written inline, not in where
 	find crates fuzz/fuzz_targets -name '*.rs' -not -path '*/target/*' \
 		-print0 | xargs -0 python3 scripts/where_clauses.py
 
+.PHONY: check-urls
+check-urls: doc ## Check every URL in the sources and the rendered docs
+	python3 scripts/check_urls.py crates fuzz/fuzz_targets scripts README.md \
+		Makefile .github website/index.html website/src target/doc
+
 .PHONY: check-unsafe
 check-unsafe: ## Fail if unsafe code appears outside baldssl-crypto's os_rng
 	@found=$$(grep -rlE 'unsafe *(\{|fn|extern|impl)' crates fuzz \

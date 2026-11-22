@@ -1,5 +1,5 @@
 //! NIST P-256 (`prime256v1`, `secp256r1`): its base field, its scalar field
-//! (the group order $n$), and its parameters.
+//! (the group order $n$), and its parameters, as a [`ShortWeierstrass`] curve.
 //!
 //! The values are those of `openssl ecparam -name prime256v1 -param_enc
 //! explicit -noout -text` (OpenSSL 3.5.9), the source the output of baldssl is
@@ -10,8 +10,10 @@
 //! [FIPS 186-5]: https://csrc.nist.gov/pubs/fips/186-5/final
 //! [SEC 2]: https://www.secg.org/sec2-v2.pdf
 
-use super::params::CurveParams;
-use crate::field::{Fp, Modulus};
+use crate::algebra::{
+    curve::{Curve, ShortWeierstrass},
+    fp::{Fp, Modulus},
+};
 
 /// The base field of P-256, $p = 2^{256} - 2^{224} + 2^{192} + 2^{96} - 1$.
 pub enum P256Base {}
@@ -36,14 +38,21 @@ pub type ScalarP256 = Fp<P256Scalar, 4>;
 /// NIST P-256 (`prime256v1`, `secp256r1`).
 pub enum P256 {}
 
-impl CurveParams for P256 {
+/// Its group of points has prime order: the cofactor is 1 ([SEC 2]).
+///
+/// [SEC 2]: https://www.secg.org/sec2-v2.pdf
+impl Curve for P256 {
     type Base = FieldP256;
     type Scalar = ScalarP256;
     const NAME: &'static str = "prime256v1";
-    const B: &'static str =
-        "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b";
+    const COFACTOR: u64 = 1;
     const GX: &'static str =
         "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
     const GY: &'static str =
         "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+}
+
+impl ShortWeierstrass for P256 {
+    const B: &'static str =
+        "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b";
 }

@@ -123,7 +123,9 @@ impl<'a> Name<'a> {
 /// Escapes a value as `XN_FLAG_ONELINE` does (`do_buf` and `do_esc_char`
 /// with `ASN1_STRFLGS_RFC2253 | ASN1_STRFLGS_ESC_QUOTE`): `\\XX` for bytes
 /// above `0x7E` and control characters, and double quotes around a value
-/// that contains an RFC 2253 special character.
+/// that contains an [RFC 2253][rfc2253] special character.
+///
+/// [rfc2253]: https://www.rfc-editor.org/rfc/rfc2253
 fn oneline_value(value: &[u8], out: &mut Vec<u8>) -> Result<()> {
     if value.iter().any(|&b| b == b'"' || b == b'\\') {
         return Err(Error::unsupported(
