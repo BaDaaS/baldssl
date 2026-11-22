@@ -229,6 +229,7 @@ pub struct Sha512(Engine);
 
 impl Digest for Sha512 {
     const OUTPUT_LEN: usize = 64;
+    const BLOCK_LEN: usize = 128;
     fn new() -> Self {
         Sha512(Engine::new(H512))
     }
@@ -246,6 +247,7 @@ pub struct Sha384(Engine);
 
 impl Digest for Sha384 {
     const OUTPUT_LEN: usize = 48;
+    const BLOCK_LEN: usize = 128;
     fn new() -> Self {
         Sha384(Engine::new(H384))
     }

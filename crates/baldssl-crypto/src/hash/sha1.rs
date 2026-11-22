@@ -72,6 +72,7 @@ pub struct Sha1 {
 
 impl Digest for Sha1 {
     const OUTPUT_LEN: usize = 20;
+    const BLOCK_LEN: usize = 64;
 
     fn new() -> Self {
         Sha1 {

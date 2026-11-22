@@ -68,8 +68,8 @@
       "id": "hmac-drbg",
       "name": "HMAC and HMAC-DRBG",
       "purpose": "Message authentication (RFC 2104) and the deterministic random bit generator of SP 800-90A, for signature nonces and PBKDF2.",
-      "status": "planned",
-      "link": ""
+      "status": "implemented",
+      "link": "https://github.com/BaDaaS/baldssl/pull/94"
     },
     {
       "id": "ed25519-sign",
