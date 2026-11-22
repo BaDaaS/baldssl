@@ -14,23 +14,21 @@ use super::{
 };
 use crate::der::DerError;
 
-/// An octet no description here starts with (private, constructed, 30),
-/// appended to check that `read` returns exactly the bytes after the
-/// encoding.
-const JUNK: [u8; 2] = [0xde, 0x01];
-
-/// The partial-isomorphism law from `write`'s side: reading `write(v) ++ r`
-/// gives back `v` and `r`.
-fn round_trip<S>(syntax: &S, value: &S::Value)
+/// The partial-isomorphism law from `write`'s side: reading
+/// `write(v) ++ suffix` gives back `v` and `suffix`. For a tagged
+/// description any suffix will do (its encodings are a prefix code); for an
+/// optional field, the suffix must not start with the field's tag, the rule
+/// ASN.1 sets on whatever follows an OPTIONAL or DEFAULT field.
+fn round_trip<S>(syntax: &S, value: &S::Value, suffix: &[u8])
 where
     S: Syntax,
     S::Value: PartialEq + Debug,
 {
     let mut bytes = encode(syntax, value);
-    bytes.extend(JUNK);
+    bytes.extend_from_slice(suffix);
     let (back, rest) = syntax.read(&bytes).expect("reads its own encoding");
     assert_eq!(&back, value, "round trip");
-    assert_eq!(rest, &JUNK, "consumes exactly the encoding");
+    assert_eq!(rest, suffix, "consumes exactly the encoding");
 }
 
 /// The law from `read`'s side, canonicity: whatever `read` accepts is
@@ -63,12 +61,12 @@ where
 /// Every law, plus canonicity on mutations of the encoding (one byte
 /// changed, one byte dropped), which reach accepted inputs far more often
 /// than random strings.
-fn laws<S>(syntax: &S, value: &S::Value, at: usize, xor: u8)
+fn laws<S>(syntax: &S, value: &S::Value, at: usize, xor: u8, suffix: &[u8])
 where
     S: Tagged,
     S::Value: PartialEq + Debug,
 {
-    round_trip(syntax, value);
+    round_trip(syntax, value, suffix);
     prefix_free(syntax, value);
     let bytes = encode(syntax, value);
     canonical(syntax, &bytes);
@@ -161,22 +159,23 @@ proptest! {
         id in oid(),
         at in any::<usize>(),
         xor in 1u8..,
+        suffix in bytes(8),
     ) {
-        laws(&Boolean, &b, at, xor);
-        laws(&Null, &(), at, xor);
-        laws(&Unsigned, &Natural::from_be_bytes(&n), at, xor);
-        laws(&Small, &k, at, xor);
-        laws(&OctetString, &s, at, xor);
-        laws(&BitString, &s, at, xor);
-        laws(&ObjectIdentifier, &id, at, xor);
+        laws(&Boolean, &b, at, xor, &suffix);
+        laws(&Null, &(), at, xor, &suffix);
+        laws(&Unsigned, &Natural::from_be_bytes(&n), at, xor, &suffix);
+        laws(&Small, &k, at, xor, &suffix);
+        laws(&OctetString, &s, at, xor, &suffix);
+        laws(&BitString, &s, at, xor, &suffix);
+        laws(&ObjectIdentifier, &id, at, xor, &suffix);
     }
 
     #[test]
-    fn any_tlv(s in bytes(200), tag_octet in prop::sample::select(vec![0x02u8, 0x04, 0x30, 0x31, 0x80, 0xa3])) {
+    fn any_tlv(s in bytes(200), tag_octet in prop::sample::select(vec![0x02u8, 0x04, 0x30, 0x31, 0x80, 0xa3]), suffix in bytes(8)) {
         let raw = RawTlv::parse(&crate::der::write::tlv(tag_octet, &s));
         // Only well-formed TLVs are values; the writer produces them.
         if let Ok(raw) = raw {
-            round_trip(&Any, &raw);
+            round_trip(&Any, &raw, &suffix);
             canonical(&Any, raw.as_bytes());
         }
     }
@@ -190,12 +189,13 @@ proptest! {
         items in prop::collection::vec(any::<u64>(), 0..8),
         at in any::<usize>(),
         xor in 1u8..,
+        suffix in bytes(8),
     ) {
-        laws(&record(), &(k, (s.clone(), (flag, (d, ())))), at, xor);
-        laws(&SequenceOf(Small), &items, at, xor);
-        laws(&Sequence(()), &(), at, xor);
+        laws(&record(), &(k, (s.clone(), (flag, (d, ())))), at, xor, &suffix);
+        laws(&SequenceOf(Small), &items, at, xor, &suffix);
+        laws(&Sequence(()), &(), at, xor, &suffix);
         // An encoding inside an OCTET STRING, as PKCS#8's privateKey.
-        laws(&OctetStringOf(Sequence((Small, ()))), &(k, ()), at, xor);
+        laws(&OctetStringOf(Sequence((Small, ()))), &(k, ()), at, xor, &suffix);
     }
 
     /// SET OF writes the canonical representative of the multiset: any
@@ -203,10 +203,10 @@ proptest! {
     /// `SEQUENCE { OBJECT IDENTIFIER, ANY OPTIONAL }`, the shape of an
     /// AlgorithmIdentifier.
     #[test]
-    fn optional_last(id in oid(), param in prop::option::of(bytes(20)), at in any::<usize>(), xor in 1u8..) {
+    fn optional_last(id in oid(), param in prop::option::of(bytes(20)), at in any::<usize>(), xor in 1u8.., suffix in bytes(8)) {
         let syntax = Sequence((ObjectIdentifier, (OptionalLast(Any), ())));
         let param = param.map(|p| RawTlv::parse(&encode(&OctetString, &p)).unwrap());
-        laws(&syntax, &(id, (param, ())), at, xor);
+        laws(&syntax, &(id, (param, ())), at, xor, &suffix);
     }
 
     /// Proper prefixes of any TLV are rejected: the TLVs form a prefix code.
@@ -221,7 +221,7 @@ proptest! {
     }
 
     #[test]
-    fn sets(mut items in prop::collection::vec(bytes(6), 0..8), at in any::<usize>(), xor in 1u8..) {
+    fn sets(mut items in prop::collection::vec(bytes(6), 0..8), at in any::<usize>(), xor in 1u8.., suffix in bytes(8)) {
         let syntax = SetOf(OctetString);
         let written = encode(&syntax, &items);
         let mut reversed = items.clone();
@@ -230,27 +230,43 @@ proptest! {
         // Sorted by encoding: for OCTET STRING, by length, then bytes.
         items.sort_by_key(|item| encode(&OctetString, item));
         prop_assert_eq!(decode(&syntax, &written).unwrap(), items.clone());
-        laws(&syntax, &items, at, xor);
+        laws(&syntax, &items, at, xor, &suffix);
     }
 
     #[test]
-    fn tags(k in any::<u64>(), s in bytes(100), at in any::<usize>(), xor in 1u8..) {
-        laws(&Explicit::<3, _>(Small), &k, at, xor);
-        laws(&Implicit::<1, _>(OctetString), &s, at, xor);
-        laws(&Implicit::<2, _>(Sequence((Small, ()))), &(k, ()), at, xor);
+    fn tags(k in any::<u64>(), s in bytes(100), at in any::<usize>(), xor in 1u8.., suffix in bytes(8)) {
+        laws(&Explicit::<3, _>(Small), &k, at, xor, &suffix);
+        laws(&Implicit::<1, _>(OctetString), &s, at, xor, &suffix);
+        laws(&Implicit::<2, _>(Sequence((Small, ()))), &(k, ()), at, xor, &suffix);
     }
 
     #[test]
-    fn choices_and_refinements(k in any::<u64>(), s in bytes(50), v in 0u64..3, at in any::<usize>(), xor in 1u8..) {
+    fn choices_and_refinements(k in any::<u64>(), s in bytes(50), v in 0u64..3, at in any::<usize>(), xor in 1u8.., suffix in bytes(8)) {
         let choice = Choice::new_opt(Small, OctetString).unwrap();
-        round_trip(&choice, &Either::First(k));
-        round_trip(&choice, &Either::Second(s.clone()));
+        round_trip(&choice, &Either::First(k), &suffix);
+        round_trip(&choice, &Either::Second(s.clone()), &suffix);
         let enc = encode(&choice, &Either::First(k));
         canonical(&choice, &enc);
         let version_syntax = version();
         let value = match v { 0 => Version::V1, 1 => Version::V2, _ => Version::V3 };
-        laws(&version_syntax, &value, at, xor);
-        laws(&Constant::new(Small, 7), &(), at, xor);
+        laws(&version_syntax, &value, at, xor, &suffix);
+        laws(&Constant::new(Small, 7), &(), at, xor, &suffix);
+    }
+
+    /// The optional combinators, on their own: the law holds for a suffix
+    /// that does not start with the field's tag (OPTIONAL, DEFAULT), or an
+    /// empty one (ANY OPTIONAL in last position).
+    #[test]
+    fn optional_fields(
+        flag in prop::option::of(any::<bool>()),
+        b in any::<bool>(),
+        raw in prop::option::of(bytes(20)),
+        suffix in bytes(8).prop_filter("not BOOLEAN's tag", |s| s.first() != Some(&0x01)),
+    ) {
+        round_trip(&Optional(Boolean), &flag, &suffix);
+        round_trip(&WithDefault::new(Boolean, false), &b, &suffix);
+        let raw = raw.map(|p| RawTlv::parse(&encode(&OctetString, &p)).unwrap());
+        round_trip(&OptionalLast(Any), &raw, &[]);
     }
 
     /// Canonicity and totality on arbitrary bytes, for every combinator.
@@ -326,6 +342,25 @@ fn static_identifiers() {
     assert_eq!(
         decode(&ObjectIdentifier, &encode(&ObjectIdentifier, &EC)),
         Ok(EC)
+    );
+}
+
+/// Why the rule on what follows an optional field is needed: an absent
+/// OPTIONAL BOOLEAN followed by bytes that start with a BOOLEAN reads those
+/// bytes as the field. The description must not put a field with the same
+/// tag right after an optional one; the reader cannot tell them apart.
+#[test]
+fn optional_field_followed_by_its_own_tag() {
+    let field = Optional(Boolean);
+    let mut bytes = encode(&field, &None);
+    bytes.extend([0x01, 0x01, 0xff]);
+    assert_eq!(field.read(&bytes), Ok((Some(true), &[][..])));
+    // And an empty OptionalLast followed by anything reads it as the field.
+    let last = OptionalLast(Any);
+    assert_eq!(
+        last.read(&[0x05, 0x00])
+            .map(|(v, r)| (v.is_some(), r.len())),
+        Ok((true, 0))
     );
 }
 
