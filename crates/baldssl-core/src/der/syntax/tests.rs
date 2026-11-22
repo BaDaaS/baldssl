@@ -12,9 +12,9 @@ use proptest::prelude::*;
 
 use super::{
     Any, BitString, Boolean, Choice, Constant, Either, Explicit, Implicit, Map,
-    Natural, Null, ObjectId, ObjectIdentifier, OctetString, OctetStringOf,
-    Optional, OptionalLast, RawTlv, Sequence, SequenceOf, SetOf, Signed, Small,
-    Syntax, Unsigned, WithDefault, decode, encode,
+    NamedBits, Natural, Null, ObjectId, ObjectIdentifier, OctetString,
+    OctetStringOf, Optional, OptionalLast, RawTlv, Sequence, SequenceOf, SetOf,
+    Signed, Small, Syntax, Unsigned, WithDefault, decode, encode,
     laws::{canonical, laws, round_trip},
 };
 use crate::der::{DerError, Integer};
@@ -418,4 +418,45 @@ fn rejections() {
         Choice::new_opt(Small, Unsigned).is_none(),
         "two INTEGER alternatives"
     );
+}
+
+/// Named bit lists: OpenSSL's encodings of key usage sets, and the laws
+/// (decoding inverts encoding; whatever decodes re-encodes to itself).
+#[test]
+fn named_bits() {
+    // digitalSignature(0), keyEncipherment(2): OpenSSL's `03 02 05 A0`.
+    assert_eq!(encode(&NamedBits, &0b101), [0x03, 0x02, 0x05, 0xa0]);
+    // keyCertSign(5), cRLSign(6).
+    assert_eq!(encode(&NamedBits, &0b110_0000), [0x03, 0x02, 0x01, 0x06]);
+    // decipherOnly(8) needs a second octet.
+    assert_eq!(
+        encode(&NamedBits, &(1 << 8)),
+        [0x03, 0x03, 0x07, 0x00, 0x80]
+    );
+    assert_eq!(encode(&NamedBits, &0), [0x03, 0x01, 0x00]);
+    // A trailing zero bit, or a 65th bit, is refused.
+    for bad in [&[0x03, 0x02, 0x04, 0xa0][..], &[0x03, 0x02, 0x00, 0x00]] {
+        assert!(decode(&NamedBits, bad).is_err(), "{bad:02x?}");
+    }
+    let mut long = vec![0x03, 0x0a, 0x07];
+    long.extend([0u8; 8]);
+    long.push(0x80);
+    assert!(decode(&NamedBits, &long).is_err());
+}
+
+proptest! {
+    #[test]
+    fn named_bits_laws(
+        value in any::<u64>(),
+        unused in 0u8..8,
+        body in prop::collection::vec(any::<u8>(), 0..10),
+    ) {
+        prop_assert_eq!(decode(&NamedBits, &encode(&NamedBits, &value)), Ok(value));
+        // Any BIT STRING TLV: if it decodes, it is the one encoding.
+        let mut bytes = vec![0x03, u8::try_from(body.len() + 1).unwrap(), unused];
+        bytes.extend(&body);
+        if let Ok(v) = decode(&NamedBits, &bytes) {
+            prop_assert_eq!(encode(&NamedBits, &v), bytes);
+        }
+    }
 }
