@@ -20,6 +20,9 @@ const examplesPath = fileURLToPath(
 const platformsPath = fileURLToPath(
   new URL('./src/platforms.json', import.meta.url),
 );
+const practicesPath = fileURLToPath(
+  new URL('./src/practices.json', import.meta.url),
+);
 const trackingPath = fileURLToPath(
   new URL('./src/tracking.json', import.meta.url),
 );
@@ -32,7 +35,7 @@ const ISSUES = 'https://github.com/BaDaaS/baldssl/issues/';
 const tracking = section =>
   JSON.parse(readFileSync(trackingPath, 'utf8'))[section];
 
-// "Tracked in #15, #16": links to the issues, or nothing.
+// A "Tracked in" note with a link to each issue, or nothing.
 const issueLinks = (numbers = []) =>
   numbers.length === 0
     ? ''
@@ -278,6 +281,30 @@ function platforms() {
   };
 }
 
+// The "Engineering practices" list, from src/practices.json; the README lists
+// the same titles (scripts/check_practices.py).
+function practices() {
+  return {
+    name: 'baldssl-practices',
+    configureServer(server) {
+      server.watcher.add(practicesPath);
+    },
+    transformIndexHtml(html) {
+      const list = JSON.parse(readFileSync(practicesPath, 'utf8')).practices;
+      const items = list
+        .map(
+          p => `<div class="min-w-0 rounded-lg border border-border p-4 sm:p-6">
+  <h3 class="font-semibold">${escapeHtml(p.title)}</h3>
+  <p class="mt-2 text-sm text-muted">${escapeHtml(p.what)}</p>
+  <p class="mt-2 text-xs text-muted"><span class="font-medium text-foreground">Checked by:</span> ${escapeHtml(p.check)}</p>
+</div>`,
+        )
+        .join('\n');
+      return html.replace('<!-- practices -->', items);
+    },
+  };
+}
+
 function commandTables() {
   return {
     name: 'baldssl-command-tables',
@@ -319,5 +346,6 @@ export default defineConfig({
     examples(),
     primitives(),
     platforms(),
+    practices(),
   ],
 });
