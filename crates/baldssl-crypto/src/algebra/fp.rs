@@ -23,7 +23,7 @@
 //! [`Fp::invert`] is the public $p - 2$. Validity checks when decoding return
 //! a [`Choice`] next to the value.
 //!
-//! The moduli baldssl uses are in [`crate::fields`].
+//! The moduli baldssl uses are defined with their curves, in [`crate::instances`].
 //!
 //! Indexing is into arrays of length `N` by loop counters below `N`, and the
 //! arithmetic is on `u128` products of two `u64`s and explicit wrapping
@@ -44,7 +44,7 @@ use core::{
 };
 
 use super::field::{Field, PrimeField};
-use crate::ct::{self, Choice};
+use crate::ct::{self, Choice, CtEq, CtSelect};
 
 /// A prime modulus with `N` limbs.
 pub trait Modulus<const N: usize>: 'static {
@@ -419,7 +419,12 @@ where
         }
         ct::is_zero(acc)
     }
+}
 
+impl<M, const N: usize> CtEq for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     fn ct_eq(&self, other: &Self) -> Choice {
         let mut acc = 0;
         for i in 0..N {
@@ -427,7 +432,12 @@ where
         }
         ct::is_zero(acc)
     }
+}
 
+impl<M, const N: usize> CtSelect for Fp<M, N>
+where
+    M: Modulus<N>,
+{
     fn select(a: &Self, b: &Self, choice: Choice) -> Self {
         let mut out = [0u64; N];
         for i in 0..N {
@@ -476,6 +486,15 @@ where
         let mut out = vec![0u8; <Self as PrimeField>::BYTES];
         for (i, byte) in out.iter_mut().rev().enumerate() {
             *byte = limbs[i / 8].to_le_bytes()[i % 8];
+        }
+        out
+    }
+
+    fn modulus_be() -> Vec<u8> {
+        let p = Consts::<M, N>::P;
+        let mut out = vec![0u8; <Self as PrimeField>::BYTES];
+        for (i, byte) in out.iter_mut().rev().enumerate() {
+            *byte = p[i / 8].to_le_bytes()[i % 8];
         }
         out
     }

@@ -30,5 +30,9 @@
 //! $\mathbb{Z}$ is the initial ring, which is why scalar multiplication is
 //! defined once for every group.
 
+pub mod curve;
+pub mod encoding;
 pub mod field;
 pub mod fp;
+pub mod group;
+pub mod model;

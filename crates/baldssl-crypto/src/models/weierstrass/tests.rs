@@ -11,22 +11,40 @@ use std::{fs, path::Path};
 
 use proptest::prelude::*;
 
-use super::{
-    CurveParams, P256, P384, P521,
-    affine::Affine,
-    jacobian::Jacobian,
-    mul::{mul, mul_generator},
-    params,
-    projective::Projective,
+use super::{affine::Affine, jacobian::Jacobian, projective::Projective};
+use crate::{
+    algebra::{
+        curve::{ShortWeierstrass, element},
+        encoding::{Decodable, Encodable},
+        field::{Field, PrimeField},
+        group::{Group, GroupVartime, scalar_mul},
+        model::{AffineModel, CurveModel},
+    },
+    instances::{P256, P384, P521},
 };
-use crate::algebra::field::{Field, PrimeField};
+
+/// $k P$ for a scalar field element.
+fn mul<C>(p: &Projective<C>, k: &C::Scalar) -> Projective<C>
+where
+    C: ShortWeierstrass,
+{
+    scalar_mul(p, &k.to_bytes_be())
+}
+
+/// $k G$.
+fn mul_generator<C>(k: &C::Scalar) -> Projective<C>
+where
+    C: ShortWeierstrass,
+{
+    mul(&Projective::generator(), k)
+}
 
 /// The affine group law: $\lambda = (y_2 - y_1) / (x_2 - x_1)$, or
 /// $(3 x_1^2 - 3) / (2 y_1)$ when doubling; $x_3 = \lambda^2 - x_1 - x_2$,
 /// $y_3 = \lambda (x_1 - x_3) - y_1$.
 fn reference_add<C>(p: &Affine<C>, q: &Affine<C>) -> Affine<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     let (Some((x1, y1)), Some((x2, y2))) = (p.coordinates(), q.coordinates())
     else {
@@ -55,40 +73,32 @@ where
 /// $kP$ by repeated reference additions, for small $k$.
 fn reference_small_mul<C>(p: &Affine<C>, k: u64) -> Affine<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     (0..k).fold(Affine::identity(), |acc, _| reference_add(&acc, p))
 }
 
 fn affine<C>(p: &Projective<C>) -> Affine<C>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     Affine::from(*p)
 }
 
 fn scalar<C>(k: u64) -> C::Scalar
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     C::Scalar::from_u64(k)
 }
 
 fn check_constants<C>()
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
-    assert!(params::element::<C::Base>(C::B).is_some(), "{} b", C::NAME);
-    assert!(
-        params::element::<C::Base>(C::GX).is_some(),
-        "{} gx",
-        C::NAME
-    );
-    assert!(
-        params::element::<C::Base>(C::GY).is_some(),
-        "{} gy",
-        C::NAME
-    );
+    assert!(element::<C::Base>(C::B).is_some(), "{} b", C::NAME);
+    assert!(element::<C::Base>(C::GX).is_some(), "{} gx", C::NAME);
+    assert!(element::<C::Base>(C::GY).is_some(), "{} gy", C::NAME);
     let g = Affine::<C>::generator();
     assert!(
         g.is_on_curve().to_bool_vartime(),
@@ -122,7 +132,7 @@ fn constants_and_order() {
 /// The identity behaves as one in every model and formula.
 fn check_identity<C>()
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     let g = Projective::<C>::generator();
     let o = Projective::<C>::identity();
@@ -148,7 +158,7 @@ where
     );
     assert!(
         Jacobian::<C>::identity()
-            .double()
+            .double_vartime()
             .is_identity()
             .to_bool_vartime()
     );
@@ -164,7 +174,7 @@ fn identity() {
 /// Small multiples of G by every formula against the affine reference.
 fn check_small_multiples<C>()
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     let g = Affine::<C>::generator();
     let mut proj = Projective::<C>::identity();
@@ -184,7 +194,7 @@ where
         let doubled = reference_add(&expected, &expected);
         assert_eq!(affine(&proj.double()), doubled, "{} 2({k}G)", C::NAME);
         assert_eq!(
-            Affine::from(jac.double()),
+            Affine::from(jac.double_vartime()),
             doubled,
             "{} 2({k}G) jacobian",
             C::NAME
@@ -203,7 +213,7 @@ fn small_multiples() {
 /// cleared; `None` when still not below the order.
 fn scalar_from<C>(bytes: &[u8]) -> Option<C::Scalar>
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     let mut b = bytes.get(..C::Scalar::BYTES)?.to_vec();
     let spare = C::Scalar::BYTES * 8 - C::Scalar::BITS as usize;
@@ -218,7 +228,7 @@ where
 /// on random points.
 fn check_laws<C>(a: &[u8], b: &[u8])
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
     let (Some(k1), Some(k2)) = (scalar_from::<C>(a), scalar_from::<C>(b))
     else {
@@ -257,7 +267,7 @@ where
     let twice = reference_add(&ap, &ap);
     assert_eq!(affine(&p.double()), twice, "{} projective double", C::NAME);
     assert_eq!(
-        Affine::from(jp.double()),
+        Affine::from(jp.double_vartime()),
         twice,
         "{} jacobian double",
         C::NAME
@@ -272,18 +282,13 @@ where
     assert_eq!(Projective::from(ap), p);
 
     // Encoding round trip, and rejection of a point off the curve.
-    let enc = ap.to_uncompressed();
-    assert_eq!(Affine::<C>::from_uncompressed(&enc), Some(ap));
+    let enc = ap.encode();
+    assert_eq!(Affine::<C>::decode(&enc), Some(ap));
     let mut off = enc.clone();
     if let Some(last) = off.last_mut() {
         *last ^= 1;
     }
-    assert_eq!(
-        Affine::<C>::from_uncompressed(&off),
-        None,
-        "{} off-curve",
-        C::NAME
-    );
+    assert_eq!(Affine::<C>::decode(&off), None, "{} off-curve", C::NAME);
 }
 
 fn bytes() -> impl Strategy<Value = Vec<u8>> {
@@ -313,20 +318,21 @@ proptest! {
 /// not below p.
 fn check_decoding<C>()
 where
-    C: CurveParams,
+    C: ShortWeierstrass,
 {
-    let enc = Affine::<C>::generator().to_uncompressed();
-    assert_eq!(Affine::<C>::from_uncompressed(&enc[..enc.len() - 1]), None);
+    let enc = Affine::<C>::generator().encode();
+    assert_eq!(Affine::<C>::decode(&enc[..enc.len() - 1]), None);
     let mut prefix = enc.clone();
     prefix[0] = 0x02;
-    assert_eq!(Affine::<C>::from_uncompressed(&prefix), None);
+    assert_eq!(Affine::<C>::decode(&prefix), None);
     let mut big = enc.clone();
     for byte in &mut big[1..=C::Base::BYTES] {
         *byte = 0xff;
     }
-    assert_eq!(Affine::<C>::from_uncompressed(&big), None);
-    assert_eq!(Affine::<C>::identity().to_uncompressed(), vec![0x00]);
-    assert_eq!(Affine::<C>::from_uncompressed(&[0x00]), None);
+    assert_eq!(Affine::<C>::decode(&big), None);
+    assert_eq!(Affine::<C>::identity().encode(), vec![0x00]);
+    // SEC 1 section 2.3.4: 00 is the identity, so encoding round-trips at O.
+    assert_eq!(Affine::<C>::decode(&[0x00]), Some(Affine::identity()));
 }
 
 #[test]
@@ -342,21 +348,16 @@ fn decoding() {
 fn openssl_key_pairs() {
     fn check<C>(d_hex: &str, q_hex: &str)
     where
-        C: CurveParams,
+        C: ShortWeierstrass,
     {
         let d_hex = d_hex.trim_start_matches('0');
         let padded = format!("{d_hex:0>width$}", width = 2 * C::Scalar::BYTES);
-        let d = params::element::<C::Scalar>(&padded).expect("private scalar");
+        let d = element::<C::Scalar>(&padded).expect("private scalar");
         let q = (0..q_hex.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&q_hex[i..i + 2], 16).unwrap())
             .collect::<Vec<u8>>();
-        assert_eq!(
-            affine(&mul_generator::<C>(&d)).to_uncompressed(),
-            q,
-            "{}",
-            C::NAME
-        );
+        assert_eq!(affine(&mul_generator::<C>(&d)).encode(), q, "{}", C::NAME);
     }
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/keys/keypairs.txt");

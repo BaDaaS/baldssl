@@ -59,6 +59,21 @@ impl core::ops::Not for Choice {
     }
 }
 
+/// Equality without branching on the values: the base of every structure
+/// whose elements may be secret (fields, points).
+pub trait CtEq {
+    /// Whether `self` equals `other`.
+    fn ct_eq(&self, other: &Self) -> Choice;
+}
+
+/// Selection without branching: `a` if `choice` is false, `b` if it is
+/// true. With [`CtEq`], what a type needs for constant-time code over it.
+pub trait CtSelect: Sized {
+    /// `a` if `choice` is false, `b` if it is true.
+    #[must_use]
+    fn select(a: &Self, b: &Self, choice: Choice) -> Self;
+}
+
 /// `a` if `choice` is false, `b` if it is true, without branching.
 #[must_use]
 pub fn select(a: u64, b: u64, choice: Choice) -> u64 {

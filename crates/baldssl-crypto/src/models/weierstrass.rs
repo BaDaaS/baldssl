@@ -1,15 +1,14 @@
-//! The NIST prime-order curves P-256, P-384 and P-521.
+//! The models of a short Weierstrass curve with $a = -3$, generic over the
+//! curve ([`crate::algebra::curve::ShortWeierstrass`]); the NIST curves
+//! P-256, P-384 and P-521 are instances ([`crate::instances`]).
 //!
 //! # The curves
 //!
 //! Each is the short Weierstrass curve $y^2 = x^3 - 3x + b$ over a prime
-//! field $\mathbb{F}_p$, with a generator $G$ of prime order $n$ (the
-//! cofactor is 1). A point is a zero of $f(x, y) = y^2 - x^3 + 3x - b$ with
-//! coordinates in $\mathbb{F}_p$, together with one point at infinity $O$,
-//! the identity, which no zero of $f$ represents. The parameters of each
-//! curve, with its base and scalar fields, are defined once, in its own
-//! module: [`p256`], [`p384`], [`p521`]; [`params`] says what a curve is to
-//! the models.
+//! field $\mathbb{F}_p$, with a generator $G$ of prime order $n$. A point is a
+//! zero of $f(x, y) = y^2 - x^3 + 3x - b$ with coordinates in
+//! $\mathbb{F}_p$, together with one point at infinity $O$, the identity,
+//! which no zero of $f$ represents.
 //!
 //! # Models
 //!
@@ -28,8 +27,8 @@
 //! | Jacobian   | [`jacobian::Jacobian`]       | $(2, 3, 1)$ | $Y^2 = X^3 - 3 X Z^4 + b Z^6$     | $(X / Z^2, Y / Z^3)$ | any $Z = 0$, stored as $(0, 0, 0)$ |
 //!
 //! The affine model is for encoding and decoding. The projective model has
-//! complete formulas, which the constant-time scalar multiplication of
-//! [`mul`] uses for secrets. The Jacobian model has faster but incomplete
+//! complete formulas, which the constant-time scalar multiplication
+//! ([`crate::algebra::group::scalar_mul`]) uses for secrets. The Jacobian model has faster but incomplete
 //! formulas, variable time, for public points.
 //!
 //! # Why the weights are $(2, 3, 1)$
@@ -65,17 +64,7 @@
 pub mod affine;
 pub mod jacobian;
 pub mod maps;
-pub mod mul;
-pub mod p256;
-pub mod p384;
-pub mod p521;
-pub mod params;
 pub mod projective;
-
-pub use p256::P256;
-pub use p384::P384;
-pub use p521::P521;
-pub use params::CurveParams;
 
 #[cfg(test)]
 mod tests;

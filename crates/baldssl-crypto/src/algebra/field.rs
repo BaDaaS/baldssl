@@ -27,12 +27,16 @@ use core::{
     ops::{Add, Mul, Neg, Sub},
 };
 
-use crate::ct::Choice;
+use crate::ct::{Choice, CtEq, CtSelect};
 
 /// The signature of a field. See the module documentation for the laws.
+/// Constant-time equality and selection are part of it: elements may be
+/// secret.
 pub trait Field:
     Copy
     + Eq
+    + CtEq
+    + CtSelect
     + fmt::Debug
     + Add<Output = Self>
     + Sub<Output = Self>
@@ -64,13 +68,6 @@ pub trait Field:
 
     /// Whether $a = 0$.
     fn is_zero(&self) -> Choice;
-
-    /// Whether $a = b$, without branching on the values.
-    fn ct_eq(&self, other: &Self) -> Choice;
-
-    /// `a` if `choice` is false, `b` if it is true, without branching.
-    #[must_use]
-    fn select(a: &Self, b: &Self, choice: Choice) -> Self;
 }
 
 /// A prime field $\mathbb{F}_p$, with its canonical big-endian encoding.
@@ -93,4 +90,9 @@ pub trait PrimeField: Field {
 
     /// The canonical big-endian encoding, [`PrimeField::BYTES`] bytes.
     fn to_bytes_be(&self) -> Vec<u8>;
+
+    /// The characteristic $p$, big-endian at [`PrimeField::BYTES`] bytes. It
+    /// is not an element (it is zero in the field); scalar multiplication by
+    /// the order of a group uses it.
+    fn modulus_be() -> Vec<u8>;
 }

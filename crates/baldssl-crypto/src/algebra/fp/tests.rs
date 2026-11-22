@@ -17,12 +17,13 @@ use proptest::prelude::*;
 use super::{Fp, Modulus};
 use crate::{
     algebra::field::{Field, PrimeField},
-    curves::{
+    ct::{CtEq, CtSelect},
+    instances::{
+        edwards25519::{Curve25519Base, Ed25519Scalar},
         p256::{P256Base, P256Scalar},
         p384::{P384Base, P384Scalar},
         p521::{P521Base, P521Scalar},
     },
-    fields::{Curve25519Base, Ed25519Scalar},
 };
 
 /// A natural number, little-endian 64-bit limbs without leading zeros.
