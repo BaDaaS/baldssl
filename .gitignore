@@ -33,3 +33,6 @@ Thumbs.db
 # Private keys must never be committed (fixtures are certificates only).
 *.key
 __pycache__/
+
+# Downloaded by `make fixtures` (tests/fixtures.mk pins the release).
+/tests/fixtures/

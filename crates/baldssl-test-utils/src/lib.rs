@@ -52,7 +52,8 @@ pub fn array<const N: usize>(s: &str) -> [u8; N] {
 }
 
 /// The path of a fixture, relative to `tests/fixtures` at the repository
-/// root.
+/// root, which `make fixtures` fills from the pinned release of
+/// [baldssl-fixtures](https://github.com/BaDaaS/baldssl-fixtures).
 #[must_use]
 pub fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -68,8 +69,9 @@ pub fn fixture_path(relative: &str) -> PathBuf {
 #[must_use]
 pub fn fixture(relative: &str) -> String {
     let path = fixture_path(relative);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("reading {}: {e} (run `make fixtures`)", path.display())
+    })
 }
 
 #[cfg(test)]

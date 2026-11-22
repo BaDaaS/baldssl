@@ -30,7 +30,7 @@ fn baldssl(args: &[&str], compat: &str) -> Output {
 
 fn cases() -> Vec<(String, Vec<String>)> {
     fs::read_to_string(fixtures().join("cases.txt"))
-        .unwrap()
+        .expect("tests/fixtures/cases.txt (run `make fixtures`)")
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|l| {
