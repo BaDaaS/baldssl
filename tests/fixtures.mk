@@ -2,5 +2,5 @@
 # https://github.com/BaDaaS/baldssl-fixtures, pinned by tag and SHA-256.
 # `make fixtures` downloads it into tests/fixtures. To use a new set, publish
 # a release there (see its README) and update both values.
-FIXTURES_TAG = v2
-FIXTURES_SHA256 = f5c1d37d2205ecaa752caac879664bcbc324d1ec7d5e40c3819eb60c25145ab4
+FIXTURES_TAG = v5
+FIXTURES_SHA256 = c49b3902e32b6fef2f129d94f5ceecedcf42d91f19c91ae3857f201ccc3b5e4b

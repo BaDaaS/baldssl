@@ -481,9 +481,9 @@ fn openssl_key_pairs() {
     for line in fixture("keys/keypairs.txt").lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
         match fields.as_slice() {
-            ["P-256", d, q] => check::<P256>(d, q),
-            ["P-384", d, q] => check::<P384>(d, q),
-            ["P-521", d, q] => check::<P521>(d, q),
+            ["P-256", d, q, ..] => check::<P256>(d, q),
+            ["P-384", d, q, ..] => check::<P384>(d, q),
+            ["P-521", d, q, ..] => check::<P521>(d, q),
             _ => continue,
         }
         seen += 1;
