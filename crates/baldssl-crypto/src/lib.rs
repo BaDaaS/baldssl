@@ -13,10 +13,11 @@
 //!    extended for twisted Edwards curves.
 //! 3. [`instances`], the curves as data: P-256, P-384, P-521 and
 //!    edwards25519.
-//! 4. The primitives built on them: [`signature`] (EdDSA), [`keys`] (key
-//!    pairs whose public part is derived from the secret), [`hash`] (SHA-1,
-//!    SHA-2, [FIPS 180-4][fips180]), [`mac`] (HMAC, [RFC 2104][rfc2104]) and
-//!    [`drbg`] (HMAC_DRBG, [NIST SP 800-90A][sp800-90a]).
+//! 4. The primitives built on them: [`signature`] (EdDSA and ECDSA),
+//!    [`keys`] (key pairs whose public part is derived from the secret),
+//!    [`hash`] (SHA-1, SHA-2, [FIPS 180-4][fips180]), [`mac`] (HMAC, [RFC
+//!    2104][rfc2104]) and [`drbg`] (HMAC_DRBG, [NIST SP
+//!    800-90A][sp800-90a]).
 //!
 //! [`ct`] (constant-time building blocks), [`secret`] (byte strings
 //! overwritten on drop) and [`os_rng`] (randomness from the operating
@@ -34,12 +35,16 @@
 //!   Publication); **CAVP**, NIST's Cryptographic Algorithm Validation
 //!   Program, whose test vectors the tests use.
 //! - **EdDSA**, the Edwards-curve Digital Signature Algorithm ([RFC
-//!   8032][rfc8032]).
+//!   8032][rfc8032]); **ECDSA**, the Elliptic Curve Digital Signature
+//!   Algorithm ([FIPS 186-5][fips186]), with the deterministic nonces of
+//!   [RFC 6979][rfc6979].
 //!
 //! [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 //! [rfc2104]: https://www.rfc-editor.org/rfc/rfc2104
 //! [sp800-90a]: https://csrc.nist.gov/pubs/sp/800/90/a/r1/final
 //! [rfc8032]: https://www.rfc-editor.org/rfc/rfc8032
+//! [fips186]: https://csrc.nist.gov/pubs/fips/186-5/final
+//! [rfc6979]: https://www.rfc-editor.org/rfc/rfc6979
 
 #![deny(clippy::arithmetic_side_effects)]
 #![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
