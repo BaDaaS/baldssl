@@ -33,8 +33,8 @@ use baldssl_core::{
     der::{
         Oid, Reader,
         syntax::{
-            Any, BitString, Implicit, ObjectId, RawTlv, Sequence, SetOf, Small,
-            decode, encode,
+            Any, BitString, Implicit, ObjectId, ObjectIdentifier, RawTlv,
+            Sequence, SequenceOf, SetOf, Small, decode, encode,
         },
         tag,
     },
@@ -49,8 +49,9 @@ use crate::{
     algorithm::{
         ALGORITHM_IDENTIFIER, AlgorithmIdentifier, from_identifier, identifier,
     },
-    cert::{Extension, read_extensions},
+    cert::{Extension as ExtensionView, read_extensions},
     dn::DistinguishedName,
+    extension::{Extension, Extensions},
 };
 
 /// `extensionRequest`, 1.2.840.113549.1.9.14 ([RFC 2985 section
@@ -95,8 +96,8 @@ pub struct CertificationRequest {
 
 impl CertificationRequest {
     /// The request for `subject` with the public key of `key`, signed with
-    /// `key` and `algorithm`, without attributes (as `openssl req -new`
-    /// writes it without a configuration that adds any).
+    /// `key` and `algorithm`, asking for `extensions` (as `openssl req -new
+    /// -addext` writes them; no attribute at all without extensions).
     ///
     /// # Errors
     ///
@@ -105,11 +106,24 @@ impl CertificationRequest {
         subject: &DistinguishedName,
         key: &AnyPrivateKey,
         algorithm: SignatureAlgorithm,
+        extensions: &Extensions,
     ) -> Result<Self> {
         let public_key = PublicKey::from(key);
         let subject = RawTlv::parse(&subject.encode())?;
         let spki = RawTlv::parse(&public_key.encode())?;
-        let attributes: Vec<RawTlv> = Vec::new();
+        // The extensions, when there are any, as one extensionRequest
+        // attribute whose single value is their Extensions, as OpenSSL
+        // writes them.
+        let attributes: Vec<RawTlv> = if extensions.is_empty() {
+            Vec::new()
+        } else {
+            let extensions: Vec<RawTlv> =
+                extensions.iter().map(Extension::to_raw).collect();
+            vec![RawTlv::encode(
+                &Sequence((ObjectIdentifier, (SetOf(SequenceOf(Any)), ()))),
+                &(EXTENSION_REQUEST, (vec![extensions], ())),
+            )]
+        };
         let info = RawTlv::parse(&encode(
             &INFO,
             &(0, (subject.clone(), (spki, (attributes.clone(), ())))),
@@ -176,7 +190,9 @@ impl CertificationRequest {
     /// DER.
     ///
     /// [RFC 2985 section 5.4.2]: https://www.rfc-editor.org/rfc/rfc2985#page-17
-    pub(crate) fn requested_extensions(&self) -> Result<Vec<Extension<'_>>> {
+    pub(crate) fn requested_extensions(
+        &self,
+    ) -> Result<Vec<ExtensionView<'_>>> {
         let mut out = Vec::new();
         for attribute in &self.attributes {
             let mut top = Reader::new(attribute.as_bytes());
@@ -193,7 +209,7 @@ impl CertificationRequest {
             seq.finish()?;
             let extensions = values.read()?;
             values.finish()?;
-            out.extend(read_extensions(extensions.encoded)?);
+            out.extend(read_extensions(extensions)?);
         }
         Ok(out)
     }

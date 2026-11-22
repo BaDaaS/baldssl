@@ -16,7 +16,10 @@ use baldssl_pkey::{Algorithm, AnyPrivateKey};
 use baldssl_test_utils::{fixture, hex};
 
 use super::{CertificationRequest, SignatureAlgorithm};
-use crate::dn::{DistinguishedName, InputEncoding, UTF8_ONLY};
+use crate::{
+    dn::{DistinguishedName, InputEncoding, UTF8_ONLY},
+    extension::Extensions,
+};
 
 /// One fixture line: the key, the subject argument, OpenSSL's request.
 struct Case {
@@ -68,6 +71,7 @@ fn matches_openssl() {
             &subject(&case.subject),
             &case.key,
             algorithm,
+            &Extensions::new(),
         )
         .unwrap();
         assert!(ours.verify(), "{what}: ours verifies");
@@ -125,15 +129,21 @@ fn rejections() {
         "the signature algorithm does not match the key",
     ));
     assert_eq!(
-        CertificationRequest::sign(&name, &ec.key, SignatureAlgorithm::Ed25519)
-            .err(),
+        CertificationRequest::sign(
+            &name,
+            &ec.key,
+            SignatureAlgorithm::Ed25519,
+            &Extensions::new()
+        )
+        .err(),
         mismatch
     );
     assert_eq!(
         CertificationRequest::sign(
             &name,
             &ed.key,
-            SignatureAlgorithm::Ecdsa(Hash::Sha256)
+            SignatureAlgorithm::Ecdsa(Hash::Sha256),
+            &Extensions::new(),
         )
         .err(),
         mismatch
@@ -143,8 +153,13 @@ fn rejections() {
         SignatureAlgorithm::Ecdsa(Hash::Sha384),
         SignatureAlgorithm::Ecdsa(Hash::Sha512),
     ] {
-        let request =
-            CertificationRequest::sign(&name, &ec.key, algorithm).unwrap();
+        let request = CertificationRequest::sign(
+            &name,
+            &ec.key,
+            algorithm,
+            &Extensions::new(),
+        )
+        .unwrap();
         assert!(request.verify(), "{algorithm:?}");
         assert_eq!(
             CertificationRequest::decode(&request.encode())

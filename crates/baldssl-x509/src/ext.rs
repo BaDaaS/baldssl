@@ -16,7 +16,7 @@ use baldssl_core::{
     hex::{self, Case},
 };
 
-use crate::{cert::Extension, name::Name, objects};
+use crate::{cert::Extension, extension::KEY_USAGE_BITS, name::Name, objects};
 
 /// `CONF_VALUE`: what an `i2v` method returns.
 struct Value {
@@ -188,18 +188,6 @@ fn single_sequence(value: &[u8]) -> Result<Reader<'_>> {
     Ok(seq)
 }
 
-const KEY_USAGE: [&str; 9] = [
-    "Digital Signature",
-    "Non Repudiation",
-    "Key Encipherment",
-    "Data Encipherment",
-    "Key Agreement",
-    "Certificate Sign",
-    "CRL Sign",
-    "Encipher Only",
-    "Decipher Only",
-];
-
 /// What to print for one extension: either an `i2s` string or an `i2v`
 /// value list.
 enum Printed {
@@ -277,12 +265,12 @@ fn key_usage(ext: &Extension<'_>) -> Result<Printed> {
     let mut r = Reader::new(ext.value);
     let bits = BitString::parse(r.expect(tag::BIT_STRING)?.value)?;
     r.finish()?;
-    let values = KEY_USAGE
+    let values = KEY_USAGE_BITS
         .iter()
         .enumerate()
         .filter(|(i, _)| bits.bit(*i))
-        .map(|(_, n)| Value {
-            name: Some((*n).to_string()),
+        .map(|(_, (_, long))| Value {
+            name: Some((*long).to_string()),
             value: None,
         })
         .collect();

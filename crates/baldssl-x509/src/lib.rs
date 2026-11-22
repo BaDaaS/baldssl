@@ -31,6 +31,7 @@ mod cert;
 mod csr;
 mod dn;
 mod ext;
+mod extension;
 mod issue;
 mod name;
 mod objects;
@@ -45,7 +46,10 @@ pub use dn::{
     DistinguishedName, InputEncoding, StringTypes, SubjError, SubjWarning,
     UTF8_ONLY,
 };
-pub use issue::{CertificateTemplate, Extension, SerialNumber};
+pub use extension::{
+    Extension, ExtensionValue, Extensions, GeneralName, Ia5String, KeyUsage,
+};
+pub use issue::{CertificateTemplate, SerialNumber};
 pub use name::{Name, NameStyle};
 pub use text::{Compat, serial_line, time_rfc822};
 

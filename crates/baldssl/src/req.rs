@@ -52,7 +52,7 @@ use baldssl_fs::{
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
     Certificate, CertificateTemplate, CertificationRequest, DistinguishedName,
-    Format, InputEncoding, SubjWarning, UTF8_ONLY,
+    Extensions, Format, InputEncoding, SubjWarning, UTF8_ONLY,
 };
 
 use crate::{
@@ -364,6 +364,7 @@ fn create(o: &Options) -> Result<CertificationRequest> {
         &subject(o)?,
         &key,
         signature_algorithm(&key, o.digest),
+        &Extensions::new(),
     )
 }
 
