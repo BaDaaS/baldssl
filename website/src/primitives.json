@@ -32,14 +32,14 @@
     {
       "id": "nist-curves",
       "name": "P-256, P-384 and P-521",
-      "purpose": "The NIST curves by model (affine, projective with complete formulas, Jacobian) and constant-time scalar multiplication.",
+      "purpose": "The NIST curves by model (affine, projective with complete formulas, Jacobian), constant-time scalar multiplication, and the SEC 1 point encoding.",
       "status": "implemented",
       "link": "https://github.com/BaDaaS/baldssl/pull/6"
     },
     {
       "id": "ed25519",
       "name": "Ed25519",
-      "purpose": "The Edwards curve of Ed25519 and the derivation of a public key from a private key (RFC 8032).",
+      "purpose": "The Edwards curve of Ed25519, point encoding and decoding with a prime-order subgroup check, and the derivation of a public key from a private key (RFC 8032).",
       "status": "implemented",
       "link": "https://github.com/BaDaaS/baldssl/pull/8"
     },
