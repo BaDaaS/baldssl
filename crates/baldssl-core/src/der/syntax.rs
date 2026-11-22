@@ -33,6 +33,7 @@
 //! | --- | --- | --- |
 //! | BOOLEAN | [`Boolean`] | `bool` |
 //! | NULL | [`Null`] | `()` |
+//! | INTEGER | [`Signed`] | [`Integer`] |
 //! | INTEGER, non-negative | [`Unsigned`], [`Small`] | [`Natural`], `u64` |
 //! | OCTET STRING | [`OctetString`] | `Vec<u8>` |
 //! | OCTET STRING around an encoding | [`OctetStringOf`] | the inner value |
@@ -266,6 +267,35 @@ impl Syntax for Unsigned {
 }
 
 impl Tagged for Unsigned {
+    fn tag(&self) -> u8 {
+        tag::INTEGER
+    }
+}
+
+/// INTEGER of either sign and any size, as the canonical [`Integer`] (a
+/// sign and a magnitude without leading zeros), so equal numbers are equal
+/// values. Its values are the ones [`Integer::parse`] returns: a negative
+/// one has a nonzero magnitude.
+#[derive(Debug, Clone, Copy)]
+pub struct Signed;
+
+impl Syntax for Signed {
+    type Value = Integer;
+
+    fn write(&self, value: &Integer, out: &mut Vec<u8>) {
+        out.extend(write::integer(value));
+    }
+
+    fn read<'a>(
+        &self,
+        input: &'a [u8],
+    ) -> Result<(Integer, &'a [u8]), DerError> {
+        let (contents, rest) = expect(input, tag::INTEGER)?;
+        Ok((Integer::parse(contents)?, rest))
+    }
+}
+
+impl Tagged for Signed {
     fn tag(&self) -> u8 {
         tag::INTEGER
     }

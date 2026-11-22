@@ -61,6 +61,24 @@ pub fn fixture_path(relative: &str) -> PathBuf {
         .join(relative)
 }
 
+/// The minimal two's complement of `v`, big-endian: the contents of the DER
+/// INTEGER with value `v` ([X.690] 8.3.2), from the standard library's
+/// two's complement, so tests can check a DER writer against it. A leading
+/// `00` before a clear top bit, or `ff` before a set one, is dropped.
+///
+/// [X.690]: https://www.itu.int/rec/T-REC-X.690
+#[must_use]
+pub fn minimal_twos_complement(v: i64) -> Vec<u8> {
+    let mut b = v.to_be_bytes().to_vec();
+    while let [first, next, ..] = b.as_slice()
+        && ((*first == 0x00 && next & 0x80 == 0)
+            || (*first == 0xff && next & 0x80 != 0))
+    {
+        b.remove(0);
+    }
+    b
+}
+
 /// The contents of a text fixture.
 ///
 /// # Panics

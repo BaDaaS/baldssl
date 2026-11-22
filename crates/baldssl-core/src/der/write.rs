@@ -7,7 +7,7 @@
 //! is the unique DER encoding of the value. The tests check each function
 //! against the strict reader, which rejects any other encoding.
 
-use super::tag;
+use super::{Integer, tag};
 
 /// One TLV with identifier octet `tag` and the given contents.
 #[must_use]
@@ -56,6 +56,37 @@ pub fn unsigned_integer(magnitude: &[u8]) -> Vec<u8> {
         contents.push(0);
     }
     contents.extend_from_slice(digits);
+    tlv(tag::INTEGER, &contents)
+}
+
+/// An INTEGER of either sign: the minimal two's complement encoding
+/// ([X.690] 8.3.2), big-endian. The value is one [`Integer::parse`]
+/// returns: a negative one has a nonzero magnitude.
+///
+/// [X.690]: https://www.itu.int/rec/T-REC-X.690
+#[must_use]
+pub fn integer(value: &Integer) -> Vec<u8> {
+    if !value.negative {
+        return unsigned_integer(&value.magnitude);
+    }
+    // -m in two's complement over the magnitude's width: !m + 1.
+    let mut contents = value.magnitude.clone();
+    let mut carry = true;
+    for b in contents.iter_mut().rev() {
+        let (v, c) = (!*b).overflowing_add(u8::from(carry));
+        *b = v;
+        carry = c;
+    }
+    // A clear top bit would read as positive: sign-extend with ff.
+    if contents.first().is_none_or(|&b| b & 0x80 == 0) {
+        contents.insert(0, 0xff);
+    }
+    // Drop redundant ff octets, keeping the encoding minimal.
+    while let [0xff, next, ..] = contents.as_slice()
+        && next & 0x80 != 0
+    {
+        contents.remove(0);
+    }
     tlv(tag::INTEGER, &contents)
 }
 
