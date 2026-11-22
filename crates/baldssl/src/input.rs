@@ -7,8 +7,13 @@ use std::{
     io::{self, Read},
 };
 
-use baldssl_core::{Error, Result};
-use baldssl_x509::Format;
+use baldssl_core::{
+    Error, Result,
+    encoding::Decodable,
+    pem::{self, Pem},
+};
+use baldssl_pkey::AnyPrivateKey;
+use baldssl_x509::{CertificationRequest, Format};
 
 /// The bytes of `path`, or of standard input without one.
 ///
@@ -57,5 +62,48 @@ pub(crate) fn parse_format(
             "{command}: Invalid format \"{}\" for option -{option}",
             value.to_string_lossy()
         ))),
+    }
+}
+
+/// Whether the bytes are PEM: a `-----BEGIN` boundary, as OpenSSL 3 detects
+/// it when no format is given.
+pub(crate) fn is_pem(bytes: &[u8]) -> bool {
+    bytes.windows(10).any(|w| w == b"-----BEGIN")
+}
+
+/// A private key file, PEM or DER (`-key`, `-CAkey`).
+///
+/// # Errors
+///
+/// An unreadable file or key.
+pub(crate) fn read_key(
+    path: &OsStr,
+    form: Option<Format>,
+) -> Result<AnyPrivateKey> {
+    let bytes = read_input(Some(path))?;
+    let pem = form.map_or_else(|| is_pem(&bytes), |f| f == Format::Pem);
+    if pem {
+        AnyPrivateKey::from_pem(&bytes)
+    } else {
+        AnyPrivateKey::decode(&bytes)
+    }
+}
+
+/// A certificate request file, or standard input, PEM or DER.
+///
+/// # Errors
+///
+/// An unreadable file or request.
+pub(crate) fn read_request(
+    path: Option<&OsStr>,
+    form: Option<Format>,
+) -> Result<CertificationRequest> {
+    let bytes = read_input(path)?;
+    let pem = form.map_or_else(|| is_pem(&bytes), |f| f == Format::Pem);
+    if pem {
+        let block = pem::decode_first(&bytes, &[CertificationRequest::LABEL])?;
+        CertificationRequest::decode(&block.contents)
+    } else {
+        CertificationRequest::decode(&bytes)
     }
 }

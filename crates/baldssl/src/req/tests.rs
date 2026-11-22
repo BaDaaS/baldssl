@@ -9,6 +9,7 @@ use baldssl_x509::InputEncoding;
 use baldssl_core::der::TimeKind;
 
 use super::{Mode, Output, Product, parse_options};
+use crate::issuing::SerialSource;
 
 fn os(v: &[&str]) -> Vec<OsString> {
     v.iter().map(OsString::from).collect()
@@ -92,8 +93,8 @@ fn refused() {
 fn certificates() {
     let o = options(&["-x509"]);
     assert_eq!((o.mode, o.product), (Mode::Create, Product::Certificate));
-    assert_eq!(o.days, 30);
-    assert_eq!(o.serial, None);
+    assert_eq!(o.lifetime.days, 30);
+    assert_eq!(o.serial, SerialSource::Random);
     let o = options(&[
         "-x509",
         "-days",
@@ -105,22 +106,17 @@ fn certificates() {
         "-not_after",
         "20500101000000Z",
     ]);
-    assert_eq!(o.days, 365);
-    assert_eq!(o.serial.unwrap().as_be_bytes(), [1, 2]);
-    let before = o.not_before.unwrap();
+    assert_eq!(o.lifetime.days, 365);
+    assert!(
+        matches!(&o.serial, SerialSource::Given(s) if s.as_be_bytes() == [1, 2])
+    );
+    let before = o.lifetime.not_before.unwrap();
     assert_eq!((before.kind, before.year), (TimeKind::Utc, 2026));
-    let after = o.not_after.unwrap();
+    let after = o.lifetime.not_after.unwrap();
     assert_eq!((after.kind, after.year), (TimeKind::Generalized, 2050));
     // A GeneralizedTime before 2050 is written as a UTCTime.
     let o = options(&["-x509", "-not_before", "20261122000000Z"]);
-    assert_eq!(o.not_before.unwrap().kind, TimeKind::Utc);
-    assert_eq!(
-        options(&["-x509", "-set_serial", "258"])
-            .serial
-            .unwrap()
-            .as_be_bytes(),
-        [1, 2]
-    );
+    assert_eq!(o.lifetime.not_before.unwrap().kind, TimeKind::Utc);
 }
 
 #[test]

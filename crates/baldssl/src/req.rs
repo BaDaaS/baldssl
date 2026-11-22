@@ -29,28 +29,26 @@
 //! interactive prompts (a request is created only with `-subj`), and
 //! encrypted keys.
 
-use std::{
-    ffi::{OsStr, OsString},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::ffi::OsString;
 
 use baldssl_core::{
     Error, Result,
-    der::{Time, TimeKind},
-    encoding::{Decodable, Encodable},
+    encoding::Encodable,
     pem::{self, Pem},
 };
 use baldssl_crypto::Algorithm as Digest;
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
     CertificateTemplate, CertificationRequest, DistinguishedName, Format,
-    InputEncoding, SerialNumber, SignatureAlgorithm, SubjWarning, UTF8_ONLY,
-    Validity,
+    InputEncoding, SubjWarning, UTF8_ONLY,
 };
 
 use crate::{
     args::{self, Kind, Spec},
-    input::{parse_format, read_input},
+    input::{parse_format, read_key, read_request},
+    issuing::{
+        Lifetime, SerialSource, parse_serial, parse_time, signature_algorithm,
+    },
 };
 
 /// Every option `baldssl req` accepts, besides the digests.
@@ -203,10 +201,8 @@ enum Output {
 struct Options {
     mode: Mode,
     product: Product,
-    days: u64,
-    serial: Option<SerialNumber>,
-    not_before: Option<Time>,
-    not_after: Option<Time>,
+    lifetime: Lifetime,
+    serial: SerialSource,
     key: Option<OsString>,
     keyform: Option<Format>,
     subj: Option<OsString>,
@@ -224,10 +220,8 @@ impl Default for Options {
         Options {
             mode: Mode::default(),
             product: Product::default(),
-            days: 30,
-            serial: None,
-            not_before: None,
-            not_after: None,
+            lifetime: Lifetime::default(),
+            serial: SerialSource::default(),
             key: None,
             keyform: None,
             subj: None,
@@ -250,53 +244,6 @@ fn digest_opt(name: &str) -> Option<Digest> {
     }
 }
 
-/// Whether the bytes are PEM: a `-----BEGIN` boundary, as OpenSSL 3 detects
-/// it when no format is given.
-fn is_pem(bytes: &[u8]) -> bool {
-    bytes.windows(10).any(|w| w == b"-----BEGIN")
-}
-
-/// The private key of `-key`.
-fn read_key(path: &OsStr, form: Option<Format>) -> Result<AnyPrivateKey> {
-    let bytes = read_input(Some(path))?;
-    let pem = form.map_or_else(|| is_pem(&bytes), |f| f == Format::Pem);
-    if pem {
-        AnyPrivateKey::from_pem(&bytes)
-    } else {
-        AnyPrivateKey::decode(&bytes)
-    }
-}
-
-/// The request of `-in`, or of standard input.
-fn read_request(
-    path: Option<&OsStr>,
-    form: Option<Format>,
-) -> Result<CertificationRequest> {
-    let bytes = read_input(path)?;
-    let pem = form.map_or_else(|| is_pem(&bytes), |f| f == Format::Pem);
-    if pem {
-        let block = pem::decode_first(&bytes, &[CertificationRequest::LABEL])?;
-        CertificationRequest::decode(&block.contents)
-    } else {
-        CertificationRequest::decode(&bytes)
-    }
-}
-
-/// The signature algorithm: the key's default, with the digest of a
-/// `-<digest>` option as ECDSA's hash. Ed25519 fixes its hash, so a digest
-/// does not change it, as in OpenSSL.
-fn signature_algorithm(
-    key: &AnyPrivateKey,
-    digest: Option<Digest>,
-) -> SignatureAlgorithm {
-    match (key.default_signature_algorithm(), digest) {
-        (SignatureAlgorithm::Ecdsa(_), Some(hash)) => {
-            SignatureAlgorithm::Ecdsa(hash)
-        }
-        (default, _) => default,
-    }
-}
-
 /// Prints OpenSSL's warning for an attribute `-subj` skipped.
 fn warn(warning: &SubjWarning) {
     match warning {
@@ -316,87 +263,6 @@ fn warn(warning: &SubjWarning) {
              \"{name}\", skipped"
         ),
     }
-}
-
-/// The request `-new` creates.
-/// The serial number of `-set_serial`: decimal digits, or hexadecimal ones
-/// after `0x`, as OpenSSL's `s2i_ASN1_INTEGER` reads them.
-fn parse_serial(value: &OsStr) -> Result<SerialNumber> {
-    let invalid = || {
-        Error::Usage(format!("req: invalid serial number {}", value.display()))
-    };
-    let text = value.to_str().ok_or_else(invalid)?;
-    let (digits, radix) =
-        match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-            Some(hex) => (hex, 16u16),
-            None => (text, 10),
-        };
-    if digits.is_empty() {
-        return Err(invalid());
-    }
-    // Big-endian bytes, multiplied by the radix and added to digit by
-    // digit.
-    let mut bytes: Vec<u8> = Vec::new();
-    for c in digits.chars() {
-        let mut carry =
-            u16::try_from(c.to_digit(radix.into()).ok_or_else(invalid)?)
-                .map_err(|_| invalid())?;
-        for byte in bytes.iter_mut().rev() {
-            let v = u16::from(*byte)
-                .checked_mul(radix)
-                .and_then(|v| v.checked_add(carry))
-                .ok_or_else(invalid)?;
-            *byte = v.to_be_bytes()[1];
-            carry = v >> 8;
-        }
-        if carry != 0 {
-            bytes.insert(0, carry.to_be_bytes()[1]);
-        }
-    }
-    SerialNumber::new_opt(&bytes).ok_or_else(|| {
-        Error::unsupported(format!(
-            "req -set_serial {text}: a serial must be positive and at most \
-             20 octets"
-        ))
-    })
-}
-
-/// Seconds since the Unix epoch, now.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-/// A `-not_before` or `-not_after` time: `today`, or a UTCTime or
-/// GeneralizedTime, written as RFC 5280 requires (UTCTime through 2049),
-/// as OpenSSL's `ASN1_TIME_set_string_X509` does.
-fn parse_time(value: &OsStr, option: &str) -> Result<Time> {
-    let invalid = || {
-        Error::Usage(format!(
-            "req: -{option}: invalid time {}",
-            value.display()
-        ))
-    };
-    let bytes = value.as_encoded_bytes();
-    if bytes == b"today" {
-        return Ok(Time::from_unix_seconds(now()));
-    }
-    let kind = match bytes.len() {
-        13 => TimeKind::Utc,
-        15 => TimeKind::Generalized,
-        _ => return Err(invalid()),
-    };
-    let mut time = Time::parse(kind, bytes).map_err(|_| invalid())?;
-    if !time.fraction.is_empty() {
-        return Err(invalid());
-    }
-    time.kind = if time.year < 2050 {
-        TimeKind::Utc
-    } else {
-        TimeKind::Generalized
-    };
-    Ok(time)
 }
 
 /// The subject of `-subj`, its warnings printed.
@@ -441,34 +307,11 @@ fn create(o: &Options) -> Result<CertificationRequest> {
 fn self_sign(o: &Options) -> Result<Vec<u8>> {
     let key = key(o)?;
     let subject = subject(o)?;
-    let start = now();
-    let not_before = o
-        .not_before
-        .clone()
-        .unwrap_or_else(|| Time::from_unix_seconds(start));
-    let not_after = match &o.not_after {
-        Some(t) => t.clone(),
-        None => Time::from_unix_seconds(
-            o.days
-                .checked_mul(86_400)
-                .and_then(|d| d.checked_add(start))
-                .ok_or_else(|| {
-                    Error::Usage(format!("req: -days {} too large", o.days))
-                })?,
-        ),
-    };
-    let serial = match &o.serial {
-        Some(s) => s.clone(),
-        None => SerialNumber::random()?,
-    };
     CertificateTemplate::self_signed(
         &subject,
         &(&key).into(),
-        serial,
-        Validity {
-            not_before,
-            not_after,
-        },
+        o.serial.next("req")?,
+        o.lifetime.validity("req")?,
         crate::x509::compat()?,
     )
     .sign(&key, signature_algorithm(&key, o.digest))
@@ -506,22 +349,18 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
             "noout" => o.output = Output::Nothing,
             "verify" => o.verify = true,
             "x509" => o.product = Product::Certificate,
-            "days" => {
-                o.days = value
-                    .to_str()
-                    .and_then(|d| d.parse().ok())
-                    .ok_or_else(|| {
-                        Error::Usage(format!(
-                            "req: invalid -days {}",
-                            value.display()
-                        ))
-                    })?;
+            "days" => o.lifetime.set_days("req", &value)?,
+            "set_serial" => {
+                o.serial = SerialSource::Given(parse_serial("req", &value)?);
             }
-            "set_serial" => o.serial = Some(parse_serial(&value)?),
             "not_before" => {
-                o.not_before = Some(parse_time(&value, "not_before")?);
+                o.lifetime.not_before =
+                    Some(parse_time("req", "not_before", &value)?);
             }
-            "not_after" => o.not_after = Some(parse_time(&value, "not_after")?),
+            "not_after" => {
+                o.lifetime.not_after =
+                    Some(parse_time("req", "not_after", &value)?);
+            }
             "text" | "newkey" | "config" | "addext" => {
                 return Err(Error::unsupported(format!("req -{}", opt.name)));
             }
