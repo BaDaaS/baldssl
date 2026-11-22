@@ -9,8 +9,10 @@ use proptest::prelude::*;
 use super::{affine::Affine as AffineOf, d, extended::Extended as ExtendedOf};
 use crate::{
     algebra::{
+        encoding::Encodable,
         field::{Field, PrimeField},
         group::{Group, scalar_mul},
+        laws,
         model::{AffineModel, CurveModel},
     },
     instances::{
@@ -120,5 +122,126 @@ proptest! {
         }
         sum[32] = carry as u8;
         prop_assert_eq!(mul_le(&sum), p.add(&q));
+    }
+}
+
+/// $\sqrt{-1} = 2^{(p - 1) / 4}$: 2 is not a square modulo $p$, as
+/// $p \equiv 5 \pmod 8$, so $2^{(p - 1)/2} = -1$.
+fn sqrt_minus_one() -> Field25519 {
+    // (p - 1) / 4 = 2^253 - 5, little-endian limbs.
+    let exponent = [
+        0xffff_ffff_ffff_fffb,
+        u64::MAX,
+        u64::MAX,
+        0x1fff_ffff_ffff_ffff,
+    ];
+    f(2).pow_vartime(&exponent)
+}
+
+/// The torsion: points on the curve that are not in the subgroup of order
+/// $\ell$. Being on the variety and being in $G = \ker [\ell]$ differ, by the
+/// cofactor 8: $E(\mathbb{F}_p) = G \oplus T$ with $T$ cyclic of order 8.
+#[test]
+fn torsion_is_on_the_curve_but_not_in_the_subgroup() {
+    let i = sqrt_minus_one();
+    assert_eq!(i.square(), -Field25519::ONE);
+    let order_2 = Affine::from_coordinates(Field25519::ZERO, -Field25519::ONE);
+    let order_4 = Affine::from_coordinates(i, Field25519::ZERO);
+    for (name, (t, on_curve)) in [("order 2", order_2), ("order 4", order_4)] {
+        assert!(on_curve.to_bool_vartime(), "{name} on the curve");
+        assert!(!t.is_identity().to_bool_vartime());
+        assert!(
+            !t.is_in_prime_subgroup().to_bool_vartime(),
+            "{name} not in G"
+        );
+        let e = Extended::from(t);
+        assert!(e.is_on_curve().to_bool_vartime());
+        assert!(!e.is_in_prime_subgroup().to_bool_vartime());
+        // B + T is on the curve, and not in G either: G is a subgroup.
+        let shifted = Extended::generator().add(&e);
+        assert!(shifted.is_on_curve().to_bool_vartime());
+        assert!(
+            !shifted.is_in_prime_subgroup().to_bool_vartime(),
+            "B + {name}"
+        );
+        // [8] T = O: the torsion is killed by the cofactor.
+        assert!(scalar_mul(&e, &[8]).is_identity().to_bool_vartime());
+    }
+    let (two_t, _) = order_2;
+    assert!(
+        Extended::from(two_t)
+            .double()
+            .is_identity()
+            .to_bool_vartime()
+    );
+    assert!(
+        Extended::generator()
+            .is_in_prime_subgroup()
+            .to_bool_vartime()
+    );
+    assert!(
+        Extended::identity()
+            .is_in_prime_subgroup()
+            .to_bool_vartime()
+    );
+}
+
+/// A point off the curve is neither on the curve nor in the subgroup.
+#[test]
+fn off_curve() {
+    let b = Affine::generator();
+    let (x, y) = b.coordinates().unwrap();
+    let off = Extended::new(
+        x,
+        y + Field25519::ONE,
+        Field25519::ONE,
+        x * (y + Field25519::ONE),
+    );
+    assert!(!off.is_on_curve().to_bool_vartime());
+    assert!(!off.is_in_prime_subgroup().to_bool_vartime());
+    // T must equal X Y / Z.
+    let bad_t = Extended::new(x, y, Field25519::ONE, x);
+    assert!(!bad_t.is_on_curve().to_bool_vartime());
+}
+
+/// The encoding of the base point given in [RFC 8032, section 5.1][rfc8032-5.1]
+/// ($y = 4/5$, $x$ even): `58` followed by 31 bytes `66`.
+///
+/// [rfc8032-5.1]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1
+#[test]
+fn golden_encoding() {
+    let mut expected = vec![0x66u8; 32];
+    expected[0] = 0x58;
+    assert_eq!(Affine::generator().encode(), expected);
+    assert_eq!(Extended::generator().encode(), expected);
+    // The identity (0, 1): y = 1, x even.
+    let mut one = vec![0u8; 32];
+    one[0] = 1;
+    assert_eq!(Affine::identity().encode(), one);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    /// The group axioms and the isomorphism with the affine chart, on random
+    /// multiples of B, and on points shifted by torsion (outside G).
+    #[test]
+    fn group_and_model_laws(
+        a in prop::collection::vec(any::<u8>(), 32),
+        b in prop::collection::vec(any::<u8>(), 32),
+        c in prop::collection::vec(any::<u8>(), 32),
+    ) {
+        let (p, q, r) = (mul_le(&a), mul_le(&b), mul_le(&c));
+        laws::group(&p, &q, &r);
+        laws::projective_model(&p);
+        laws::projective_model(&p.add(&q));
+        prop_assert!(p.is_in_prime_subgroup().to_bool_vartime());
+        let (t, _) = Affine::from_coordinates(Field25519::ZERO, -Field25519::ONE);
+        let shifted = p.add(&Extended::from(t));
+        laws::group(&shifted, &q, &r);
+        laws::projective_model(&shifted);
+        prop_assert!(!shifted.is_in_prime_subgroup().to_bool_vartime());
+        // [l] P = O on G.
+        prop_assert!(scalar_mul(&p, &ScalarEd25519::modulus_be()).is_identity().to_bool_vartime());
     }
 }

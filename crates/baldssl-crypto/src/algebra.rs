@@ -35,4 +35,6 @@ pub mod encoding;
 pub mod field;
 pub mod fp;
 pub mod group;
+#[cfg(test)]
+pub(crate) mod laws;
 pub mod model;

@@ -18,6 +18,7 @@ use crate::{
         encoding::{Decodable, Encodable},
         field::{Field, PrimeField},
         group::{Group, GroupVartime, scalar_mul},
+        laws,
         model::{AffineModel, CurveModel},
     },
     instances::{P256, P384, P521},
@@ -281,7 +282,22 @@ where
     assert_eq!(Affine::from(Jacobian::from(p)), ap);
     assert_eq!(Projective::from(ap), p);
 
+    // The axioms of each group law, and of each model's isomorphism with the
+    // affine chart, on random points.
+    let r = mul(&p, &k2);
+    laws::group(&p, &q, &r);
+    let jr = Jacobian::from(r);
+    laws::group_vartime(&jp, &jq, &jr);
+    laws::projective_model(&p);
+    laws::projective_model(&p.add(&q));
+    laws::jacobian_model(&js);
+    // Cofactor 1: every point on the curve is in the subgroup.
+    assert!(p.is_in_prime_subgroup().to_bool_vartime());
+    assert!(ap.is_in_prime_subgroup().to_bool_vartime());
+
     // Encoding round trip, and rejection of a point off the curve.
+    laws::round_trip(&ap);
+    laws::round_trip(&Affine::<C>::identity());
     let enc = ap.encode();
     assert_eq!(Affine::<C>::decode(&enc), Some(ap));
     let mut off = enc.clone();
@@ -289,6 +305,98 @@ where
         *last ^= 1;
     }
     assert_eq!(Affine::<C>::decode(&off), None, "{} off-curve", C::NAME);
+    let (off_point, on_curve) = Affine::<C>::from_coordinates(
+        ap.coordinates().unwrap().0,
+        ap.coordinates().unwrap().1 + C::Base::ONE,
+    );
+    assert!(!on_curve.to_bool_vartime());
+    assert_eq!(off_point, Affine::identity());
+}
+
+fn hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// $x + p$ big-endian on `len` bytes, if it fits: the same residue as $x$,
+/// written non-canonically.
+fn plus_modulus<C>(x: &[u8]) -> Option<Vec<u8>>
+where
+    C: ShortWeierstrass,
+{
+    let p = C::Base::modulus_be();
+    let mut out = x.to_vec();
+    let mut carry = 0u16;
+    for i in (0..out.len()).rev() {
+        let pi = (p.len() + i).checked_sub(out.len()).and_then(|j| p.get(j));
+        let s = u16::from(out[i]) + u16::from(*pi.unwrap_or(&0)) + carry;
+        out[i] = s.to_le_bytes()[0];
+        carry = s >> 8;
+    }
+    (carry == 0).then_some(out)
+}
+
+/// Canonicity: the generator with $x$ replaced by $x + p$, the same field
+/// element, is rejected whenever it fits; for P-521 it always fits, since
+/// $p < 2^{521}$ is stored on 66 bytes. And no other encoding of the
+/// generator than the canonical one decodes.
+fn check_canonicity<C>() -> bool
+where
+    C: ShortWeierstrass,
+{
+    let enc = Affine::<C>::generator().encode();
+    laws::canonical::<Affine<C>>(&enc);
+    let len = C::Base::BYTES;
+    let Some(x) = plus_modulus::<C>(&enc[1..=len]) else {
+        return false;
+    };
+    let mut alias = enc.clone();
+    alias[1..=len].copy_from_slice(&x);
+    assert_eq!(Affine::<C>::decode(&alias), None, "{} x + p", C::NAME);
+    true
+}
+
+#[test]
+fn canonicity() {
+    check_canonicity::<P256>();
+    check_canonicity::<P384>();
+    assert!(check_canonicity::<P521>(), "P-521: x + p fits on 66 bytes");
+}
+
+/// The SEC 1 encoding of the P-256 generator, from the values printed in
+/// [SEC 2][sec2], section 2.4.2, not from the code's constants.
+///
+/// [sec2]: https://www.secg.org/sec2-v2.pdf
+#[test]
+fn golden_encoding() {
+    let g = concat!(
+        "04",
+        "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+        "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+    );
+    let g = hex(g);
+    assert_eq!(Affine::<P256>::generator().encode(), g);
+    assert_eq!(Affine::<P256>::decode(&g), Some(Affine::generator()));
+    assert_eq!(Affine::<P256>::identity().encode(), vec![0x00]);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Canonicity over arbitrary bytes, of the length of an encoding and of
+    /// any length, with the uncompressed prefix.
+    #[test]
+    fn canonical_bytes(mut b in prop::collection::vec(any::<u8>(), 0..140), cut in 0usize..140) {
+        b.truncate(cut);
+        laws::canonical::<Affine<P256>>(&b);
+        if let Some(first) = b.first_mut() {
+            *first = 0x04;
+        }
+        laws::canonical::<Affine<P256>>(&b);
+        laws::canonical::<Affine<P521>>(&b);
+    }
 }
 
 fn bytes() -> impl Strategy<Value = Vec<u8>> {

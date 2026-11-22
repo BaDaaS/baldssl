@@ -74,3 +74,23 @@ fn clamping() {
         assert_eq!(s[0] & 0x40, 0x40);
     }
 }
+
+/// The public key is the exponential map composed with the key expansion:
+/// `public_key = encode([secret_scalar] B)`, written out here rather than
+/// through the provided method. The secret scalar is a multiple of the
+/// cofactor, so the public key lies in the prime-order subgroup.
+#[test]
+fn public_key_is_the_exponential_of_the_secret_scalar() {
+    use crate::{
+        algebra::{encoding::Encodable, group::scalar_mul, model::CurveModel},
+        instances::Edwards25519,
+        models::edwards::extended::Extended,
+    };
+    for byte in [0u8, 1, 0x55, 0xff] {
+        let seed = [byte; 32];
+        let s = Ed25519::secret_scalar(&seed);
+        let a = scalar_mul(&Extended::<Edwards25519>::generator(), &s);
+        assert!(a.is_in_prime_subgroup().to_bool_vartime());
+        assert_eq!(Ed25519::public_key(&seed), a.encode());
+    }
+}
