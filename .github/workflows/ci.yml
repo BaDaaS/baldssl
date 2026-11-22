@@ -163,6 +163,8 @@ jobs:
           persist-credentials: false
       - id: matrix
         run: make -s platform-matrix >> "$GITHUB_OUTPUT"
+      - name: Test platform version monitor
+        run: python3 -m unittest discover -s scripts -p 'test_platform_versions.py'
 
   # glibc: built and run inside each distribution with its own C toolchain.
   # The version below the minimum (glibc 2.24, before getrandom appeared in
