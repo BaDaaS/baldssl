@@ -16,7 +16,13 @@
 //!
 //! The group must be a [`ProjectiveModel`], a constant-time group: the
 //! exponential map is computed on the secret scalar.
+//!
+//! Signing and verifying are separate traits over a [`SignatureScheme`]
+//! that names the key and signature types: [`Signer`] holds the secret
+//! operation, [`Verifier`] the public one, with the correctness law
+//! `verify(pk, m, sign(sk, m))` for the public key `pk` of `sk`.
 
+pub mod ecdsa;
 pub mod eddsa;
 
 use crate::algebra::{
@@ -52,4 +58,44 @@ pub trait DigitalSignature {
         .to_affine()
         .encode()
     }
+}
+
+/// The types of a signature scheme: what signs, what verifies, and what a
+/// signature is.
+pub trait SignatureScheme {
+    /// What signs: a secret key, with its public key.
+    type SigningKey;
+    /// What verifies: a public key, valid by construction.
+    type VerifyingKey;
+    /// A signature.
+    type Signature;
+}
+
+/// The signing algorithm of a scheme. Constant time in the secret key and
+/// in any secret derived from it.
+pub trait Signer: SignatureScheme {
+    /// Why signing failed.
+    type Error;
+
+    /// A signature of `message` under `key`.
+    ///
+    /// # Errors
+    ///
+    /// [`Signer::Error`], when the scheme cannot produce a signature.
+    fn sign(
+        key: &Self::SigningKey,
+        message: &[u8],
+    ) -> Result<Self::Signature, Self::Error>;
+}
+
+/// The verification algorithm of a scheme. Its inputs are public, so it
+/// may run in variable time.
+pub trait Verifier: SignatureScheme {
+    /// Whether `signature` is a signature of `message` under `key`.
+    #[must_use]
+    fn verify(
+        key: &Self::VerifyingKey,
+        message: &[u8],
+        signature: &Self::Signature,
+    ) -> bool;
 }

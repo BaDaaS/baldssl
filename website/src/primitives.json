@@ -61,8 +61,8 @@
       "id": "ecdsa",
       "name": "ECDSA",
       "purpose": "Signing and verifying with P-256, P-384 and P-521 (FIPS 186-5), for certificate requests, signing and verification.",
-      "status": "planned",
-      "link": ""
+      "status": "implemented",
+      "link": "https://github.com/BaDaaS/baldssl/pull/96"
     },
     {
       "id": "hmac-drbg",
