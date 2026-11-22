@@ -6,6 +6,7 @@ members = [
   "crates/baldssl",
   "crates/baldssl-core",
   "crates/baldssl-crypto",
+  "crates/baldssl-pkey",
   "crates/baldssl-test-utils",
   "crates/baldssl-x509",
 ]

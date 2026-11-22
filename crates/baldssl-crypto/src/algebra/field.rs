@@ -100,6 +100,47 @@ pub trait PrimeField: Field {
     /// is not an element (it is zero in the field); scalar multiplication by
     /// the order of a group uses it.
     fn modulus_be() -> Vec<u8>;
+
+    /// A uniformly random nonzero element, by rejection sampling: draw
+    /// [`PrimeField::BITS`] random bits (big-endian, the bits above `BITS`
+    /// in the first byte cleared) from `fill`, and draw again while the value
+    /// is zero or not below $p$.
+    ///
+    /// Each value of $[1, p - 1]$ has the same probability on every draw and
+    /// the draws are independent, so the value returned is uniform on
+    /// $\mathbb{F}_p^*$. A draw is accepted with probability
+    /// $(p - 1) / 2^{\mathrm{BITS}} > 1/2$, so the expected number of draws is
+    /// below 2, and that number does not depend on the value returned. This
+    /// is a process equivalent to [FIPS 186-5, appendix A.2.2][fips186]
+    /// (key pair generation by rejection sampling), which returns an error on
+    /// the first rejection where this draws again.
+    ///
+    /// # Errors
+    ///
+    /// The error of `fill`.
+    ///
+    /// [fips186]: https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.186-5.pdf
+    fn random_nonzero<F, E>(mut fill: F) -> Result<Self, E>
+    where
+        F: FnMut(&mut [u8]) -> Result<(), E>,
+    {
+        // BYTES * 8 - BITS is below 8 by the definition of BYTES.
+        let spare = u32::try_from(Self::BYTES * 8)
+            .map_or(0, |bits| bits.saturating_sub(Self::BITS));
+        let mask = 0xffu8.checked_shr(spare).unwrap_or(0);
+        let mut buf = vec![0u8; Self::BYTES];
+        loop {
+            fill(&mut buf)?;
+            if let Some(first) = buf.first_mut() {
+                *first &= mask;
+            }
+            let (x, valid) = Self::from_bytes_be(&buf);
+            if (valid & !x.is_zero()).to_bool_vartime() {
+                buf.fill(0);
+                return Ok(x);
+            }
+        }
+    }
 }
 
 /// Square roots: half of the nonzero elements of $\mathbb{F}_p$ are squares

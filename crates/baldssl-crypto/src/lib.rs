@@ -13,8 +13,9 @@
 //!    extended for twisted Edwards curves.
 //! 3. [`instances`], the curves as data: P-256, P-384, P-521 and
 //!    edwards25519.
-//! 4. The primitives built on them: [`signature`] (EdDSA) and [`hash`] (SHA-1,
-//!    SHA-2, [FIPS 180-4][fips180]).
+//! 4. The primitives built on them: [`signature`] (EdDSA), [`keys`] (key
+//!    pairs whose public part is derived from the secret), and [`hash`]
+//!    (SHA-1, SHA-2, [FIPS 180-4][fips180]).
 //!
 //! [`ct`] (constant-time building blocks) and [`os_rng`] (randomness from
 //! the operating system, the only module allowed to use `unsafe`) support
@@ -29,6 +30,7 @@ pub mod algebra;
 pub mod ct;
 pub mod hash;
 pub mod instances;
+pub mod keys;
 pub mod models;
 pub mod os_rng;
 pub mod signature;

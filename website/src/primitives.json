@@ -54,8 +54,8 @@
       "id": "pkcs8",
       "name": "Private keys (PKCS#8)",
       "purpose": "Generating keys and writing them as openssl genpkey does.",
-      "status": "planned",
-      "link": ""
+      "status": "implemented",
+      "link": "https://github.com/BaDaaS/baldssl/pull/12"
     },
     {
       "id": "ecdsa",

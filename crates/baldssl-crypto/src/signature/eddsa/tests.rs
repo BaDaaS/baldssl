@@ -48,7 +48,7 @@ fn rfc8032_vectors() {
 fn openssl_key_pairs() {
     let mut seen = 0;
     for line in fixture("keys/keypairs.txt").lines() {
-        if let ["ED25519", private, public] =
+        if let ["ED25519", private, public, ..] =
             line.split_whitespace().collect::<Vec<_>>()[..]
         {
             assert_eq!(

@@ -133,6 +133,10 @@ check-opt-suffix: ## Fail on a function returning an Option without _opt
 check-practices: ## Fail if the README and the website list different practices
 	python3 scripts/check_practices.py README.md website/src/practices.json
 
+.PHONY: pkcs8-agreement
+pkcs8-agreement: fixtures ## Check OPENSSL_3 and OPENSSL_4 write equal PKCS#8
+	scripts/pkcs8-agreement.sh $(OPENSSL_3) $(OPENSSL_4)
+
 .PHONY: check-urls
 check-urls: doc ## Check every URL in the sources and the rendered docs
 	python3 scripts/check_urls.py crates fuzz/fuzz_targets scripts README.md \
