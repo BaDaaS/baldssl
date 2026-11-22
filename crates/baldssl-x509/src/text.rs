@@ -489,12 +489,13 @@ pub fn print_request_text(
         &SubjectPublicKeyInfo::from_der(&spki)?,
         compat,
     )?;
-    if !request.attributes().is_empty() {
-        return Err(Error::unsupported("request attributes in -text output"));
+    let extensions = request.requested_extensions()?;
+    out.extend_from_slice(b"        Attributes:\n");
+    if extensions.is_empty() {
+        out.extend_from_slice(b"            (none)\n");
     }
-    out.extend_from_slice(
-        b"        Attributes:\n            (none)\n            Requested Extensions:\n",
-    );
+    out.extend_from_slice(b"            Requested Extensions:\n");
+    ext::print_extension_list(&mut out, &extensions, 16)?;
     let oid = algorithm::oid(request.algorithm());
     print_signed(
         &mut out,
