@@ -20,6 +20,11 @@ pub use sha512::{Sha384, Sha512};
 pub trait Digest: Sized {
     /// Digest length in bytes.
     const OUTPUT_LEN: usize;
+    /// Block length in bytes: what the compression function absorbs at a
+    /// time, the `B` of HMAC ([RFC 2104 section 2][rfc2104]).
+    ///
+    /// [rfc2104]: https://www.rfc-editor.org/rfc/rfc2104#section-2
+    const BLOCK_LEN: usize;
     /// A fresh state.
     #[must_use]
     fn new() -> Self;

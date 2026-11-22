@@ -66,6 +66,22 @@ pub trait CtEq {
     fn ct_eq(&self, other: &Self) -> Choice;
 }
 
+/// Byte strings compare in time that depends on their lengths only, which
+/// are public: a MAC tag or a padded key is compared without returning at
+/// the first difference.
+impl CtEq for [u8] {
+    fn ct_eq(&self, other: &Self) -> Choice {
+        if self.len() != other.len() {
+            return Choice::FALSE;
+        }
+        let diff = self
+            .iter()
+            .zip(other)
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b));
+        is_zero(u64::from(core::hint::black_box(diff)))
+    }
+}
+
 /// Selection without branching: `a` if `choice` is false, `b` if it is
 /// true. With [`CtEq`], what a type needs for constant-time code over it.
 pub trait CtSelect: Sized {
