@@ -13,6 +13,7 @@ mod issuing;
 mod keygen;
 mod pkey;
 mod req;
+mod verify;
 mod x509;
 
 use std::{
@@ -30,6 +31,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("help", "List the commands"),
     ("pkey", "Read, convert, print and check keys"),
     ("req", "Create, read and verify certificate requests"),
+    ("verify", "Verify certificate chains"),
     ("version", "Print the baldssl version"),
     ("x509", "Display X.509 certificates"),
 ];
@@ -51,6 +53,7 @@ fn dispatch(args: &[OsString]) -> Result<(Vec<u8>, Option<OsString>), Error> {
         Some("genpkey") => genpkey::render(rest),
         Some("pkey") => pkey::render(rest),
         Some("req") => req::render(rest),
+        Some("verify") => verify::render(rest),
         Some("x509") => x509::render(rest),
         Some("version") => Ok((
             format!("baldssl {}\n", env!("CARGO_PKG_VERSION")).into_bytes(),
@@ -93,7 +96,10 @@ fn main() -> ExitCode {
             let command = args
                 .first()
                 .map_or_else(|| "baldssl".into(), |c| c.to_string_lossy());
-            eprintln!("{command}: {e}");
+            // A command that reported its failure itself adds nothing.
+            if !matches!(e, Error::Reported(_)) {
+                eprintln!("{command}: {e}");
+            }
             ExitCode::from(e.exit_code())
         }
     }

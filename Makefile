@@ -249,6 +249,7 @@ interop: build fixtures ## Diff baldssl against $(OPENSSL), both directions
 	scripts/req-interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/x509-req-interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/pkey-interop.sh $(OPENSSL) $(BALDSSL)
+	scripts/verify-interop.sh $(OPENSSL) $(BALDSSL)
 
 .PHONY: golden
 golden: fixtures ## Regenerate golden files from OpenSSL 3.0, 3.5 and 4.1
