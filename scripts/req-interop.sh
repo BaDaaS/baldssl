@@ -9,6 +9,8 @@
 #   have the same subject and public key (OpenSSL's nonces are random);
 # - reading and converting OpenSSL's request (PEM, DER, -noout) prints what
 #   OpenSSL prints;
+# - self-signed certificates (-x509) verify as their own CA in OpenSSL,
+#   and match OpenSSL's for a fixed serial and validity;
 # - a request with a changed byte fails -verify in both. OpenSSL 3.0 prints
 #   "verify failure" but exits 0 there (later releases exit 1), so with
 #   3.0 OpenSSL's refusal is read from its message. baldssl exits 1 under
@@ -30,6 +32,12 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/baldssl-req.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 OPENSSL_VERSION=$("$OPENSSL" version | awk '{print $2}')
+# The release line baldssl imitates, as in scripts/interop.sh.
+case "$OPENSSL_VERSION" in
+    3.0.*) BALDSSL_OPENSSL_COMPAT=3.0 ;;
+    *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
+esac
+export BALDSSL_OPENSSL_COMPAT
 pass=0
 fail=0
 
@@ -126,6 +134,36 @@ while read -r curve _private _public pkcs8; do
         fi
         refuse "$label: baldssl refuses a changed request" \
             "$BALDSSL" req -in "$WORK/bad.der" -inform DER -verify -noout
+        # Self-signed certificates: OpenSSL verifies baldssl's as its own
+        # CA; with a fixed serial and validity, Ed25519 ones are identical
+        # and ECDSA ones print the same fields. OpenSSL 3.0's req has no
+        # -not_before, so with it only the verification runs.
+        "$BALDSSL" req -x509 -key "$key" -keyform DER -subj "$subj" \
+            -out "$WORK/bc.pem"
+        check "$label: OpenSSL verifies baldssl's certificate" \
+            "$OPENSSL" verify -CAfile "$WORK/bc.pem" "$WORK/bc.pem"
+        if [[ "$OPENSSL_VERSION" != 3.0.* ]]; then
+            fixed=(-set_serial 0x0102 -not_before 20261122000000Z
+                -not_after 20510101000000Z)
+            "$BALDSSL" req -x509 -key "$key" -keyform DER -subj "$subj" \
+                "${fixed[@]}" -out "$WORK/bc.pem"
+            "$OPENSSL" req -x509 -key "$key" -keyform DER -subj "$subj" \
+                "${fixed[@]}" -out "$WORK/oc.pem" 2>/dev/null
+            if [[ "$curve" == "ED25519" ]]; then
+                same "$label: identical certificates" "$WORK/bc.pem" \
+                    "$WORK/oc.pem"
+            else
+                extensions="subjectKeyIdentifier,authorityKeyIdentifier"
+                extensions+=",basicConstraints"
+                fields=(-noout -subject -issuer -serial -dates -pubkey
+                    -ext "$extensions")
+                "$OPENSSL" x509 -in "$WORK/bc.pem" "${fields[@]}" \
+                    >"$WORK/b.txt"
+                "$OPENSSL" x509 -in "$WORK/oc.pem" "${fields[@]}" \
+                    >"$WORK/o.txt"
+                same "$label: certificate fields" "$WORK/b.txt" "$WORK/o.txt"
+            fi
+        fi
     done
 done < <(grep -v '^#' "$ROOT/tests/fixtures/keys/keypairs.txt")
 

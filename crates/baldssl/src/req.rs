@@ -10,25 +10,42 @@
 //!   SHA-256 by default, and none for Ed25519);
 //! - reading one: `-in <file>` (standard input without it), `-inform`;
 //! - `-verify` (the message on standard error, exit 1 on failure, as
-//!   OpenSSL), `-out`, `-outform PEM|DER`, `-noout`.
+//!   OpenSSL), `-out`, `-outform PEM|DER`, `-noout`;
+//! - a self-signed certificate instead of a request: `-x509`, which
+//!   implies `-new` as in OpenSSL 3, with `-days` (30 by default),
+//!   `-set_serial` (decimal, or hexadecimal after `0x`; 159 random bits by
+//!   default, as OpenSSL draws them), `-not_before` and `-not_after`
+//!   (`YYMMDDHHMMSSZ`, `YYYYMMDDHHMMSSZ` or `today`; `-not_after` wins over
+//!   `-days`). The certificate carries the extensions of the `v3_ca`
+//!   section of OpenSSL's default configuration file, which differs
+//!   between OpenSSL 3 and 4 in the authority key identifier; the release
+//!   line is the one `BALDSSL_OPENSSL_COMPAT` names, as for `x509` (see
+//!   [`baldssl_x509::CertificateTemplate::self_signed`]).
 //!
-//! As in OpenSSL, `-key` does not imply `-new`: without `-new`, a request
-//! is read. Not supported, and reported as such: `-text`, `-newkey`,
-//! `-x509`, `-config`, `-addext`, the interactive prompts (a request is
-//! created only with `-subj`), and encrypted keys.
+//! As in OpenSSL, `-key` does not imply `-new`: without `-new` or `-x509`,
+//! a request is read. Not supported, and reported as such: `-text`,
+//! `-newkey`, `-config`, `-addext`, `-x509` with `-in` (signing an existing
+//! request), `-x509` with `-verify`, negative or zero serials, the
+//! interactive prompts (a request is created only with `-subj`), and
+//! encrypted keys.
 
-use std::ffi::{OsStr, OsString};
+use std::{
+    ffi::{OsStr, OsString},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use baldssl_core::{
     Error, Result,
+    der::{Time, TimeKind},
     encoding::{Decodable, Encodable},
     pem::{self, Pem},
 };
 use baldssl_crypto::Algorithm as Digest;
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
-    CertificationRequest, DistinguishedName, Format, InputEncoding,
-    SignatureAlgorithm, SubjWarning, UTF8_ONLY,
+    CertificateTemplate, CertificationRequest, DistinguishedName, Format,
+    InputEncoding, SerialNumber, SignatureAlgorithm, SubjWarning, UTF8_ONLY,
+    Validity,
 };
 
 use crate::{
@@ -116,7 +133,27 @@ pub(crate) const SPECS: &[Spec] = &[
     Spec {
         name: "x509",
         kind: Kind::Flag,
-        help: "Write a self-signed certificate (not supported yet)",
+        help: "Write a self-signed certificate instead of a request",
+    },
+    Spec {
+        name: "days",
+        kind: Kind::Value,
+        help: "Days the certificate is valid for (default 30)",
+    },
+    Spec {
+        name: "set_serial",
+        kind: Kind::Value,
+        help: "Serial number of the certificate (default random)",
+    },
+    Spec {
+        name: "not_before",
+        kind: Kind::Value,
+        help: "Start of validity: YYMMDDHHMMSSZ, YYYYMMDDHHMMSSZ or today",
+    },
+    Spec {
+        name: "not_after",
+        kind: Kind::Value,
+        help: "End of validity, overriding -days: as -not_before",
     },
     Spec {
         name: "config",
@@ -140,13 +177,23 @@ enum Mode {
     Create,
 }
 
-/// What `req` writes.
+/// What `req` produces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Product {
+    /// A certificate signing request.
+    #[default]
+    Request,
+    /// A self-signed certificate (`-x509`).
+    Certificate,
+}
+
+/// How `req` writes what it produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Output {
-    /// The request, PEM.
+    /// PEM.
     #[default]
     Pem,
-    /// The request, DER.
+    /// DER.
     Der,
     /// Nothing (`-noout`).
     Nothing,
@@ -155,6 +202,11 @@ enum Output {
 /// The options, once read.
 struct Options {
     mode: Mode,
+    product: Product,
+    days: u64,
+    serial: Option<SerialNumber>,
+    not_before: Option<Time>,
+    not_after: Option<Time>,
     key: Option<OsString>,
     keyform: Option<Format>,
     subj: Option<OsString>,
@@ -171,6 +223,11 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             mode: Mode::default(),
+            product: Product::default(),
+            days: 30,
+            serial: None,
+            not_before: None,
+            not_after: None,
             key: None,
             keyform: None,
             subj: None,
@@ -262,12 +319,88 @@ fn warn(warning: &SubjWarning) {
 }
 
 /// The request `-new` creates.
-fn create(o: &Options) -> Result<CertificationRequest> {
-    let key_path = o
-        .key
-        .as_deref()
-        .ok_or_else(|| Error::unsupported("req -new without -key (-newkey)"))?;
-    let key = read_key(key_path, o.keyform)?;
+/// The serial number of `-set_serial`: decimal digits, or hexadecimal ones
+/// after `0x`, as OpenSSL's `s2i_ASN1_INTEGER` reads them.
+fn parse_serial(value: &OsStr) -> Result<SerialNumber> {
+    let invalid = || {
+        Error::Usage(format!("req: invalid serial number {}", value.display()))
+    };
+    let text = value.to_str().ok_or_else(invalid)?;
+    let (digits, radix) =
+        match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            Some(hex) => (hex, 16u16),
+            None => (text, 10),
+        };
+    if digits.is_empty() {
+        return Err(invalid());
+    }
+    // Big-endian bytes, multiplied by the radix and added to digit by
+    // digit.
+    let mut bytes: Vec<u8> = Vec::new();
+    for c in digits.chars() {
+        let mut carry =
+            u16::try_from(c.to_digit(radix.into()).ok_or_else(invalid)?)
+                .map_err(|_| invalid())?;
+        for byte in bytes.iter_mut().rev() {
+            let v = u16::from(*byte)
+                .checked_mul(radix)
+                .and_then(|v| v.checked_add(carry))
+                .ok_or_else(invalid)?;
+            *byte = v.to_be_bytes()[1];
+            carry = v >> 8;
+        }
+        if carry != 0 {
+            bytes.insert(0, carry.to_be_bytes()[1]);
+        }
+    }
+    SerialNumber::new_opt(&bytes).ok_or_else(|| {
+        Error::unsupported(format!(
+            "req -set_serial {text}: a serial must be positive and at most \
+             20 octets"
+        ))
+    })
+}
+
+/// Seconds since the Unix epoch, now.
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// A `-not_before` or `-not_after` time: `today`, or a UTCTime or
+/// GeneralizedTime, written as RFC 5280 requires (UTCTime through 2049),
+/// as OpenSSL's `ASN1_TIME_set_string_X509` does.
+fn parse_time(value: &OsStr, option: &str) -> Result<Time> {
+    let invalid = || {
+        Error::Usage(format!(
+            "req: -{option}: invalid time {}",
+            value.display()
+        ))
+    };
+    let bytes = value.as_encoded_bytes();
+    if bytes == b"today" {
+        return Ok(Time::from_unix_seconds(now()));
+    }
+    let kind = match bytes.len() {
+        13 => TimeKind::Utc,
+        15 => TimeKind::Generalized,
+        _ => return Err(invalid()),
+    };
+    let mut time = Time::parse(kind, bytes).map_err(|_| invalid())?;
+    if !time.fraction.is_empty() {
+        return Err(invalid());
+    }
+    time.kind = if time.year < 2050 {
+        TimeKind::Utc
+    } else {
+        TimeKind::Generalized
+    };
+    Ok(time)
+}
+
+/// The subject of `-subj`, its warnings printed.
+fn subject(o: &Options) -> Result<DistinguishedName> {
     let subj = o.subj.as_deref().ok_or_else(|| {
         Error::unsupported("req -new without -subj (interactive prompts)")
     })?;
@@ -281,11 +414,64 @@ fn create(o: &Options) -> Result<CertificationRequest> {
     for w in &warnings {
         warn(w);
     }
+    Ok(subject)
+}
+
+/// The key of `-key`.
+fn key(o: &Options) -> Result<AnyPrivateKey> {
+    let path = o
+        .key
+        .as_deref()
+        .ok_or_else(|| Error::unsupported("req -new without -key (-newkey)"))?;
+    read_key(path, o.keyform)
+}
+
+/// A new request, from `-key` and `-subj`.
+fn create(o: &Options) -> Result<CertificationRequest> {
+    let key = key(o)?;
     CertificationRequest::sign(
-        &subject,
+        &subject(o)?,
         &key,
         signature_algorithm(&key, o.digest),
     )
+}
+
+/// A new self-signed certificate, DER, from `-key`, `-subj` and the
+/// validity and serial options.
+fn self_sign(o: &Options) -> Result<Vec<u8>> {
+    let key = key(o)?;
+    let subject = subject(o)?;
+    let start = now();
+    let not_before = o
+        .not_before
+        .clone()
+        .unwrap_or_else(|| Time::from_unix_seconds(start));
+    let not_after = match &o.not_after {
+        Some(t) => t.clone(),
+        None => Time::from_unix_seconds(
+            o.days
+                .checked_mul(86_400)
+                .and_then(|d| d.checked_add(start))
+                .ok_or_else(|| {
+                    Error::Usage(format!("req: -days {} too large", o.days))
+                })?,
+        ),
+    };
+    let serial = match &o.serial {
+        Some(s) => s.clone(),
+        None => SerialNumber::random()?,
+    };
+    CertificateTemplate::self_signed(
+        &subject,
+        &(&key).into(),
+        serial,
+        Validity {
+            not_before,
+            not_after,
+        },
+        crate::x509::compat()?,
+    )
+    .sign(&key, signature_algorithm(&key, o.digest))
 }
 
 /// Reads the options.
@@ -319,7 +505,24 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
             }
             "noout" => o.output = Output::Nothing,
             "verify" => o.verify = true,
-            "text" | "newkey" | "x509" | "config" | "addext" => {
+            "x509" => o.product = Product::Certificate,
+            "days" => {
+                o.days = value
+                    .to_str()
+                    .and_then(|d| d.parse().ok())
+                    .ok_or_else(|| {
+                        Error::Usage(format!(
+                            "req: invalid -days {}",
+                            value.display()
+                        ))
+                    })?;
+            }
+            "set_serial" => o.serial = Some(parse_serial(&value)?),
+            "not_before" => {
+                o.not_before = Some(parse_time(&value, "not_before")?);
+            }
+            "not_after" => o.not_after = Some(parse_time(&value, "not_after")?),
+            "text" | "newkey" | "config" | "addext" => {
                 return Err(Error::unsupported(format!("req -{}", opt.name)));
             }
             name => {
@@ -328,6 +531,15 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
                 })?);
             }
         }
+    }
+    if o.product == Product::Certificate {
+        if o.input.is_some() {
+            return Err(Error::unsupported("req -x509 -in"));
+        }
+        if o.verify {
+            return Err(Error::unsupported("req -x509 -verify"));
+        }
+        o.mode = Mode::Create;
     }
     Ok(Some(o))
 }
@@ -342,6 +554,15 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     let Some(o) = parse_options(raw)? else {
         return Ok((args::usage("req", SPECS).into_bytes(), None));
     };
+    if o.product == Product::Certificate {
+        let der = self_sign(&o)?;
+        let bytes = match o.output {
+            Output::Nothing => Vec::new(),
+            Output::Der => der,
+            Output::Pem => pem::encode("CERTIFICATE", &der).into_bytes(),
+        };
+        return Ok((bytes, o.output_path));
+    }
     let request = match o.mode {
         Mode::Create => create(&o)?,
         Mode::Read => read_request(o.input.as_deref(), o.inform)?,
