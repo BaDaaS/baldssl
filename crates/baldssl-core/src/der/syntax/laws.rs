@@ -10,9 +10,19 @@
 
 #![allow(
     clippy::panic,
+    reason = "a violated law is reported by assert!, which panics: the \
+              check runs inside a test, where a panic is a failure"
+)]
+#![allow(
     clippy::expect_used,
+    reason = "each expect states what the law guarantees (a description \
+              reads back what it wrote; a tagged encoding is never empty), \
+              so it fails only on a violation, as a failing test"
+)]
+#![allow(
     clippy::missing_panics_doc,
-    reason = "test checks: a violated law is a failing test"
+    reason = "every check panics exactly when its law is violated; the \
+              module documentation says so once for all of them"
 )]
 
 use core::fmt::Debug;
