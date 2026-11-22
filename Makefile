@@ -174,10 +174,16 @@ test-os-rng-system-rust: ## os_rng with the OS's packaged Rust (BSD VMs)
 	rustc --version
 	cargo test --ignore-rust-version -p baldssl-crypto --lib os_rng
 
+# The timeout is how long a test binary may go without a response. The
+# instrumented debug build of the curve arithmetic is slow: its
+# scalar-multiplication and key-generation tests can stay silent for more
+# than tarpaulin's default of 60 seconds.
+COVERAGE_TIMEOUT = 600
+
 .PHONY: coverage
 coverage: ## Coverage report (Cobertura XML + HTML) in target/coverage
 	cargo tarpaulin --workspace --engine llvm --out Xml --out Html \
-		--output-dir target/coverage
+		--timeout $(COVERAGE_TIMEOUT) --output-dir target/coverage
 
 .PHONY: mutants
 mutants: ## Mutation testing (slow); survivors are missing tests
