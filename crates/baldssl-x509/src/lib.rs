@@ -56,7 +56,8 @@ pub use issue::{
 };
 pub use name::{Name, NameStyle};
 pub use text::{
-    Compat, print_request_text, print_text, serial_line, time_rfc822,
+    Compat, print_private_key_text, print_public_key_text, print_request_text,
+    print_text, serial_line, time_rfc822,
 };
 
 use baldssl_core::{Error, Result, pem};
