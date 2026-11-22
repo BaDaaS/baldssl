@@ -348,6 +348,22 @@ fn ec_parameters(params: &RawTlv) -> Result<Algorithm> {
     }
 }
 
+impl Algorithm {
+    /// The curve DER `ECParameters` ([RFC 5480] section 2.1.1) name, as
+    /// `openssl ecparam` writes them (the contents of an `EC PARAMETERS`
+    /// PEM block).
+    ///
+    /// # Errors
+    ///
+    /// Not one DER TLV, explicit curve parameters, `implicitCA`, or a curve
+    /// baldssl does not implement.
+    ///
+    /// [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2.1.1
+    pub fn from_ec_parameters(der: &[u8]) -> Result<Self> {
+        ec_parameters(&RawTlv::parse(der)?)
+    }
+}
+
 /// The key algorithm an AlgorithmIdentifier names, with its parameters
 /// checked: for EC ([RFC 5480] section 2.1.1) only a `namedCurve`; for
 /// Ed25519 ([RFC 8410] section 3) no parameters.
