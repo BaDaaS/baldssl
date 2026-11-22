@@ -108,6 +108,37 @@ for cert in "${CERTS[@]}"; do
     fi
 done
 
+# genpkey: OpenSSL must accept every key baldssl generates, and the key
+# must have exactly the structure of one OpenSSL generates (the random
+# bytes masked out of the asn1parse listing).
+structure() {
+    "$OPENSSL" asn1parse -in "$1" -i | sed -E 's/\[HEX DUMP\]:[0-9A-F]+//'
+}
+for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
+    "EC ec_paramgen_curve:P-521" "ED25519"; do
+    read -r alg opt <<<"$spec"
+    args=(-algorithm "$alg")
+    [[ -n "$opt" ]] && args+=(-pkeyopt "$opt")
+    label="genpkey/${opt:-$alg}"
+    if ! "$BALDSSL" genpkey "${args[@]}" -out "$WORK/b-key.pem"; then
+        echo "FAIL $label: baldssl genpkey failed"
+        fail=$((fail + 1))
+        continue
+    fi
+    "$OPENSSL" genpkey "${args[@]}" -out "$WORK/o-key.pem"
+    if ! "$OPENSSL" pkey -in "$WORK/b-key.pem" -noout -check >/dev/null; then
+        echo "FAIL $label: OpenSSL rejects the key"
+        fail=$((fail + 1))
+    elif ! cmp -s <(structure "$WORK/b-key.pem") \
+        <(structure "$WORK/o-key.pem"); then
+        echo "FAIL $label: structure differs from OpenSSL's"
+        diff <(structure "$WORK/o-key.pem") <(structure "$WORK/b-key.pem") || true
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+done
+
 # Error paths must fail in both (exit codes may differ: see README).
 head -c 300 /dev/urandom >"$WORK/garbage.bin"
 printf -- '-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n' \

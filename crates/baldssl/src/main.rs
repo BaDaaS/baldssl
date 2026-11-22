@@ -7,6 +7,7 @@
 //! Exit codes: 0 on success, 1 on any error, 2 when an input file is missing.
 
 mod args;
+mod genpkey;
 mod x509;
 
 use std::{
@@ -20,6 +21,7 @@ use std::{
 use baldssl_core::Error;
 
 const COMMANDS: &[(&str, &str)] = &[
+    ("genpkey", "Generate a private key"),
     ("help", "List the commands"),
     ("version", "Print the baldssl version"),
     ("x509", "Display X.509 certificates"),
@@ -39,6 +41,7 @@ fn dispatch(args: &[OsString]) -> Result<(Vec<u8>, Option<OsString>), Error> {
         return Ok((help(), None));
     };
     match command.to_str() {
+        Some("genpkey") => genpkey::render(rest),
         Some("x509") => x509::render(rest),
         Some("version") => Ok((
             format!("baldssl {}\n", env!("CARGO_PKG_VERSION")).into_bytes(),
