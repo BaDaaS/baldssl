@@ -37,7 +37,7 @@ fn find_opt(dotted: &str) -> Option<(&'static str, &'static str)> {
 /// # Errors
 ///
 /// When the OID cannot be rendered (see [`Oid::to_dotted`]).
-pub fn short_name(oid: &Oid<'_>) -> Result<String> {
+pub(crate) fn short_name(oid: &Oid<'_>) -> Result<String> {
     let dotted = oid.to_dotted()?;
     Ok(find_opt(&dotted).map_or(dotted, |(sn, _)| sn.to_string()))
 }
@@ -48,14 +48,14 @@ pub fn short_name(oid: &Oid<'_>) -> Result<String> {
 /// # Errors
 ///
 /// When the OID cannot be rendered (see [`Oid::to_dotted`]).
-pub fn long_name(oid: &Oid<'_>) -> Result<String> {
+pub(crate) fn long_name(oid: &Oid<'_>) -> Result<String> {
     let dotted = oid.to_dotted()?;
     Ok(find_opt(&dotted).map_or(dotted, |(_, ln)| ln.to_string()))
 }
 
 /// Whether OpenSSL has this object in its table.
 #[must_use]
-pub fn is_known(dotted: &str) -> bool {
+pub(crate) fn is_known(dotted: &str) -> bool {
     find_opt(dotted).is_some()
 }
 

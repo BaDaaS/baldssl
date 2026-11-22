@@ -15,7 +15,7 @@ use baldssl_pkey::{Algorithm, AnyPrivateKey};
 use crate::args::{self, Kind, Spec};
 
 /// Every option `baldssl genpkey` accepts.
-pub const SPECS: &[Spec] = &[
+pub(crate) const SPECS: &[Spec] = &[
     Spec {
         name: "help",
         kind: Kind::Flag,
@@ -70,7 +70,7 @@ fn utf8<'a>(value: &'a OsStr, option: &str) -> Result<&'a str> {
 /// # Errors
 ///
 /// Usage errors, unsupported algorithms or options, and randomness errors.
-pub fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
+pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     let opts = args::parse("genpkey", raw, SPECS, |_| false)?;
     let mut algorithm: Option<String> = None;
     let mut curve_name: Option<String> = None;

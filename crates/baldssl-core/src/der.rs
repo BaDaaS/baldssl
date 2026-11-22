@@ -124,7 +124,7 @@ pub enum DerError {
 
 /// The tag class (bits 8-7 of the identifier octet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Class {
+pub(crate) enum Class {
     /// `00`
     Universal,
     /// `01`
@@ -137,7 +137,7 @@ pub enum Class {
 
 /// A decoded identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Tag {
+pub(crate) struct Tag {
     /// The class.
     pub class: Class,
     /// Constructed (bit 6) or primitive.
@@ -150,7 +150,7 @@ impl Tag {
     /// The single identifier octet for low tag numbers, `None` for tag
     /// numbers of 31 and above.
     #[must_use]
-    pub fn octet_opt(self) -> Option<u8> {
+    pub(crate) fn octet_opt(self) -> Option<u8> {
         let class = match self.class {
             Class::Universal => 0x00,
             Class::Application => 0x40,
@@ -164,7 +164,7 @@ impl Tag {
 
     /// The tag with this low-form identifier octet.
     #[must_use]
-    pub const fn from_octet(b: u8) -> Self {
+    pub(crate) const fn from_octet(b: u8) -> Self {
         let class = match b >> 6 {
             0 => Class::Universal,
             1 => Class::Application,
@@ -236,7 +236,7 @@ pub mod tag {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tlv<'a> {
     /// The identifier.
-    pub tag: Tag,
+    pub(crate) tag: Tag,
     /// The contents octets.
     pub value: &'a [u8],
     /// The whole element: identifier, length and contents.
@@ -577,7 +577,14 @@ pub fn parse_bool(value: &[u8]) -> Result<bool, DerError> {
 /// # Errors
 ///
 /// [`DerError::InvalidNull`] if not empty.
-pub fn parse_null(value: &[u8]) -> Result<(), DerError> {
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the NULL parameters of an RSA AlgorithmIdentifier; tested"
+    )
+)]
+pub(crate) fn parse_null(value: &[u8]) -> Result<(), DerError> {
     if value.is_empty() {
         Ok(())
     } else {

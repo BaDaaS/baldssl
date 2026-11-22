@@ -5,21 +5,23 @@
 //! curve), Ed25519, and RSA for display. Anything else is reported as
 //! [`baldssl_core::Error::Unsupported`].
 
-pub mod cert;
-pub mod ext;
-pub mod name;
-pub mod objects;
+mod cert;
+mod ext;
+mod name;
+mod objects;
 mod objects_table;
-pub mod text;
-pub mod version;
+mod text;
+mod version;
 
-pub use cert::Certificate;
+pub use cert::{Certificate, Validity};
+pub use name::{Name, NameStyle};
+pub use text::{Compat, print_text, serial_line, time_rfc822};
 
 use baldssl_core::{Error, Result, pem};
 use baldssl_crypto::Algorithm;
 
 /// The PEM labels `PEM_read_bio_X509` accepts.
-pub const PEM_LABELS: &[&str] = &["CERTIFICATE", "X509 CERTIFICATE"];
+const PEM_LABELS: &[&str] = &["CERTIFICATE", "X509 CERTIFICATE"];
 
 /// Input encoding (`-inform`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

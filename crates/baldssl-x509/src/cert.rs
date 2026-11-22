@@ -18,11 +18,11 @@ use crate::{
 
 /// `AlgorithmIdentifier ::= SEQUENCE { algorithm OID, parameters ANY OPTIONAL }`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AlgorithmIdentifier<'a> {
+pub(crate) struct AlgorithmIdentifier<'a> {
     /// The algorithm.
-    pub oid: Oid<'a>,
+    pub(crate) oid: Oid<'a>,
     /// The raw parameters, if present.
-    pub parameters: Option<Tlv<'a>>,
+    pub(crate) parameters: Option<Tlv<'a>>,
 }
 
 impl<'a> AlgorithmIdentifier<'a> {
@@ -31,7 +31,7 @@ impl<'a> AlgorithmIdentifier<'a> {
     /// # Errors
     ///
     /// On malformed DER.
-    pub fn read(r: &mut Reader<'a>) -> Result<Self> {
+    pub(crate) fn read(r: &mut Reader<'a>) -> Result<Self> {
         let mut seq = r.sequence()?;
         let oid = Oid::parse(seq.expect(tag::OID)?.value)?;
         let parameters = if seq.is_empty() {
@@ -46,22 +46,22 @@ impl<'a> AlgorithmIdentifier<'a> {
 
 /// `SubjectPublicKeyInfo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubjectPublicKeyInfo<'a> {
+pub(crate) struct SubjectPublicKeyInfo<'a> {
     /// The key algorithm and its parameters.
-    pub algorithm: AlgorithmIdentifier<'a>,
+    pub(crate) algorithm: AlgorithmIdentifier<'a>,
     /// The `subjectPublicKey` BIT STRING.
-    pub public_key: BitString<'a>,
+    pub(crate) public_key: BitString<'a>,
 }
 
 /// One `Extension`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Extension<'a> {
+pub(crate) struct Extension<'a> {
     /// `extnID`.
-    pub oid: Oid<'a>,
+    pub(crate) oid: Oid<'a>,
     /// `critical`, `DEFAULT FALSE`.
-    pub critical: bool,
+    pub(crate) critical: bool,
     /// The contents of `extnValue` (the DER of the extension's own type).
-    pub value: &'a [u8],
+    pub(crate) value: &'a [u8],
 }
 
 /// `Validity`.
@@ -79,11 +79,11 @@ pub struct Certificate<'a> {
     /// The complete DER encoding.
     pub der: &'a [u8],
     /// `version`, v1 when the field is absent.
-    pub version: Version,
+    pub(crate) version: Version,
     /// `serialNumber`.
     pub serial: Integer,
     /// `signature` inside the TBSCertificate.
-    pub tbs_signature: AlgorithmIdentifier<'a>,
+    pub(crate) tbs_signature: AlgorithmIdentifier<'a>,
     /// `issuer`.
     pub issuer: Name<'a>,
     /// `validity`.
@@ -91,13 +91,13 @@ pub struct Certificate<'a> {
     /// `subject`.
     pub subject: Name<'a>,
     /// `subjectPublicKeyInfo`.
-    pub spki: SubjectPublicKeyInfo<'a>,
+    pub(crate) spki: SubjectPublicKeyInfo<'a>,
     /// `extensions`, empty when absent.
-    pub extensions: Vec<Extension<'a>>,
+    pub(crate) extensions: Vec<Extension<'a>>,
     /// The outer `signatureAlgorithm`.
-    pub signature_algorithm: AlgorithmIdentifier<'a>,
+    pub(crate) signature_algorithm: AlgorithmIdentifier<'a>,
     /// The `signatureValue` bytes.
-    pub signature: BitString<'a>,
+    pub(crate) signature: BitString<'a>,
 }
 
 fn read_time(r: &mut Reader<'_>) -> Result<Time> {

@@ -11,7 +11,7 @@ use super::{Integer, tag};
 
 /// One TLV with identifier octet `tag` and the given contents.
 #[must_use]
-pub fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
+pub(crate) fn tlv(tag: u8, contents: &[u8]) -> Vec<u8> {
     let len = contents.len();
     let mut out = Vec::with_capacity(contents.len().saturating_add(10));
     out.push(tag);
@@ -48,7 +48,7 @@ pub fn context_constructed(n: u8, elements: &[&[u8]]) -> Vec<u8> {
 /// removed, and one `00` added when the top bit is set, so the two's
 /// complement encoding is minimal and positive.
 #[must_use]
-pub fn unsigned_integer(magnitude: &[u8]) -> Vec<u8> {
+pub(crate) fn unsigned_integer(magnitude: &[u8]) -> Vec<u8> {
     let first = magnitude.iter().position(|&b| b != 0);
     let digits = first.and_then(|i| magnitude.get(i..)).unwrap_or(&[]);
     let mut contents = Vec::with_capacity(digits.len().saturating_add(1));
@@ -109,12 +109,6 @@ pub fn bit_string(bytes: &[u8]) -> Vec<u8> {
     contents.push(0);
     contents.extend_from_slice(bytes);
     tlv(tag::BIT_STRING, &contents)
-}
-
-/// NULL.
-#[must_use]
-pub fn null() -> Vec<u8> {
-    tlv(tag::NULL, &[])
 }
 
 /// An OBJECT IDENTIFIER from its dotted form, `None` if it is not one: at
@@ -225,11 +219,11 @@ mod tests {
 
     #[test]
     fn structures() {
-        let seq = sequence(&[&small_integer(1), &null()]);
+        let seq = sequence(&[&small_integer(1), &octet_string(&[])]);
         let mut r = Reader::new(&seq);
         let mut inner = r.sequence().unwrap();
         inner.expect(tag::INTEGER).unwrap();
-        inner.expect(tag::NULL).unwrap();
+        inner.expect(tag::OCTET_STRING).unwrap();
         inner.finish().unwrap();
         let ctx = context_constructed(1, &[&bit_string(&[4, 5])]);
         assert_eq!(ctx, [0xa1, 0x05, 0x03, 0x03, 0x00, 0x04, 0x05]);

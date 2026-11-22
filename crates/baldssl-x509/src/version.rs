@@ -20,12 +20,12 @@ use baldssl_core::der::{
 
 /// A certificate version: the INTEGER of the version field, of any value.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Version(Integer);
+pub(crate) struct Version(Integer);
 
 impl Version {
     /// v1, the value of an absent version field.
     #[must_use]
-    pub fn v1() -> Self {
+    pub(crate) fn v1() -> Self {
         Version(Integer {
             negative: false,
             magnitude: Vec::new(),
@@ -34,13 +34,13 @@ impl Version {
 
     /// The INTEGER as stored: 0 for v1, 1 for v2, 2 for v3.
     #[must_use]
-    pub fn as_integer(&self) -> &Integer {
+    pub(crate) fn as_integer(&self) -> &Integer {
         &self.0
     }
 
     /// The stored value when it is one of v1, v2 and v3 (0, 1 or 2).
     #[must_use]
-    pub fn known_opt(&self) -> Option<u8> {
+    pub(crate) fn known_opt(&self) -> Option<u8> {
         self.0
             .to_u64_opt()
             .and_then(|n| u8::try_from(n).ok())

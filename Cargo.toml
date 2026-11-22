@@ -36,6 +36,9 @@ proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 # Allowed in one module only, baldssl-crypto::os_rng (`make check-unsafe`).
 unsafe_code = "deny"
 missing_docs = "warn"
+# A `pub` item must be reachable from the crate root, so that the public API
+# is exactly what is re-exported on purpose; everything else is pub(crate).
+unreachable_pub = "warn"
 # `--cfg aeneas` is passed when extracting to Lean with Charon; it compiles
 # out the parts Aeneas cannot translate (std::io, Display, std::error::Error).
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(aeneas)"] }

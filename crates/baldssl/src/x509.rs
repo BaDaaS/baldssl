@@ -25,14 +25,14 @@ use std::{
 use baldssl_core::{Error, Result, pem};
 use baldssl_crypto::Algorithm;
 use baldssl_x509::{
-    Certificate, Format, certificate_der, fingerprint_line,
-    text::{self, Compat},
+    Certificate, Compat, Format, certificate_der, fingerprint_line, print_text,
+    serial_line, time_rfc822,
 };
 
 use crate::args::{self, Kind, Spec};
 
 /// Every option `baldssl x509` accepts, besides `-<digest>`.
-pub const SPECS: &[Spec] = &[
+pub(crate) const SPECS: &[Spec] = &[
     Spec {
         name: "help",
         kind: Kind::Flag,
@@ -261,7 +261,7 @@ fn read_input(path: Option<&OsStr>) -> Result<Vec<u8>> {
 }
 
 /// The environment variable selecting the OpenSSL release line to imitate.
-pub const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
+pub(crate) const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
 
 /// Reads [`COMPAT_ENV`]: `3` (default), `3.0` or `4`.
 fn compat() -> Result<Compat> {
@@ -280,7 +280,7 @@ fn compat() -> Result<Compat> {
 /// # Errors
 ///
 /// Usage, decoding, or unsupported-feature errors.
-pub fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
+pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     let o = parse_options(raw)?;
     let compat = compat()?;
     if o.help {
@@ -308,16 +308,14 @@ pub fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
                 out.push(b'\n');
             }
             Print::Serial => {
-                out.extend_from_slice(
-                    text::serial_line(&cert.serial).as_bytes(),
-                );
+                out.extend_from_slice(serial_line(&cert.serial).as_bytes());
             }
             Print::StartDate => {
-                let t = text::time_rfc822(&cert.validity.not_before);
+                let t = time_rfc822(&cert.validity.not_before);
                 out.extend_from_slice(format!("notBefore={t}\n").as_bytes());
             }
             Print::EndDate => {
-                let t = text::time_rfc822(&cert.validity.not_after);
+                let t = time_rfc822(&cert.validity.not_after);
                 out.extend_from_slice(format!("notAfter={t}\n").as_bytes());
             }
             Print::Fingerprint => {
@@ -327,7 +325,7 @@ pub fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
                 );
             }
             Print::Text => {
-                out.extend_from_slice(&text::print_text(&cert, compat)?);
+                out.extend_from_slice(&print_text(&cert, compat)?);
             }
         }
     }
