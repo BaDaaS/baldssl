@@ -8,6 +8,9 @@ use crate::{base64::Base64Error, der::DerError, pem::PemError};
 /// Every failure baldssl can report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
+    /// The command reported the failure on standard error itself, in
+    /// OpenSSL's words, and exits with this code: nothing is to be added.
+    Reported(u8),
     /// An input file does not exist (exit code 2).
     NotFound {
         /// The path as given on the command line.
@@ -41,6 +44,7 @@ impl Error {
     pub fn exit_code(&self) -> u8 {
         match self {
             Error::NotFound { .. } => 2,
+            Error::Reported(code) => *code,
             _ => 1,
         }
     }
@@ -81,6 +85,7 @@ impl core::fmt::Display for Error {
             Error::NotFound { path } => {
                 write!(f, "{path}: No such file or directory")
             }
+            Error::Reported(code) => write!(f, "failed (exit code {code})"),
             Error::Io { context, message } => write!(f, "{context}: {message}"),
             Error::Base64(e) => write!(f, "base64: {e:?}"),
             Error::Pem(PemError::Base64(e)) => write!(f, "PEM: base64: {e:?}"),
@@ -113,5 +118,6 @@ mod tests {
         assert_eq!(Error::invalid("x").exit_code(), 1);
         assert_eq!(Error::unsupported("x").exit_code(), 1);
         assert_eq!(Error::Der(DerError::UnexpectedEnd).exit_code(), 1);
+        assert_eq!(Error::Reported(2).exit_code(), 2);
     }
 }
