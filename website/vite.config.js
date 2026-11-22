@@ -35,7 +35,7 @@ const ISSUES = 'https://github.com/BaDaaS/baldssl/issues/';
 const tracking = section =>
   JSON.parse(readFileSync(trackingPath, 'utf8'))[section];
 
-// "Tracked in #15, #16": links to the issues, or nothing.
+// A "Tracked in" note with a link to each issue, or nothing.
 const issueLinks = (numbers = []) =>
   numbers.length === 0
     ? ''
