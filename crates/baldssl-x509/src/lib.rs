@@ -38,6 +38,7 @@ mod name;
 mod objects;
 mod objects_table;
 mod text;
+mod verify;
 mod version;
 
 pub use baldssl_crypto::signature::SignatureAlgorithm;
@@ -59,9 +60,27 @@ pub use text::{
     Compat, print_private_key_text, print_public_key_text, serial_line,
     time_rfc822,
 };
+pub use verify::{Failure, Reported, TrustStore, Verification, VerifyError};
 
-use baldssl_core::{Error, Result, pem};
+use baldssl_core::{Error, Result, der::syntax::RawTlv, pem};
 use baldssl_crypto::Algorithm;
+
+/// Every certificate of a file: the certificate blocks of PEM, in
+/// order, or the one certificate of a DER file, as OpenSSL loads a file of
+/// trust anchors or intermediates.
+///
+/// # Errors
+///
+/// A PEM file with no certificate, or a malformed block.
+pub fn certificates_der(input: &[u8]) -> Result<Vec<RawTlv>> {
+    if !pem::looks_like_pem(input) {
+        return Ok(vec![RawTlv::parse(input)?]);
+    }
+    pem::decode_all(input, PEM_LABELS)?
+        .into_iter()
+        .map(|b| Ok(RawTlv::parse(&b.contents)?))
+        .collect()
+}
 
 /// The PEM labels `PEM_read_bio_X509` accepts.
 const PEM_LABELS: &[&str] = &["CERTIFICATE", "X509 CERTIFICATE"];
