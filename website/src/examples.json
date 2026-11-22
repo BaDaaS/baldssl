@@ -77,8 +77,8 @@
       "section": "tasks",
       "title": "Inspect a CSR",
       "explanation": "Shows what a CSR asks for before you submit it.",
-      "status": "not-yet",
-      "deterministic": false,
+      "status": "supported",
+      "deterministic": true,
       "lines": ["openssl req -in request.csr \\", "  -noout -text"]
     },
     {
