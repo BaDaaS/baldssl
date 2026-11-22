@@ -96,6 +96,21 @@ pub trait PrimeField: Field {
     /// The canonical big-endian encoding, [`PrimeField::BYTES`] bytes.
     fn to_bytes_be(&self) -> Vec<u8>;
 
+    /// The integer whose little-endian encoding is `bytes`, of any length,
+    /// reduced modulo $p$: how RFC 8032 reads a hash as a scalar
+    /// ([section 5.1.6][rfc8032-5.1.6], steps 2 and 4). Horner's rule over
+    /// the bytes from the most significant, in the field, so constant time
+    /// for a given length.
+    ///
+    /// [rfc8032-5.1.6]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.6
+    #[must_use]
+    fn from_le_bytes_mod_order(bytes: &[u8]) -> Self {
+        let radix = Self::from_u64(256);
+        bytes.iter().rev().fold(Self::ZERO, |acc, &b| {
+            acc * radix + Self::from_u64(u64::from(b))
+        })
+    }
+
     /// The characteristic $p$, big-endian at [`PrimeField::BYTES`] bytes. It
     /// is not an element (it is zero in the field); scalar multiplication by
     /// the order of a group uses it.

@@ -206,6 +206,40 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
+        Self::decode_with(bytes, DecodingRules::Rfc8032)
+    }
+}
+
+/// Which encodings of a point [`Affine::decode_with`] accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodingRules {
+    /// RFC 8032 section 5.1.3: $y < p$, and not $x = 0$ with the sign bit
+    /// set. The canonical encodings only, so decoding inverts encoding.
+    Rfc8032,
+    /// What OpenSSL 3.5 and 4.1 accept for an Ed25519 public key: $y$ is
+    /// read modulo $p$ (so $y \geq p$ is accepted), and the sign bit is
+    /// ignored when $x = 0$. A $y$ with no point is still rejected. Several
+    /// encodings then denote one point; only verification uses it, to give
+    /// OpenSSL's verdicts.
+    OpenSsl,
+}
+
+impl<C> Affine<C>
+where
+    C: TwistedEdwards,
+{
+    /// The point `bytes` encodes under `rules` (RFC 8032 section 5.1.3,
+    /// with the relaxations of [`DecodingRules::OpenSsl`] when asked).
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidEncoding`] for a wrong length, bytes above the field's
+    /// width, a $y$ with no point, and, under [`DecodingRules::Rfc8032`], a
+    /// non-canonical $y$ or $x = 0$ with the sign bit set.
+    pub fn decode_with(
+        bytes: &[u8],
+        rules: DecodingRules,
+    ) -> Result<Self, InvalidEncoding> {
         if bytes.len() != encoding_len::<C>() {
             return Err(InvalidEncoding);
         }
@@ -222,7 +256,10 @@ where
         if high.iter().any(|&b| b != 0) {
             return Err(InvalidEncoding);
         }
-        let (y, canonical) = C::Base::from_bytes_be(low);
+        let (_, canonical) = C::Base::from_bytes_be(low);
+        let mut le = low.to_vec();
+        le.reverse();
+        let y = C::Base::from_le_bytes_mod_order(&le);
         let y2 = y.square();
         let u = y2 - C::Base::ONE;
         let v = d::<C>() * y2 + C::Base::ONE;
@@ -231,7 +268,11 @@ where
         let flip = Choice::from_bit(u64::from(parity ^ x_0));
         let x = C::Base::select(&x, &-x, flip);
         let bad_sign = x.is_zero() & Choice::from_bit(u64::from(x_0));
-        (canonical & is_square & !bad_sign)
+        let valid = match rules {
+            DecodingRules::Rfc8032 => canonical & is_square & !bad_sign,
+            DecodingRules::OpenSsl => is_square,
+        };
+        valid
             .to_bool_vartime()
             .then_some(point(x, y))
             .ok_or(InvalidEncoding)
