@@ -106,7 +106,7 @@ where
     valid.to_bool_vartime().then_some(value)
 }
 
-/// [`element`], with zero for a constant that is not canonical (which the
+/// [`element_opt`], with zero for a constant that is not canonical (which the
 /// instances' tests rule out).
 pub(crate) fn constant<F>(hex: &str) -> F
 where
