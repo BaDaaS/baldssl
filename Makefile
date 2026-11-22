@@ -83,6 +83,33 @@ lint: ## Run clippy, warnings as errors
 lint-beta: ## Run clippy with the beta toolchain
 	cargo +beta clippy --workspace --all-targets -- -D warnings
 
+# --- Python scripts ------------------------------------------------------
+# The tools are pinned in pyproject.toml and uv.lock; the scripts themselves
+# use the standard library only.
+
+.PHONY: format-py
+format-py: ## Format the Python scripts (ruff)
+	uv run ruff format
+
+.PHONY: check-format-py
+check-format-py: ## Check the Python scripts' formatting (ruff)
+	uv run ruff format --check
+
+.PHONY: lint-py
+lint-py: ## Lint the Python scripts (ruff)
+	uv run ruff check
+
+.PHONY: typecheck-py
+typecheck-py: ## Type-check the Python scripts and their tests (mypy, strict)
+	uv run mypy
+
+.PHONY: test-py
+test-py: ## Test the Python checks (pytest)
+	uv run pytest
+
+.PHONY: check-py
+check-py: check-format-py lint-py typecheck-py test-py ## All Python checks
+
 .PHONY: lint-shell
 lint-shell: ## Lint shell scripts with shellcheck
 	shellcheck $(SHELL_SCRIPTS)
@@ -263,7 +290,7 @@ lean: ## Build the Lean 4 skeleton in proofs/ (Aeneas library, Mathlib cache)
 .PHONY: ci
 ci: check-format lint test doc check-no-deps check-unsafe check-aeneas \
 	check-where-clauses check-use-at-top check-opt-suffix \
-	check-practices lint-shell ## Run the CI checks locally
+	check-practices lint-shell check-py ## Run the CI checks locally
 
 .PHONY: clean
 clean: ## Remove build artifacts

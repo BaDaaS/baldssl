@@ -1,0 +1,62 @@
+# Development tools for the Python scripts under scripts/. The scripts use
+# the standard library only; this file pins the tools that format, lint,
+# type-check and test them, and is not a package.
+[project]
+name = "baldssl-scripts"
+version = "0.0.0"
+description = "Tooling for baldssl's Python scripts; not published"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["mypy>=1.19", "pytest>=9.0", "ruff>=0.15.1"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 80
+target-version = "py312"
+include = ["scripts/**/*.py"]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "N",
+  "W",
+  "UP",
+  "B",
+  "C4",
+  "SIM",
+  "S",   # flake8-bandit
+  "PT",  # flake8-pytest-style
+  "PTH", # pathlib
+  "PIE",
+  "RET",
+  "ARG",
+  "ERA",
+  "RUF",
+  "PLC",
+  "PLE",
+  "PLW",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use assert.
+"scripts/tests/**" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+files = ["scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["scripts/tests"]
