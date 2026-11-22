@@ -25,8 +25,9 @@ practices" says what the project does; this file says how to work in it.
 - Constant-time code takes `Choice`, never `bool`, and never branches or indexes
   on secret data. Name the property: `_ct` for constant time, `_vartime` for
   variable time.
-- A decoder that can fail returns a `Result` with the reason and has no suffix
-  (`decode`); one that returns an `Option` is named with `_opt` (`decode_opt`).
+- A function or method that can fail returns a `Result` with the reason under
+  its plain name (`decode`, `from_secret`); one that returns an `Option` instead
+  carries the `_opt` suffix (`decode_opt`, `from_dotted_opt`).
 - Export only what a caller needs; everything else is `pub(crate)` or private.
 - No `unwrap`, `expect`, `panic!` or slice indexing in library code; return an
   error.
