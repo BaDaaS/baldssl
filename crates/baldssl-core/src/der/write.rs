@@ -1,7 +1,8 @@
 //! A DER writer, the inverse of [`super::Reader`] on the values baldssl
-//! writes (keys, and later requests and certificates).
+//! writes. The module documentation of [`super`] explains DER and TLVs.
 //!
-//! Every function returns one complete TLV with the minimal length encoding,
+//! Every function returns one complete TLV with the minimal length encoding
+//! (lengths big-endian, as X.690 requires),
 //! and minimal contents where DER requires it (INTEGER, OID), so the output
 //! is the unique DER encoding of the value. The tests check each function
 //! against the strict reader, which rejects any other encoding.
@@ -130,9 +131,23 @@ pub fn oid(dotted: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::der::{Integer, Oid, Reader, parse_tlv, tag};
+    use crate::der::{DerError, Integer, Oid, Reader, parse_tlv, tag};
     use core::fmt::Write as _;
     use proptest::prelude::*;
+
+    /// The example of the module documentation: the SEQUENCE of INTEGER 5
+    /// and OCTET STRING "hi", and its BER-only spelling with a long-form
+    /// length, which DER rejects.
+    #[test]
+    fn documented_example() {
+        let v = sequence(&[&small_integer(5), &octet_string(b"hi")]);
+        assert_eq!(v, [0x30, 0x07, 0x02, 0x01, 0x05, 0x04, 0x02, 0x68, 0x69]);
+        let ber = [0x30, 0x81, 0x07, 0x02, 0x01, 0x05, 0x04, 0x02, 0x68, 0x69];
+        assert_eq!(
+            Reader::new(&ber).read().map(|_| ()),
+            Err(DerError::NonMinimalLength)
+        );
+    }
 
     #[test]
     fn lengths() {

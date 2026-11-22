@@ -1,5 +1,53 @@
 //! A minimal, strict DER reader ([ITU-T X.690][x690], section 10).
 //!
+//! # ASN.1, BER and DER
+//!
+//! ASN.1 ([X.680][x680]) describes data abstractly: types such as INTEGER,
+//! OCTET STRING, OBJECT IDENTIFIER, SEQUENCE. Certificates and keys are
+//! defined in it (RFC 5280, RFC 5208). ASN.1 says nothing about bytes;
+//! *encoding rules* do, and X.690 defines three of them:
+//!
+//! - **BER**, the Basic Encoding Rules (clause 8): the general rules. They
+//!   leave the encoder choices, so one value has many encodings: a length
+//!   written in the short or the long form, with leading zero octets or
+//!   not; a constructed value with a definite length or an *indefinite* one
+//!   ended by two zero octets; TRUE as any nonzero octet; a string split
+//!   into pieces.
+//! - **DER**, the Distinguished Encoding Rules (clause 10): "the basic
+//!   encoding described in clause 8, together with the following
+//!   restrictions and those also listed in clause 11", which remove every
+//!   choice. The length is definite and "encoded in the minimum number of
+//!   octets" (10.1), TRUE is `FF` (11.1), strings are primitive, the
+//!   unused bits of a BIT STRING are zero, SET OF elements are sorted. So a
+//!   value has exactly one DER encoding, and DER is what is signed: two
+//!   parties hashing the same certificate must hash the same bytes.
+//! - CER, the Canonical Encoding Rules (clause 9), another restriction of
+//!   BER (indefinite lengths), not used for certificates and not
+//!   implemented here.
+//!
+//! Every DER encoding is a valid BER encoding, not the converse.
+//!
+//! # TLV: tag, length, value
+//!
+//! Every BER value, so every DER value, is a *TLV* (X.690, 8.1): three
+//! fields in order.
+//!
+//! - **T**, the identifier octets (8.1.2): the class (universal, application,
+//!   context-specific, private, two bits), whether the value is primitive or
+//!   constructed (one bit), and the tag number (five bits; 31 means the
+//!   number follows in base-128 octets). INTEGER is `02`, OCTET STRING `04`,
+//!   OBJECT IDENTIFIER `06`, SEQUENCE `30` (constructed tag 16).
+//! - **L**, the length octets (8.1.3): the number of contents octets. Below
+//!   128, one octet (the short form); otherwise `80 + n` followed by `n`
+//!   octets **big-endian** (the long form). `80` alone is the indefinite
+//!   form, which DER forbids.
+//! - **V**, the contents octets (8.1.4): for a primitive value its bytes; for
+//!   a constructed one the concatenation of the TLVs of its components.
+//!
+//! For example, INTEGER 5 is `02 01 05`, and the SEQUENCE holding it and
+//! OCTET STRING `"hi"` is `30 07 02 01 05 04 02 68 69`. BER would also
+//! accept `30 81 07 ...` (a long-form length of 7); DER does not.
+//!
 //! # Why strict
 //!
 //! DER is BER with every choice removed, so each value has exactly one
@@ -19,6 +67,7 @@
 //! into TLVs. [`Reader`] computes that factorisation one TLV at a time.
 //!
 //! [x690]: https://www.itu.int/rec/T-REC-X.690
+//! [x680]: https://www.itu.int/rec/T-REC-X.680
 
 pub mod write;
 
