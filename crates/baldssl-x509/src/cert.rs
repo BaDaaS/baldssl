@@ -121,6 +121,8 @@ pub struct Certificate<'a> {
     pub(crate) spki_der: &'a [u8],
     /// `extensions`, empty when absent.
     pub(crate) extensions: Vec<Extension<'a>>,
+    /// The DER of the `TBSCertificate`, as signed.
+    pub(crate) tbs_der: &'a [u8],
     /// The outer `signatureAlgorithm`.
     pub(crate) signature_algorithm: AlgorithmIdentifier<'a>,
     /// The `signatureValue` bytes.
@@ -202,7 +204,8 @@ impl<'a> Certificate<'a> {
         let mut cert = top.sequence()?;
         top.finish()?;
 
-        let mut tbs = cert.sequence()?;
+        let tbs_tlv = cert.expect(tag::SEQUENCE)?;
+        let mut tbs = Reader::new(tbs_tlv.value);
         let version = tbs.syntax(&version_field())?.unwrap_or_else(Version::v1);
         let serial = Integer::parse(tbs.expect(tag::INTEGER)?.value)?;
         let tbs_signature = AlgorithmIdentifier::read(&mut tbs)?;
@@ -246,6 +249,7 @@ impl<'a> Certificate<'a> {
             spki,
             spki_der: spki_tlv.encoded,
             extensions,
+            tbs_der: tbs_tlv.encoded,
             signature_algorithm,
             signature,
         })
