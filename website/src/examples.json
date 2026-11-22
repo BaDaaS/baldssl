@@ -43,8 +43,8 @@
       "section": "tasks",
       "title": "Inspect a private key",
       "explanation": "Prints the key's type, size and components. Useful to check what a key file actually contains.",
-      "status": "not-yet",
-      "deterministic": false,
+      "status": "supported",
+      "deterministic": true,
       "lines": ["openssl pkey -in key.pem -noout -text"]
     },
     {
@@ -52,8 +52,8 @@
       "section": "tasks",
       "title": "Extract the public key",
       "explanation": "Writes the public half of the key, which is safe to share, to pub.pem.",
-      "status": "not-yet",
-      "deterministic": false,
+      "status": "supported",
+      "deterministic": true,
       "lines": ["openssl pkey -in key.pem -pubout \\", "  -out pub.pem"]
     },
     {
