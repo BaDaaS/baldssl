@@ -47,7 +47,9 @@ pub use dn::{
 };
 pub use issue::{CertificateTemplate, Extension, SerialNumber};
 pub use name::{Name, NameStyle};
-pub use text::{Compat, print_text, serial_line, time_rfc822};
+pub use text::{
+    Compat, print_request_text, print_text, serial_line, time_rfc822,
+};
 
 use baldssl_core::{Error, Result, pem};
 use baldssl_crypto::Algorithm;

@@ -55,6 +55,26 @@ pub(crate) struct SubjectPublicKeyInfo<'a> {
     pub(crate) public_key: BitString<'a>,
 }
 
+impl<'a> SubjectPublicKeyInfo<'a> {
+    /// Decodes a DER `SubjectPublicKeyInfo`, one TLV: the view certificates
+    /// and requests share.
+    ///
+    /// # Errors
+    ///
+    /// On malformed DER.
+    pub(crate) fn from_der(der: &'a [u8]) -> Result<Self> {
+        let mut top = Reader::new(der);
+        let mut r = top.sequence()?;
+        top.finish()?;
+        let spki = SubjectPublicKeyInfo {
+            algorithm: AlgorithmIdentifier::read(&mut r)?,
+            public_key: BitString::parse(r.expect(tag::BIT_STRING)?.value)?,
+        };
+        r.finish()?;
+        Ok(spki)
+    }
+}
+
 /// One `Extension`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Extension<'a> {
@@ -195,14 +215,7 @@ impl<'a> Certificate<'a> {
         let subject = Name::from_contents(subject_tlv.value)?;
 
         let spki_tlv = tbs.expect(tag::SEQUENCE)?;
-        let mut spki_r = Reader::new(spki_tlv.value);
-        let spki = SubjectPublicKeyInfo {
-            algorithm: AlgorithmIdentifier::read(&mut spki_r)?,
-            public_key: BitString::parse(
-                spki_r.expect(tag::BIT_STRING)?.value,
-            )?,
-        };
-        spki_r.finish()?;
+        let spki = SubjectPublicKeyInfo::from_der(spki_tlv.encoded)?;
 
         if tbs.peek_octet_opt() == Some(tag::context(1))
             || tbs.peek_octet_opt() == Some(tag::context(2))
