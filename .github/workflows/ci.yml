@@ -144,6 +144,185 @@ jobs:
         shell: bash
         run: make test
 
+  # os_rng on every libc and OS version it supports. The versions come from
+  # website/src/platforms.json, which the website's Platforms table also
+  # reads: to test a new version, add it there. The minimum versions are
+  # documented, with their sources, in crates/baldssl-crypto/src/os_rng.rs.
+  # No sccache here: the builds are small and some run inside containers.
+  platforms:
+    runs-on: ubuntu-26.04
+    outputs:
+      glibc: ${{ steps.matrix.outputs.glibc }}
+      musl: ${{ steps.matrix.outputs.musl }}
+      android: ${{ steps.matrix.outputs.android }}
+      runners: ${{ steps.matrix.outputs.runners }}
+      bsd: ${{ steps.matrix.outputs.bsd }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: matrix
+        run: make -s platform-matrix >> "$GITHUB_OUTPUT"
+
+  # glibc: built and run inside each distribution with its own C toolchain.
+  # The version below the minimum (glibc 2.24, before getrandom appeared in
+  # 2.25) must fail to link: this pins the documented minimum.
+  os-rng-glibc:
+    name: os-rng (${{ matrix.name }}, ${{ matrix.libc }})
+    needs: platforms
+    runs-on: ubuntu-26.04
+    env:
+      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.platforms.outputs.glibc) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Test os_rng
+        env:
+          IMAGE: ${{ matrix.image }}
+          EXPECT: ${{ matrix.expect }}
+        run: make test-os-rng-glibc IMAGE="$IMAGE" EXPECT="$EXPECT"
+
+  # musl, statically linked against the musl that Rust bundles.
+  os-rng-musl:
+    name: os-rng (musl, ${{ matrix.target }})
+    needs: platforms
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.platforms.outputs.musl) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Test os_rng
+        env:
+          TARGET: ${{ matrix.target }}
+        run: make test-os-rng-musl MUSL_TARGET="$TARGET"
+
+  # Android: its libc, bionic, has getrandom from API level 28 (Android 9).
+  # Linking against API level 27 (Android 8.1) must fail; a build for API
+  # level 28 runs on the minimum and on a recent level.
+  os-rng-android:
+    name: os-rng (${{ matrix.name }}, ${{ matrix.mode }})
+    needs: platforms
+    runs-on: ubuntu-26.04
+    # A hung emulator must not hold a runner for the 6-hour default.
+    timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.platforms.outputs.android) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Enable KVM for the emulator
+        if: matrix.mode == 'run'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Test os_rng
+        env:
+          MODE: ${{ matrix.mode }}
+          API: ${{ matrix.api }}
+          RUN_API: ${{ matrix.run_api }}
+        run: >
+          make test-os-rng-android ANDROID_MODE="$MODE" ANDROID_API="$API"
+          ANDROID_RUN_API="$RUN_API"
+
+  # Every macOS and Windows runner version, both architectures.
+  os-rng-platforms:
+    name: os-rng (${{ matrix.name }})
+    needs: platforms
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTC_WRAPPER: ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.platforms.outputs.runners) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
+      - name: Test os_rng
+        shell: bash
+        run: make test-os-rng
+
+  # The BSDs, in virtual machines (vmactions, pinned by commit). Each uses
+  # the Rust its own packages provide, which may trail the pinned toolchain:
+  # rust-version is ignored there, and the version used is printed. FreeBSD
+  # and NetBSD are tier-2 targets; OpenBSD and DragonFly are tier 3, built
+  # by their own packaged compilers.
+  os-rng-bsd:
+    name: os-rng (${{ matrix.name }})
+    needs: platforms
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.platforms.outputs.bsd) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test os_rng on FreeBSD
+        if: matrix.os == 'freebsd'
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1.6.0
+        with:
+          release: ${{ matrix.release }}
+          copyback: false
+          prepare: pkg install -y rust gmake
+          run: gmake test-os-rng-system-rust
+      - name: Test os_rng on NetBSD
+        if: matrix.os == 'netbsd'
+        uses: vmactions/netbsd-vm@5957cf330aef2e6ddc63c604364c99ce2e02b91d # v1.5.3
+        with:
+          release: ${{ matrix.release }}
+          copyback: false
+          prepare: /usr/sbin/pkg_add -u rust gmake
+          run: gmake test-os-rng-system-rust
+      - name: Test os_rng on OpenBSD
+        if: matrix.os == 'openbsd'
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1.4.9
+        with:
+          release: ${{ matrix.release }}
+          copyback: false
+          prepare: pkg_add rust gmake
+          run: gmake test-os-rng-system-rust
+      - name: Test os_rng on DragonFly BSD
+        if: matrix.os == 'dragonflybsd'
+        uses: vmactions/dragonflybsd-vm@84881684c8771163f1dd37820a358aa3cd8bc2f2 # v1.3.5
+        with:
+          release: ${{ matrix.release }}
+          copyback: false
+          prepare: pkg install -y rust gmake
+          run: gmake test-os-rng-system-rust
+
   # WebAssembly: the libraries build for the browser target, and the CLI,
   # built for WASI, passes the same golden suite as the native binary.
   wasm:

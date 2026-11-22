@@ -6,12 +6,32 @@
 //! `unsafe` code appears in any other file. Every call below is the system's
 //! documented interface for cryptographic randomness:
 //!
-//! | Platform                     | Call                                                        |
-//! | ---------------------------- | ----------------------------------------------------------- |
-//! | Linux, Android               | `getrandom(2)`, flags 0: blocks until the pool is seeded   |
-//! | macOS, iOS, FreeBSD, OpenBSD, NetBSD, DragonFly | `getentropy(2)`, at most 256 bytes per call |
-//! | Windows                      | `BCryptGenRandom` with `BCRYPT_USE_SYSTEM_PREFERRED_RNG`    |
-//! | WASI preview 1               | `random_get` from `wasi_snapshot_preview1`                  |
+//! | Platform                            | Call                                                     | Minimum                  |
+//! | ----------------------------------- | -------------------------------------------------------- | ------------------------ |
+//! | Linux, glibc                        | `getrandom(2)`, flags 0: blocks until the pool is seeded | glibc 2.25               |
+//! | Linux, musl                         | `getrandom(2)`                                           | musl 1.1.20              |
+//! | Android (bionic libc)               | `getrandom(2)`                                           | API level 28 (Android 9) |
+//! | macOS, iOS                          | `getentropy(2)`, at most 256 bytes per call              | macOS 10.12, iOS 10      |
+//! | FreeBSD, OpenBSD, NetBSD, DragonFly | `getentropy(2)`                                          |                          |
+//! | Windows                             | `BCryptGenRandom` with `BCRYPT_USE_SYSTEM_PREFERRED_RNG` |                          |
+//! | WASI preview 1                      | `random_get` from `wasi_snapshot_preview1`               |                          |
+//!
+//! Sources of the minimums: the [glibc 2.25 NEWS] ("The getentropy and
+//! getrandom functions ... have been added"), the [musl 1.1.20 release
+//! notes], the [`sys/random.h`] of bionic, Android's libc
+//! (`__INTRODUCED_IN(28)`), and the [`sys/random.h`][xnu] of xnu, the macOS
+//! kernel (`__OSX_AVAILABLE(10.12)`).
+//!
+//! CI checks them: the `os-rng-*` jobs run these tests on every platform and
+//! version listed in `website/src/platforms.json` (the website's Platforms
+//! table), and a version below a minimum must fail to link. Whether
+//! `BCryptGenRandom` is the right primitive on Windows, against the
+//! `ProcessPrng` Rust's standard library uses, is still being investigated.
+//!
+//! [glibc 2.25 NEWS]: https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=NEWS;hb=HEAD
+//! [musl 1.1.20 release notes]: https://git.musl-libc.org/cgit/musl/plain/WHATSNEW
+//! [`sys/random.h`]: https://android.googlesource.com/platform/bionic/+/refs/heads/main/libc/include/sys/random.h
+//! [xnu]: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/random.h
 //!
 //! Any other target, including `wasm32-unknown-unknown` (browsers, which
 //! would need JavaScript's `crypto.getRandomValues`), returns
@@ -66,7 +86,8 @@ mod imp {
 
     unsafe extern "C" {
         /// `ssize_t getrandom(void *buf, size_t buflen, unsigned int flags)`,
-        /// glibc 2.25 and later, musl, Android API 28 and later.
+        /// glibc 2.25 and later, musl 1.1.20 and later, Android API level 28
+        /// (Android 9) and later (see the module documentation).
         fn getrandom(buf: *mut c_void, buflen: usize, flags: c_uint) -> isize;
     }
 
