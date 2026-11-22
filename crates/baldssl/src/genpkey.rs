@@ -7,12 +7,15 @@
 //! case-insensitive, as in OpenSSL. Anything else (RSA, X25519, encryption
 //! with a cipher, `-text`, parameter files) is reported as unsupported.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 
 use baldssl_core::{Error, Result, encoding::Encodable, pem::Pem};
-use baldssl_pkey::{Algorithm, AnyPrivateKey};
+use baldssl_pkey::AnyPrivateKey;
 
-use crate::args::{self, Kind, Spec};
+use crate::{
+    args::{self, Kind, Spec},
+    keygen::{KeyParameters, utf8},
+};
 
 /// Every option `baldssl genpkey` accepts.
 pub(crate) const SPECS: &[Spec] = &[
@@ -48,23 +51,6 @@ pub(crate) const SPECS: &[Spec] = &[
     },
 ];
 
-/// The curve for an `ec_paramgen_curve` value, by its NIST or OpenSSL name.
-/// OpenSSL does not accept `secp256r1`, so neither does this.
-fn curve_opt(name: &str) -> Option<Algorithm> {
-    match name.to_ascii_lowercase().as_str() {
-        "p-256" | "prime256v1" => Some(Algorithm::P256),
-        "p-384" | "secp384r1" => Some(Algorithm::P384),
-        "p-521" | "secp521r1" => Some(Algorithm::P521),
-        _ => None,
-    }
-}
-
-fn utf8<'a>(value: &'a OsStr, option: &str) -> Result<&'a str> {
-    value
-        .to_str()
-        .ok_or_else(|| Error::Usage(format!("genpkey: -{option}: not UTF-8")))
-}
-
 /// Renders the generated key, and where to write it.
 ///
 /// # Errors
@@ -72,8 +58,7 @@ fn utf8<'a>(value: &'a OsStr, option: &str) -> Result<&'a str> {
 /// Usage errors, unsupported algorithms or options, and randomness errors.
 pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     let opts = args::parse("genpkey", raw, SPECS, |_| false)?;
-    let mut algorithm: Option<String> = None;
-    let mut curve_name: Option<String> = None;
+    let mut parameters = KeyParameters::default();
     let mut output = None;
     let mut der = false;
     for opt in opts {
@@ -82,27 +67,14 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
             "help" => {
                 return Ok((args::usage("genpkey", SPECS).into_bytes(), None));
             }
-            "algorithm" => {
-                algorithm =
-                    Some(utf8(&value, "algorithm")?.to_ascii_uppercase());
-            }
-            "pkeyopt" => {
-                let v = utf8(&value, "pkeyopt")?;
-                match v.split_once(':') {
-                    Some(("ec_paramgen_curve" | "group", name)) => {
-                        curve_name = Some(name.to_string());
-                    }
-                    Some(("ec_param_enc", "named_curve")) => {}
-                    _ => {
-                        return Err(Error::unsupported(format!(
-                            "genpkey -pkeyopt {v}"
-                        )));
-                    }
-                }
-            }
+            "algorithm" => parameters.set_algorithm("genpkey", &value)?,
+            "pkeyopt" => parameters.pkeyopt("genpkey", &value)?,
             "out" => output = Some(value),
             "outform" => {
-                match utf8(&value, "outform")?.to_ascii_uppercase().as_str() {
+                match utf8("genpkey", "outform", &value)?
+                    .to_ascii_uppercase()
+                    .as_str()
+                {
                     "PEM" => der = false,
                     "DER" => der = true,
                     other => {
@@ -116,30 +88,7 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
             _ => {}
         }
     }
-    let algorithm = match algorithm.as_deref() {
-        Some("EC") => {
-            let name = curve_name.ok_or_else(|| {
-                Error::Usage(
-                    "genpkey: EC needs -pkeyopt ec_paramgen_curve:<curve>"
-                        .into(),
-                )
-            })?;
-            curve_opt(&name).ok_or_else(|| {
-                Error::unsupported(format!("genpkey: EC curve {name}"))
-            })?
-        }
-        Some("ED25519") => Algorithm::Ed25519,
-        Some(other) => {
-            return Err(Error::unsupported(format!(
-                "genpkey -algorithm {other}"
-            )));
-        }
-        None => {
-            return Err(Error::Usage(
-                "genpkey: no algorithm given (-algorithm EC or ED25519)".into(),
-            ));
-        }
-    };
+    let algorithm = parameters.algorithm("genpkey")?;
     let key = AnyPrivateKey::generate(algorithm)?;
     let bytes = if der {
         key.encode()
@@ -155,15 +104,6 @@ mod tests {
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
-    }
-
-    #[test]
-    fn curve_names() {
-        assert_eq!(curve_opt("P-256"), Some(Algorithm::P256));
-        assert_eq!(curve_opt("prime256v1"), Some(Algorithm::P256));
-        assert_eq!(curve_opt("secp384r1"), Some(Algorithm::P384));
-        assert_eq!(curve_opt("p-521"), Some(Algorithm::P521));
-        assert_eq!(curve_opt("secp256r1"), None);
     }
 
     #[test]
