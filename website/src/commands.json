@@ -40,7 +40,7 @@
     {"name": "prime", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "compute prime numbers", "status": "not-started", "note": ""},
     {"name": "rand", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "generate pseudo-random bytes", "status": "not-started", "note": ""},
     {"name": "rehash", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "Create symbolic links to files named by the hash values", "status": "not-started", "note": ""},
-    {"name": "req", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "PKCS#10 certificate request and certificate generating command", "status": "planned", "note": "CSRs and -x509 self-signed certificates."},
+    {"name": "req", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "PKCS#10 certificate request and certificate generating command", "status": "partial", "note": "CSRs: -new -key -subj (with -utf8 and multi-valued RDNs), ECDSA with SHA-224 to SHA-512 or Ed25519, -verify, -in -out -inform -outform -noout. -text, -newkey, -x509 and -addext not yet."},
     {"name": "rsa", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "RSA key processing command", "status": "not-started", "note": ""},
     {"name": "rsautl", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "RSA command", "status": "not-started", "note": ""},
     {"name": "s_client", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "SSL/TLS client program", "status": "not-started", "note": ""},

@@ -61,12 +61,15 @@
       "section": "tasks",
       "title": "Create a certificate signing request (CSR)",
       "explanation": "A CSR carries your public key and the name you want certified. You send it to a certificate authority (CA), which returns a signed certificate.",
-      "status": "not-yet",
+      "status": "supported",
       "deterministic": false,
       "lines": [
         "openssl req -new -key key.pem \\",
         "  -subj \"/CN=example.com\" \\",
         "  -out request.csr"
+      ],
+      "verify": [
+        "openssl req -in request.csr -noout -verify"
       ]
     },
     {
