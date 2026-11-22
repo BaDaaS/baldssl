@@ -68,10 +68,23 @@ image="system-images;android-${run_api};default;x86_64"
 yes | "$sdk/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 "$sdk/cmdline-tools/latest/bin/sdkmanager" --install \
     emulator platform-tools "$image"
+# One directory for the virtual device, for both tools: recent avdmanager
+# and the emulator do not default to the same one (the emulator reported
+# "Unknown AVD name" for a device avdmanager had just created). The emulator
+# searches ANDROID_AVD_HOME first.
+export ANDROID_USER_HOME="$root/target/android-user"
+export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+mkdir -p "$ANDROID_AVD_HOME"
 echo no | "$sdk/cmdline-tools/latest/bin/avdmanager" create avd \
     --force --name os-rng --package "$image" --device pixel_5
 adb="$sdk/platform-tools/adb"
 log="$root/target/emulator.log"
+if ! "$sdk/emulator/emulator" -list-avds | grep -qx os-rng; then
+    echo "FAIL: the emulator does not see the device avdmanager created" >&2
+    "$sdk/emulator/emulator" -list-avds >&2 || true
+    ls -la "$ANDROID_AVD_HOME" >&2 || true
+    exit 1
+fi
 
 # Every wait below is bounded, and a failure prints the emulator's own log:
 # an emulator that dies at start-up otherwise leaves `adb wait-for-device`
