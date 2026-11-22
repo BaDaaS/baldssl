@@ -17,7 +17,7 @@ use super::{
 use crate::{
     algebra::{
         curve::{ShortWeierstrass, element_opt},
-        encoding::{Decodable, Encodable},
+        encoding::{Decodable, Encodable, InvalidEncoding},
         field::{Field, PrimeField, Sqrt},
         group::{Group, GroupVartime},
         laws,
@@ -321,14 +321,14 @@ where
     laws::round_trip(&ap);
     laws::round_trip(&Affine::<C>::identity());
     let enc = ap.encode();
-    assert_eq!(Affine::<C>::decode(&enc).ok(), Some(ap));
+    assert_eq!(Affine::<C>::decode(&enc), Ok(ap));
     let mut off = enc.clone();
     if let Some(last) = off.last_mut() {
         *last ^= 1;
     }
     assert_eq!(
-        Affine::<C>::decode(&off).ok(),
-        None,
+        Affine::<C>::decode(&off),
+        Err(InvalidEncoding),
         "{} off-curve",
         C::NAME
     );
@@ -374,7 +374,12 @@ where
     };
     let mut alias = enc.clone();
     alias[1..=len].copy_from_slice(&x);
-    assert_eq!(Affine::<C>::decode(&alias).ok(), None, "{} x + p", C::NAME);
+    assert_eq!(
+        Affine::<C>::decode(&alias),
+        Err(InvalidEncoding),
+        "{} x + p",
+        C::NAME
+    );
     true
 }
 
@@ -398,7 +403,7 @@ fn golden_encoding() {
     );
     let g = hex(g);
     assert_eq!(Affine::<P256>::generator().encode(), g);
-    assert_eq!(Affine::<P256>::decode(&g).ok(), Some(Affine::generator()));
+    assert_eq!(Affine::<P256>::decode(&g), Ok(Affine::generator()));
     assert_eq!(Affine::<P256>::identity().encode(), vec![0x00]);
 }
 
@@ -449,18 +454,21 @@ where
     C: ShortWeierstrass,
 {
     let enc = Affine::<C>::generator().encode();
-    assert_eq!(Affine::<C>::decode(&enc[..enc.len() - 1]).ok(), None);
+    assert_eq!(
+        Affine::<C>::decode(&enc[..enc.len() - 1]),
+        Err(InvalidEncoding)
+    );
     let mut prefix = enc.clone();
     prefix[0] = 0x02;
-    assert_eq!(Affine::<C>::decode(&prefix).ok(), None);
+    assert_eq!(Affine::<C>::decode(&prefix), Err(InvalidEncoding));
     let mut big = enc.clone();
     for byte in &mut big[1..=C::Base::BYTES] {
         *byte = 0xff;
     }
-    assert_eq!(Affine::<C>::decode(&big).ok(), None);
+    assert_eq!(Affine::<C>::decode(&big), Err(InvalidEncoding));
     assert_eq!(Affine::<C>::identity().encode(), vec![0x00]);
     // SEC 1 section 2.3.4: 00 is the identity, so encoding round-trips at O.
-    assert_eq!(Affine::<C>::decode(&[0x00]).ok(), Some(Affine::identity()));
+    assert_eq!(Affine::<C>::decode(&[0x00]), Ok(Affine::identity()));
 }
 
 /// The SEC 1 compressed encoding: it round-trips and is canonical on
@@ -482,10 +490,7 @@ where
         laws::canonical::<Compressed<C>>(&enc);
         let mut flipped = enc.clone();
         flipped[0] ^= 1;
-        assert_eq!(
-            Compressed::<C>::decode(&flipped).ok(),
-            Some(Compressed(-p))
-        );
+        assert_eq!(Compressed::<C>::decode(&flipped), Ok(Compressed(-p)));
         p = Affine::from(Projective::from(p) + Projective::from(g));
     }
     assert_eq!(parities, [true, true], "both parities seen");
@@ -501,26 +506,38 @@ where
             enc[len] = x;
             enc
         })
-        .find(|enc| Compressed::<C>::decode(enc).ok().is_none())
+        .find(|enc| Compressed::<C>::decode(enc).is_err())
         .expect("some x has no point");
-    assert_eq!(Compressed::<C>::decode(&no_point).ok(), None);
+    assert_eq!(Compressed::<C>::decode(&no_point), Err(InvalidEncoding));
 
     let enc = Compressed(g).encode();
-    assert_eq!(Compressed::<C>::decode(&enc[..len]).ok(), None, "short");
     assert_eq!(
-        Compressed::<C>::decode(&[enc.clone(), vec![0]].concat()).ok(),
-        None
+        Compressed::<C>::decode(&enc[..len]),
+        Err(InvalidEncoding),
+        "short"
+    );
+    assert_eq!(
+        Compressed::<C>::decode(&[enc.clone(), vec![0]].concat()),
+        Err(InvalidEncoding)
     );
     let mut big = vec![0x02];
     big.extend(vec![0xff; len]);
-    assert_eq!(Compressed::<C>::decode(&big).ok(), None, "x not below p");
+    assert_eq!(
+        Compressed::<C>::decode(&big),
+        Err(InvalidEncoding),
+        "x not below p"
+    );
     for prefix in [0x00, 0x01, 0x04, 0x05, 0x06, 0x07] {
         let mut other = enc.clone();
         other[0] = prefix;
-        assert_eq!(Compressed::<C>::decode(&other).ok(), None, "{prefix:#04x}");
+        assert_eq!(
+            Compressed::<C>::decode(&other),
+            Err(InvalidEncoding),
+            "{prefix:#04x}"
+        );
     }
     // The uncompressed encoding is not a compressed one.
-    assert_eq!(Compressed::<C>::decode(&g.encode()).ok(), None);
+    assert_eq!(Compressed::<C>::decode(&g.encode()), Err(InvalidEncoding));
 }
 
 #[test]

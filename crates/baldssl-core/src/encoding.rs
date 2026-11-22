@@ -56,6 +56,13 @@ pub trait Decodable: Sized {
     ///
     /// [`Decodable::Error`] when `bytes` is not the encoding of a value.
     fn decode(bytes: &[u8]) -> Result<Self, Self::Error>;
+
+    /// [`Decodable::decode`], with `None` for a rejection, for callers that
+    /// do not need the reason.
+    #[must_use]
+    fn decode_opt(bytes: &[u8]) -> Option<Self> {
+        Self::decode(bytes).ok()
+    }
 }
 
 /// The error of a decoding that only says the bytes are not an encoding.
@@ -65,5 +72,35 @@ pub struct InvalidEncoding;
 impl core::fmt::Display for InvalidEncoding {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("invalid encoding")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Decodable, InvalidEncoding};
+
+    /// A one-byte encoding, for the provided methods.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Byte(u8);
+
+    impl Decodable for Byte {
+        type Error = InvalidEncoding;
+
+        fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
+            match bytes {
+                [b] => Ok(Byte(*b)),
+                _ => Err(InvalidEncoding),
+            }
+        }
+    }
+
+    /// `decode_opt` is `decode` without the reason.
+    #[test]
+    fn decode_opt_is_decode_without_the_error() {
+        for bytes in [&[][..], &[7], &[1, 2]] {
+            assert_eq!(Byte::decode_opt(bytes), Byte::decode(bytes).ok());
+        }
+        assert_eq!(Byte::decode_opt(&[7]), Some(Byte(7)));
+        assert_eq!(Byte::decode_opt(&[1, 2]), None);
     }
 }

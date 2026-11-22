@@ -96,37 +96,33 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
-        decode_opt::<C>(bytes).ok_or(InvalidEncoding)
+        if bytes == [0x00] {
+            return Ok(Compressed(Affine::identity()));
+        }
+        let prefix = *bytes.first().ok_or(InvalidEncoding)?;
+        if bytes.len() != 1 + C::Base::BYTES || !matches!(prefix, 0x02 | 0x03) {
+            return Err(InvalidEncoding);
+        }
+        let (x, x_ok) =
+            C::Base::from_bytes_be(bytes.get(1..).ok_or(InvalidEncoding)?);
+        let (root, is_square) = rhs::<C>(x).sqrt();
+        if !(x_ok & is_square).to_bool_vartime() {
+            return Err(InvalidEncoding);
+        }
+        let want_odd = prefix == 0x03;
+        let y = if is_odd(&root) == want_odd {
+            root
+        } else {
+            -root
+        };
+        if is_odd(&y) != want_odd {
+            // y = 0 = -0 is even, so 03 has no point.
+            return Err(InvalidEncoding);
+        }
+        let (point, on_curve) = Affine::<C>::from_coordinates(x, y);
+        on_curve
+            .to_bool_vartime()
+            .then_some(Compressed(point))
+            .ok_or(InvalidEncoding)
     }
-}
-
-/// [`Decodable::decode`], with `None` for a rejection.
-fn decode_opt<C>(bytes: &[u8]) -> Option<Compressed<C>>
-where
-    C: ShortWeierstrass,
-{
-    if bytes == [0x00] {
-        return Some(Compressed(Affine::identity()));
-    }
-    let prefix = *bytes.first()?;
-    if bytes.len() != 1 + C::Base::BYTES || !matches!(prefix, 0x02 | 0x03) {
-        return None;
-    }
-    let (x, x_ok) = C::Base::from_bytes_be(bytes.get(1..)?);
-    let (root, is_square) = rhs::<C>(x).sqrt();
-    if !(x_ok & is_square).to_bool_vartime() {
-        return None;
-    }
-    let want_odd = prefix == 0x03;
-    let y = if is_odd(&root) == want_odd {
-        root
-    } else {
-        -root
-    };
-    if is_odd(&y) != want_odd {
-        // y = 0 = -0 is even, so 03 has no point.
-        return None;
-    }
-    let (point, on_curve) = Affine::<C>::from_coordinates(x, y);
-    on_curve.to_bool_vartime().then_some(Compressed(point))
 }

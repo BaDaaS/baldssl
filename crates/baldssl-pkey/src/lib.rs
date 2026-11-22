@@ -195,8 +195,8 @@ where
     C: ShortWeierstrass,
 {
     let point = match bytes.first()? {
-        0x04 => Affine::<C>::decode(bytes).ok()?,
-        0x02 | 0x03 => Compressed::<C>::decode(bytes).ok()?.0,
+        0x04 => Affine::<C>::decode_opt(bytes)?,
+        0x02 | 0x03 => Compressed::<C>::decode_opt(bytes)?.0,
         _ => return None,
     };
     (!point.is_identity().to_bool_vartime()).then(|| point.encode())
