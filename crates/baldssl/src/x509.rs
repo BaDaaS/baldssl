@@ -230,7 +230,7 @@ fn parse_options(raw: &[OsString]) -> Result<Options> {
 pub(crate) const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
 
 /// Reads [`COMPAT_ENV`]: `3` (default), `3.0` or `4`.
-fn compat() -> Result<Compat> {
+pub(crate) fn compat() -> Result<Compat> {
     match std::env::var(COMPAT_ENV) {
         Err(_) => Ok(Compat::default()),
         Ok(v) => Compat::from_version_opt(&v).ok_or_else(|| {

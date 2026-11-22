@@ -6,7 +6,9 @@ use baldssl_core::Error;
 use baldssl_crypto::Algorithm as Digest;
 use baldssl_x509::InputEncoding;
 
-use super::{Mode, Output, parse_options};
+use baldssl_core::der::TimeKind;
+
+use super::{Mode, Output, Product, parse_options};
 
 fn os(v: &[&str]) -> Vec<OsString> {
     v.iter().map(OsString::from).collect()
@@ -59,12 +61,18 @@ fn help() {
 /// What is not supported says so, and SHA-1 is not a request digest here.
 #[test]
 fn refused() {
-    for option in ["-text", "-x509"] {
-        assert_eq!(
-            parse_options(&os(&[option])).err(),
-            Some(Error::unsupported(format!("req {option}")))
-        );
-    }
+    assert_eq!(
+        parse_options(&os(&["-text"])).err(),
+        Some(Error::unsupported("req -text"))
+    );
+    assert_eq!(
+        parse_options(&os(&["-x509", "-in", "r.pem"])).err(),
+        Some(Error::unsupported("req -x509 -in"))
+    );
+    assert_eq!(
+        parse_options(&os(&["-x509", "-verify"])).err(),
+        Some(Error::unsupported("req -x509 -verify"))
+    );
     assert_eq!(
         parse_options(&os(&["-newkey", "ec"])).err(),
         Some(Error::unsupported("req -newkey"))
@@ -77,4 +85,68 @@ fn refused() {
         parse_options(&os(&["-outform", "XML"])),
         Err(Error::Usage(_))
     ));
+}
+
+/// `-x509` implies `-new`, and its options set the certificate's fields.
+#[test]
+fn certificates() {
+    let o = options(&["-x509"]);
+    assert_eq!((o.mode, o.product), (Mode::Create, Product::Certificate));
+    assert_eq!(o.days, 30);
+    assert_eq!(o.serial, None);
+    let o = options(&[
+        "-x509",
+        "-days",
+        "365",
+        "-set_serial",
+        "0x0102",
+        "-not_before",
+        "261122000000Z",
+        "-not_after",
+        "20500101000000Z",
+    ]);
+    assert_eq!(o.days, 365);
+    assert_eq!(o.serial.unwrap().as_be_bytes(), [1, 2]);
+    let before = o.not_before.unwrap();
+    assert_eq!((before.kind, before.year), (TimeKind::Utc, 2026));
+    let after = o.not_after.unwrap();
+    assert_eq!((after.kind, after.year), (TimeKind::Generalized, 2050));
+    // A GeneralizedTime before 2050 is written as a UTCTime.
+    let o = options(&["-x509", "-not_before", "20261122000000Z"]);
+    assert_eq!(o.not_before.unwrap().kind, TimeKind::Utc);
+    assert_eq!(
+        options(&["-x509", "-set_serial", "258"])
+            .serial
+            .unwrap()
+            .as_be_bytes(),
+        [1, 2]
+    );
+}
+
+#[test]
+fn certificate_rejections() {
+    for args in [
+        &["-x509", "-days", "-1"][..],
+        &["-x509", "-days", "x"],
+        &["-x509", "-set_serial", "0xg"],
+        &["-x509", "-set_serial", ""],
+        &["-x509", "-not_before", "2026"],
+        &["-x509", "-not_before", "20261122000000.5Z"],
+        &["-x509", "-not_after", "261332000000Z"],
+    ] {
+        assert!(
+            matches!(parse_options(&os(args)), Err(Error::Usage(_))),
+            "{args:?}"
+        );
+    }
+    // Zero, and 20 bytes with the top bit set: 21 octets once encoded.
+    for serial in ["0", "0x00", "0x8000000000000000000000000000000000000000"] {
+        assert!(
+            matches!(
+                parse_options(&os(&["-x509", "-set_serial", serial])),
+                Err(Error::Unsupported(_))
+            ),
+            "{serial}"
+        );
+    }
 }
