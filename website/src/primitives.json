@@ -47,8 +47,8 @@
       "id": "der-writer",
       "name": "DER writer",
       "purpose": "Encoding ASN.1 structures: keys now, certificate requests and certificates next.",
-      "status": "planned",
-      "link": ""
+      "status": "implemented",
+      "link": "https://github.com/BaDaaS/baldssl/pull/10"
     },
     {
       "id": "pkcs8",
