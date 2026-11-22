@@ -33,6 +33,9 @@ practices" says what the project does; this file says how to work in it.
   error.
 - An `allow` silences one lint and says why: one attribute per lint, each with
   its own `reason = "..."`, specific to that lint at that place.
+- Python scripts under `scripts/` use the standard library only, pass ruff and
+  mypy in strict mode, and a script that checks something has tests of its rule
+  in `scripts/tests` (`make check-py`; the tools are pinned in `uv.lock`).
 
 ## Documentation
 

@@ -377,6 +377,17 @@ jobs:
       - run: make check-aeneas
       - run: make lint-shell
 
+  # The Python scripts: formatted, linted, type-checked (strict) and tested,
+  # with the tools pinned in uv.lock.
+  python:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - run: make check-py
+
   # Every URL in the sources and in the rendered Rust documentation must be
   # reachable, and every #fragment must name an element of its page.
   links:

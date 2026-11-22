@@ -16,12 +16,14 @@ Status values:
 
 Usage: scripts/gen-commands.py <openssl-3.5> <openssl-4.1> <out.json>
 """
+
 import gzip
 import json
-import os
 import re
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 
 STATUSES = ("supported", "partial", "planned", "not-started")
 
@@ -29,27 +31,30 @@ STATUSES = ("supported", "partial", "planned", "not-started")
 FALLBACK = {"help": "Display information about a command's options"}
 
 
-def run(openssl, *args):
-    out = subprocess.run([openssl, *args], capture_output=True, text=True,
-                         check=True).stdout
+def run(openssl: str, *args: str) -> list[str]:
+    # The binary is one named on the command line.
+    out = subprocess.run(  # noqa: S603
+        [openssl, *args], capture_output=True, text=True, check=True
+    ).stdout
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def man_dir(openssl):
-    return os.path.join(os.path.dirname(os.path.dirname(
-        os.path.realpath(openssl))), "share", "man", "man1")
+def man_dir(openssl: str) -> Path:
+    return Path(openssl).resolve().parent.parent / "share" / "man" / "man1"
 
 
-def description(openssl, name):
+def description(openssl: str, name: str) -> str | None:
     """The text after ' - ' in the NAME section of openssl-<name>(1)."""
     for stem in (f"openssl-{name}", name):
         for ext in (".1ssl.gz", ".1ssl", ".1.gz", ".1"):
-            path = os.path.join(man_dir(openssl), stem + ext)
-            if not os.path.exists(path):
+            path = man_dir(openssl) / (stem + ext)
+            if not path.exists():
                 continue
-            opener = gzip.open if path.endswith(".gz") else open
-            with opener(path, "rt", encoding="utf-8") as fh:
-                text = fh.read()
+            if path.suffix == ".gz":
+                with gzip.open(path, "rt", encoding="utf-8") as fh:
+                    text = fh.read()
+            else:
+                text = path.read_text(encoding="utf-8")
             m = re.search(r'^\.SH "?NAME"?\s*\n(.*?)\n\.', text, re.S | re.M)
             if not m:
                 continue
@@ -60,7 +65,7 @@ def description(openssl, name):
     return None
 
 
-def main():
+def main() -> int:
     if len(sys.argv) != 4:
         print(__doc__, file=sys.stderr)
         return 2
@@ -74,25 +79,33 @@ def main():
         versions[label] = binary
 
     previous = {}
-    if os.path.exists(out_path):
-        with open(out_path, encoding="utf-8") as fh:
+    if Path(out_path).exists():
+        with Path(out_path).open(encoding="utf-8") as fh:
             for entry in json.load(fh)["commands"]:
                 previous[(entry["kind"], entry["name"])] = entry
 
-    entries = {}
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
     for label, binary in versions.items():
-        for kind, flag in (("standard", "-commands"),
-                           ("digest", "-digest-commands"),
-                           ("cipher", "-cipher-commands")):
+        for kind, flag in (
+            ("standard", "-commands"),
+            ("digest", "-digest-commands"),
+            ("cipher", "-cipher-commands"),
+        ):
             for name in run(binary, "list", "-1", flag):
-                e = entries.setdefault((kind, name), {
-                    "name": name, "kind": kind, "openssl": [],
-                    "description": None,
-                })
+                e = entries.setdefault(
+                    (kind, name),
+                    {
+                        "name": name,
+                        "kind": kind,
+                        "openssl": [],
+                        "description": None,
+                    },
+                )
                 e["openssl"].append(label)
                 if kind == "standard":
-                    e["description"] = (description(binary, name)
-                                        or e["description"])
+                    e["description"] = (
+                        description(binary, name) or e["description"]
+                    )
                 elif kind == "digest":
                     e["description"] = f"Shortcut for `dgst -{name}`"
                 else:
@@ -106,18 +119,22 @@ def main():
         status = prev.get("status", "not-started")
         if status not in STATUSES:
             raise SystemExit(f"{e['name']}: unknown status {status!r}")
-        e["description"] = (e["description"] or FALLBACK.get(e["name"])
-                            or "(no manual page)")
+        e["description"] = (
+            e["description"] or FALLBACK.get(e["name"]) or "(no manual page)"
+        )
         e["status"] = status
         e["note"] = prev.get("note", "")
         commands.append(e)
 
-    with open(out_path, "w", encoding="utf-8") as fh:
+    with Path(out_path).open("w", encoding="utf-8") as fh:
         fh.write('{\n  "openssl": ["3.5", "4.1"],\n  "commands": [\n')
         # One object per line: diff-friendly, and parsed line by line by
         # crates/baldssl/tests/commands.rs.
-        fh.write(",\n".join("    " + json.dumps(c, ensure_ascii=True)
-                            for c in commands))
+        fh.write(
+            ",\n".join(
+                "    " + json.dumps(c, ensure_ascii=True) for c in commands
+            )
+        )
         fh.write("\n  ]\n}\n")
     return 0
 

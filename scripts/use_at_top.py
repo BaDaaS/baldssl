@@ -13,6 +13,7 @@ Usage: use_at_top.py FILE...   exits 1 and lists the offending lines.
 
 import re
 import sys
+from pathlib import Path
 
 MOD_OPEN = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?mod\s+\w+\s*\{\s*$")
 USE = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?use\s")
@@ -29,7 +30,7 @@ def check(path: str) -> list[str]:
     errors = []
     # One entry per open brace: True when it opened a module.
     stack: list[bool] = []
-    with open(path, encoding="utf-8") as f:
+    with Path(path).open(encoding="utf-8") as f:
         for number, line in enumerate(f, 1):
             code = strip(line)
             if USE.match(code) and not all(stack):

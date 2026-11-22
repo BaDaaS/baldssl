@@ -36,3 +36,9 @@ __pycache__/
 
 # Downloaded by `make fixtures` (tests/fixtures.mk pins the release).
 /tests/fixtures/
+
+# Python tooling
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

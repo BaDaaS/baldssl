@@ -8,11 +8,14 @@ Usage: check_practices.py README.md website/src/practices.json
 import json
 import re
 import sys
+from pathlib import Path
 
 
 def readme_titles(path: str) -> list[str]:
-    text = open(path, encoding="utf-8").read()
-    match = re.search(r"^## Engineering practices\n(.*?)(?=^## )", text, re.S | re.M)
+    text = Path(path).read_text(encoding="utf-8")
+    match = re.search(
+        r"^## Engineering practices\n(.*?)(?=^## )", text, re.S | re.M
+    )
     if not match:
         return []
     return re.findall(r"^- \*\*(.+?)\.\*\*", match.group(1), re.M)
@@ -20,7 +23,8 @@ def readme_titles(path: str) -> list[str]:
 
 def main() -> int:
     readme, data = sys.argv[1], sys.argv[2]
-    site = [p["title"] for p in json.load(open(data, encoding="utf-8"))["practices"]]
+    practices = json.loads(Path(data).read_text(encoding="utf-8"))
+    site = [p["title"] for p in practices["practices"]]
     ours = readme_titles(readme)
     if ours != site:
         print(f"{readme} and {data} list different practices:")

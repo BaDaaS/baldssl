@@ -44,7 +44,7 @@ SKIP_DIRS = {"node_modules", ".git", "dist", "src-static", "static.files"}
 AGENT = "baldssl-url-check (+https://github.com/BaDaaS/baldssl)"
 
 
-def urls_in(path):
+def urls_in(path: Path) -> set[str]:
     """The URLs written in one file."""
     try:
         text = path.read_text(encoding="utf-8")
@@ -62,13 +62,13 @@ def urls_in(path):
     return set()
 
 
-def clean(url):
+def clean(url: str) -> str:
     """Drops punctuation that ends a sentence, not the URL."""
     return url.rstrip(".,;:")
 
 
-def collect(paths):
-    found = {}
+def collect(paths: list[str]) -> dict[str, Path]:
+    found: dict[str, Path] = {}
     me = Path(__file__).resolve()
     for root in map(Path, paths):
         files = [root] if root.is_file() else sorted(root.rglob("*"))
@@ -86,29 +86,36 @@ def collect(paths):
     return found
 
 
-def fetch(url, attempts=3):
+def fetch(
+    url: str, attempts: int = 3
+) -> tuple[int | None, bytes | None, str | None]:
     """(status, body or None, error)."""
+    if not url.startswith(("https://", "http://")):
+        return None, None, "not an http(s) URL"
     for attempt in range(attempts):
-        request = urllib.request.Request(url, headers={"User-Agent": AGENT})
+        # The scheme is checked above: only http and https reach urlopen.
+        request = urllib.request.Request(  # noqa: S310
+            url, headers={"User-Agent": AGENT}
+        )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
                 kind = response.headers.get("Content-Type", "")
                 body = response.read() if "html" in kind else None
                 return response.status, body, None
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 504) and attempt + 1 < attempts:
-                time.sleep(2 ** attempt * 3)
+                time.sleep(2**attempt * 3)
                 continue
             return e.code, None, None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if attempt + 1 < attempts:
-                time.sleep(2 ** attempt * 3)
+                time.sleep(2**attempt * 3)
                 continue
             return None, None, str(e)
     return None, None, "unreachable"
 
 
-def check(url):
+def check(url: str) -> str | None:
     """None if fine, else the problem."""
     base, _, fragment = url.partition("#")
     status, body, error = fetch(base)
@@ -126,7 +133,7 @@ def check(url):
     return None
 
 
-def main(paths):
+def main(paths: list[str]) -> int:
     found = collect(paths)
     print(f"checking {len(found)} URLs")
     failures = []
