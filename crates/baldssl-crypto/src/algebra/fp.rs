@@ -311,6 +311,20 @@ where
         Self::mont_mul(&self.mont, &one)
     }
 
+    /// A square root for $p \equiv 3 \pmod 4$: $r = a^{(p + 1)/4}$, and
+    /// $r^2 = a^{(p + 1)/2} = a \cdot a^{(p - 1)/2}$, which is $a$ exactly when
+    /// $a$ is a square (Euler's criterion); squaring $r$ checks it, so no root
+    /// is reported for a non-square. $(p + 1)/4 = \lfloor p / 4 \rfloor + 1$,
+    /// computed without overflow. Constant time in $a$: one exponentiation by
+    /// a public exponent, and a comparison.
+    ///
+    /// The caller guarantees $p \equiv 3 \pmod 4$; the instance tests check
+    /// it.
+    pub(crate) fn sqrt_3_mod_4(&self) -> (Self, Choice) {
+        let r = self.pow_vartime(&add_one(&shr(&Self::modulus(), 2)));
+        (r, r.square().ct_eq(self))
+    }
+
     /// A square root for $p \equiv 5 \pmod 8$ (Atkin's case, as in
     /// [RFC 8032, section 5.1.3][rfc8032-5.1.3]): with $q = (p - 5) / 8$,
     /// $r = a^{q + 1}$ satisfies $r^2 = \pm a$ when $a$ is a square, since

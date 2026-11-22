@@ -146,7 +146,7 @@ where
     E: Encodable + Decodable + PartialEq + Debug,
 {
     assert_eq!(
-        E::decode(x.encode().as_ref()).ok().as_ref(),
+        E::decode_opt(x.encode().as_ref()).as_ref(),
         Some(x),
         "round trip"
     );
@@ -177,6 +177,6 @@ where
     round_trip(p);
     let bytes = p.encode();
     canonical::<P>(bytes.as_ref());
-    let decoded = P::decode(bytes.as_ref()).ok();
+    let decoded = P::decode_opt(bytes.as_ref());
     assert!(decoded.is_some_and(|d| d.is_on_curve().to_bool_vartime()));
 }

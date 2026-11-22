@@ -237,24 +237,22 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
-        decode_opt::<C>(bytes).ok_or(InvalidEncoding)
+        if bytes == [0x00] {
+            return Ok(Affine::<C>::identity());
+        }
+        let len = C::Base::BYTES;
+        if bytes.len() != 1 + 2 * len || bytes.first() != Some(&0x04) {
+            return Err(InvalidEncoding);
+        }
+        let (x, x_ok) =
+            C::Base::from_bytes_be(bytes.get(1..=len).ok_or(InvalidEncoding)?);
+        let (y, y_ok) = C::Base::from_bytes_be(
+            bytes.get(1 + len..).ok_or(InvalidEncoding)?,
+        );
+        let (point, on_curve) = Affine::<C>::from_coordinates(x, y);
+        (x_ok & y_ok & on_curve)
+            .to_bool_vartime()
+            .then_some(point)
+            .ok_or(InvalidEncoding)
     }
-}
-
-/// [`Decodable::decode`], with `None` for a rejection.
-fn decode_opt<C>(bytes: &[u8]) -> Option<Affine<C>>
-where
-    C: ShortWeierstrass,
-{
-    if bytes == [0x00] {
-        return Some(Affine::<C>::identity());
-    }
-    let len = C::Base::BYTES;
-    if bytes.len() != 1 + 2 * len || bytes.first() != Some(&0x04) {
-        return None;
-    }
-    let (x, x_ok) = C::Base::from_bytes_be(bytes.get(1..=len)?);
-    let (y, y_ok) = C::Base::from_bytes_be(bytes.get(1 + len..)?);
-    let (point, on_curve) = Affine::<C>::from_coordinates(x, y);
-    (x_ok & y_ok & on_curve).to_bool_vartime().then_some(point)
 }

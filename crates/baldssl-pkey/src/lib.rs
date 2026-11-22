@@ -1,4 +1,4 @@
-//! Private keys: generation, and the PKCS#8 encoding OpenSSL writes.
+//! Keys: generation, the PKCS#8 encoding OpenSSL writes, and reading keys.
 //!
 //! Supported: P-256, P-384, P-521 and Ed25519.
 //!
@@ -63,6 +63,42 @@
 //! 3.5.9 and 4.1.0 re-encode each of them to the same bytes, which
 //! `scripts/pkcs8-agreement.sh` checks.
 //!
+//! # Reading keys
+//!
+//! [`AnyPrivateKey`] reads PKCS#8 (`PRIVATE KEY`, [RFC 5958]) and SEC 1 (`EC
+//! PRIVATE KEY`, [RFC 5915]); [`PublicKey`] reads SubjectPublicKeyInfo (`PUBLIC
+//! KEY`, [RFC 5480], and [RFC 8410] for Ed25519). Reading mirrors writing: DER
+//! through [`Decodable`] (the inverse of [`Encodable`]), and PEM by finding the
+//! block (a [`PemBlock`](baldssl_core::pem::PemBlock)) and converting it with
+//! `TryFrom`, which checks the label. A public key is read in two steps: the
+//! DER record of the SubjectPublicKeyInfo, then the checks that make it a key,
+//! so the encoding and the validation are separate.
+//!
+//! ## Validation, and where it differs from OpenSSL
+//!
+//! OpenSSL 3.5 and 4.1 parse several invalid keys and report them only under
+//! `pkey -check`. baldssl rejects them when the key is read, with
+//! [`Error::Invalid`]:
+//!
+//! - an EC scalar $d$ outside $[1, n - 1]$;
+//! - an embedded public key that is not the one of the private key;
+//! - the point at infinity as a public key (OpenSSL rejects a point off the
+//!   curve at parse time, but not the identity).
+//!
+//! Also stricter: trailing bytes after the DER structure are a
+//! [`Error::Der`] (OpenSSL ignores them). Accepted as OpenSSL does: a scalar
+//! OCTET STRING shorter or longer than the group order (the value is what
+//! counts; [RFC 5915] fixes the length but OpenSSL reads any), compressed
+//! points (returned uncompressed), and any 32 bytes as an Ed25519 public key
+//! (OpenSSL does not decode the point either).
+//!
+//! Not supported, as [`Error::Unsupported`]: explicit curve parameters,
+//! encrypted keys (`ENCRYPTED PRIVATE KEY`, and the legacy `Proc-Type` PEM
+//! headers), and the other algorithms (RSA, X25519, X448, Ed448).
+//!
+//! [rfc5208]: https://www.rfc-editor.org/rfc/rfc5208#section-5
+//! [rfc5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
+//! [rfc8410]: https://www.rfc-editor.org/rfc/rfc8410#section-7
 //! # Structure
 //!
 //! A [`PrivateKey<A>`] carries its algorithm in its type ([`KeyAlgorithm`]:
@@ -86,23 +122,31 @@
 //! [rfc7468-10]: https://www.rfc-editor.org/rfc/rfc7468#section-10
 //! [pkey35]: https://docs.openssl.org/3.5/man1/openssl-pkey/
 //! [pkey41]: https://docs.openssl.org/4.1/man1/openssl-pkey/
+//! [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480
+//! [RFC 5915]: https://www.rfc-editor.org/rfc/rfc5915
+//! [RFC 5958]: https://www.rfc-editor.org/rfc/rfc5958
+//! [RFC 8410]: https://www.rfc-editor.org/rfc/rfc8410
 
 mod asn1;
+mod parse;
+
+pub use parse::PublicKey;
 
 use baldssl_core::{
     Error, Result,
     der::syntax::{ObjectId, ObjectIdentifier, RawTlv, encode as encode_with},
-    encoding::Encodable,
+    encoding::{Decodable, Encodable},
     pem::Pem,
 };
 use baldssl_crypto::{
     algebra::{
         curve::{Curve, ShortWeierstrass},
         field::PrimeField,
+        model::AffineModel,
     },
     instances::{P256, P384, P521},
     keys::{EcKeyPair, EdDsaKeyPair},
-    models::weierstrass::affine::Affine,
+    models::weierstrass::{affine::Affine, compressed::Compressed},
     os_rng::{self, RngError},
     signature::eddsa::{Ed25519, Ed25519Parameters},
 };
@@ -125,7 +169,66 @@ pub enum Algorithm {
     Ed25519,
 }
 
+/// The EC curves, as a value: the dispatch from an algorithm to the generic
+/// curve code of `baldssl-crypto`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EcCurve {
+    P256,
+    P384,
+    P521,
+}
+
+impl EcCurve {
+    /// Decodes a public point in either SEC 1 form (uncompressed `04 || x ||
+    /// y`, or compressed `02 || x` or `03 || x`, big-endian) and returns it
+    /// uncompressed. `None` when it is not a point of the curve other than
+    /// the identity: a wrong length or prefix, a coordinate not below $p$,
+    /// off the curve, an $x$ with no point, or `00`.
+    pub(crate) fn decode_point_opt(self, bytes: &[u8]) -> Option<Vec<u8>> {
+        match self {
+            EcCurve::P256 => point_opt::<P256>(bytes).map(|p| p.encode()),
+            EcCurve::P384 => point_opt::<P384>(bytes).map(|p| p.encode()),
+            EcCurve::P521 => point_opt::<P521>(bytes).map(|p| p.encode()),
+        }
+    }
+}
+
+/// A public point of the curve `C` in either SEC 1 form, as
+/// [`EcCurve::decode_point_opt`] reads it, as a point: `None` for the
+/// identity and for whatever is not a point.
+pub(crate) fn point_opt<C>(bytes: &[u8]) -> Option<Affine<C>>
+where
+    C: ShortWeierstrass,
+{
+    let point = match bytes.first()? {
+        0x04 => Affine::<C>::decode_opt(bytes)?,
+        0x02 | 0x03 => Compressed::<C>::decode_opt(bytes)?.0,
+        _ => return None,
+    };
+    (!point.is_identity().to_bool_vartime()).then_some(point)
+}
+
 impl Algorithm {
+    /// The curve's object identifier, for the EC curves.
+    pub(crate) fn curve_oid_opt(self) -> Option<ObjectId> {
+        match self {
+            Algorithm::P256 => Some(PRIME256V1),
+            Algorithm::P384 => Some(SECP384R1),
+            Algorithm::P521 => Some(SECP521R1),
+            Algorithm::Ed25519 => None,
+        }
+    }
+
+    /// The curve, for the EC algorithms.
+    pub(crate) fn curve_opt(self) -> Option<EcCurve> {
+        match self {
+            Algorithm::P256 => Some(EcCurve::P256),
+            Algorithm::P384 => Some(EcCurve::P384),
+            Algorithm::P521 => Some(EcCurve::P521),
+            Algorithm::Ed25519 => None,
+        }
+    }
+
     /// The length of the private key in bytes: the scalar at the full
     /// length of the group order (32, 48, 66), or the 32-byte Ed25519 seed.
     #[must_use]

@@ -10,12 +10,15 @@
 use baldssl_test_utils::{fixture, hex};
 use proptest::prelude::*;
 
-use super::{affine::Affine, jacobian::Jacobian, projective::Projective};
+use super::{
+    affine::Affine, compressed::Compressed, jacobian::Jacobian,
+    projective::Projective,
+};
 use crate::{
     algebra::{
         curve::{ShortWeierstrass, element_opt},
-        encoding::{Decodable, Encodable},
-        field::{Field, PrimeField},
+        encoding::{Decodable, Encodable, InvalidEncoding},
+        field::{Field, PrimeField, Sqrt},
         group::{Group, GroupVartime},
         laws,
         model::{AffineModel, CurveModel},
@@ -300,6 +303,10 @@ where
     laws::encodings(&(p + q));
     laws::encodings(&jp);
     laws::encodings(&js);
+    // Random points: compressed round trip and the square roots.
+    laws::round_trip(&Compressed(ap));
+    laws::canonical::<Compressed<C>>(&Compressed(ap).encode());
+    check_sqrt::<C>(ap.coordinates_opt().map_or(C::Base::ONE, |c| c.0));
     // The projective and Jacobian encodings are of the representation: a
     // rescaled representative of the same point encodes differently.
     let scaled = Projective::<C>::new(p.x.double(), p.y.double(), p.z.double());
@@ -314,14 +321,14 @@ where
     laws::round_trip(&ap);
     laws::round_trip(&Affine::<C>::identity());
     let enc = ap.encode();
-    assert_eq!(Affine::<C>::decode(&enc).ok(), Some(ap));
+    assert_eq!(Affine::<C>::decode(&enc), Ok(ap));
     let mut off = enc.clone();
     if let Some(last) = off.last_mut() {
         *last ^= 1;
     }
     assert_eq!(
-        Affine::<C>::decode(&off).ok(),
-        None,
+        Affine::<C>::decode(&off),
+        Err(InvalidEncoding),
         "{} off-curve",
         C::NAME
     );
@@ -367,7 +374,12 @@ where
     };
     let mut alias = enc.clone();
     alias[1..=len].copy_from_slice(&x);
-    assert_eq!(Affine::<C>::decode(&alias).ok(), None, "{} x + p", C::NAME);
+    assert_eq!(
+        Affine::<C>::decode(&alias),
+        Err(InvalidEncoding),
+        "{} x + p",
+        C::NAME
+    );
     true
 }
 
@@ -391,7 +403,7 @@ fn golden_encoding() {
     );
     let g = hex(g);
     assert_eq!(Affine::<P256>::generator().encode(), g);
-    assert_eq!(Affine::<P256>::decode(&g).ok(), Some(Affine::generator()));
+    assert_eq!(Affine::<P256>::decode(&g), Ok(Affine::generator()));
     assert_eq!(Affine::<P256>::identity().encode(), vec![0x00]);
 }
 
@@ -442,18 +454,139 @@ where
     C: ShortWeierstrass,
 {
     let enc = Affine::<C>::generator().encode();
-    assert_eq!(Affine::<C>::decode(&enc[..enc.len() - 1]).ok(), None);
+    assert_eq!(
+        Affine::<C>::decode(&enc[..enc.len() - 1]),
+        Err(InvalidEncoding)
+    );
     let mut prefix = enc.clone();
     prefix[0] = 0x02;
-    assert_eq!(Affine::<C>::decode(&prefix).ok(), None);
+    assert_eq!(Affine::<C>::decode(&prefix), Err(InvalidEncoding));
     let mut big = enc.clone();
     for byte in &mut big[1..=C::Base::BYTES] {
         *byte = 0xff;
     }
-    assert_eq!(Affine::<C>::decode(&big).ok(), None);
+    assert_eq!(Affine::<C>::decode(&big), Err(InvalidEncoding));
     assert_eq!(Affine::<C>::identity().encode(), vec![0x00]);
     // SEC 1 section 2.3.4: 00 is the identity, so encoding round-trips at O.
-    assert_eq!(Affine::<C>::decode(&[0x00]).ok(), Some(Affine::identity()));
+    assert_eq!(Affine::<C>::decode(&[0x00]), Ok(Affine::identity()));
+}
+
+/// The SEC 1 compressed encoding: it round-trips and is canonical on
+/// k G for small k (both parities occur), the other parity decodes to -P,
+/// and the rejections (an x with no point, wrong lengths, the hybrid forms,
+/// x not below p, and the other prefixes).
+fn check_compressed<C>()
+where
+    C: ShortWeierstrass,
+{
+    let g = Affine::<C>::generator();
+    let mut p = g;
+    let mut parities = [false; 2];
+    for _ in 0..16 {
+        let enc = Compressed(p).encode();
+        assert_eq!(enc.len(), 1 + C::Base::BYTES);
+        parities[usize::from(enc[0] & 1)] = true;
+        laws::round_trip(&Compressed(p));
+        laws::canonical::<Compressed<C>>(&enc);
+        let mut flipped = enc.clone();
+        flipped[0] ^= 1;
+        assert_eq!(Compressed::<C>::decode(&flipped), Ok(Compressed(-p)));
+        p = Affine::from(Projective::from(p) + Projective::from(g));
+    }
+    assert_eq!(parities, [true, true], "both parities seen");
+    laws::round_trip(&Compressed(Affine::<C>::identity()));
+    assert_eq!(Compressed(Affine::<C>::identity()).encode(), vec![0x00]);
+
+    // An x with no point: about half of all x have none.
+    let len = C::Base::BYTES;
+    let no_point = (0u8..=255)
+        .map(|x| {
+            let mut enc = vec![0u8; 1 + len];
+            enc[0] = 0x02;
+            enc[len] = x;
+            enc
+        })
+        .find(|enc| Compressed::<C>::decode(enc).is_err())
+        .expect("some x has no point");
+    assert_eq!(Compressed::<C>::decode(&no_point), Err(InvalidEncoding));
+
+    let enc = Compressed(g).encode();
+    assert_eq!(
+        Compressed::<C>::decode(&enc[..len]),
+        Err(InvalidEncoding),
+        "short"
+    );
+    assert_eq!(
+        Compressed::<C>::decode(&[enc.clone(), vec![0]].concat()),
+        Err(InvalidEncoding)
+    );
+    let mut big = vec![0x02];
+    big.extend(vec![0xff; len]);
+    assert_eq!(
+        Compressed::<C>::decode(&big),
+        Err(InvalidEncoding),
+        "x not below p"
+    );
+    for prefix in [0x00, 0x01, 0x04, 0x05, 0x06, 0x07] {
+        let mut other = enc.clone();
+        other[0] = prefix;
+        assert_eq!(
+            Compressed::<C>::decode(&other),
+            Err(InvalidEncoding),
+            "{prefix:#04x}"
+        );
+    }
+    // The uncompressed encoding is not a compressed one.
+    assert_eq!(Compressed::<C>::decode(&g.encode()), Err(InvalidEncoding));
+}
+
+#[test]
+fn compressed() {
+    check_compressed::<P256>();
+    check_compressed::<P384>();
+    check_compressed::<P521>();
+}
+
+/// Square roots in the base fields, for p = 3 mod 4: every square a^2 has
+/// the root a or -a, and -a^2 has none for a != 0, since -1 is not a square
+/// when p = 3 mod 4. Together: `sqrt` accepts exactly the squares.
+fn check_sqrt<C>(a: C::Base)
+where
+    C: ShortWeierstrass,
+{
+    let (root, is_square) = a.square().sqrt();
+    assert!(is_square.to_bool_vartime(), "{}: a^2 is a square", C::NAME);
+    assert!(root == a || root == -a, "{}: the root of a^2", C::NAME);
+    if !a.is_zero().to_bool_vartime() {
+        assert!(
+            !(-a.square()).sqrt().1.to_bool_vartime(),
+            "{}: -a^2",
+            C::NAME
+        );
+    }
+}
+
+fn check_sqrt_edges<C>()
+where
+    C: ShortWeierstrass,
+{
+    let p = C::Base::modulus_be();
+    assert_eq!(p.last().map(|b| b & 3), Some(3), "{}: p = 3 mod 4", C::NAME);
+    let (zero, ok) = C::Base::ZERO.sqrt();
+    assert!(ok.to_bool_vartime() && zero.is_zero().to_bool_vartime());
+    assert!(!(-C::Base::ONE).sqrt().1.to_bool_vartime(), "-1");
+    check_sqrt::<C>(C::Base::ONE);
+    check_sqrt::<C>(-C::Base::ONE);
+    for v in 2..64 {
+        check_sqrt::<C>(C::Base::from_u64(v));
+    }
+}
+
+#[test]
+fn square_roots() {
+    check_sqrt_edges::<P256>();
+    check_sqrt_edges::<P384>();
+    check_sqrt_edges::<P521>();
 }
 
 #[test]

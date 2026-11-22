@@ -331,24 +331,20 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
-        decode_opt::<C>(bytes).ok_or(InvalidEncoding)
+        if bytes.len() != 3 * C::Base::BYTES {
+            return Err(InvalidEncoding);
+        }
+        let mut chunks = bytes.chunks(C::Base::BYTES);
+        let (x, x_ok) =
+            C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?);
+        let (y, y_ok) =
+            C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?);
+        let (z, z_ok) =
+            C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?);
+        let candidate = Projective::<C>::new(x, y, z);
+        (x_ok & y_ok & z_ok & candidate.is_on_curve())
+            .to_bool_vartime()
+            .then_some(candidate)
+            .ok_or(InvalidEncoding)
     }
-}
-
-/// [`Decodable::decode`], with `None` for a rejection.
-fn decode_opt<C>(bytes: &[u8]) -> Option<Projective<C>>
-where
-    C: ShortWeierstrass,
-{
-    if bytes.len() != 3 * C::Base::BYTES {
-        return None;
-    }
-    let mut chunks = bytes.chunks(C::Base::BYTES);
-    let (x, x_ok) = C::Base::from_bytes_be(chunks.next()?);
-    let (y, y_ok) = C::Base::from_bytes_be(chunks.next()?);
-    let (z, z_ok) = C::Base::from_bytes_be(chunks.next()?);
-    let candidate = Projective::<C>::new(x, y, z);
-    (x_ok & y_ok & z_ok & candidate.is_on_curve())
-        .to_bool_vartime()
-        .then_some(candidate)
 }

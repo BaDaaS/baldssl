@@ -206,38 +206,34 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
-        decode_opt::<C>(bytes).ok_or(InvalidEncoding)
+        if bytes.len() != encoding_len::<C>() {
+            return Err(InvalidEncoding);
+        }
+        let mut be: Vec<u8> = bytes.iter().rev().copied().collect();
+        let top = be.first_mut().ok_or(InvalidEncoding)?;
+        let x_0 = *top >> 7;
+        *top &= 0x7f;
+        // The bytes above the field's width, if any, must be zero.
+        let extra = be
+            .len()
+            .checked_sub(C::Base::BYTES)
+            .ok_or(InvalidEncoding)?;
+        let (high, low) = be.split_at(extra);
+        if high.iter().any(|&b| b != 0) {
+            return Err(InvalidEncoding);
+        }
+        let (y, canonical) = C::Base::from_bytes_be(low);
+        let y2 = y.square();
+        let u = y2 - C::Base::ONE;
+        let v = d::<C>() * y2 + C::Base::ONE;
+        let (x, is_square) = (u * v.invert()).sqrt();
+        let parity = x.to_bytes_be().last().map_or(0, |b| b & 1);
+        let flip = Choice::from_bit(u64::from(parity ^ x_0));
+        let x = C::Base::select(&x, &-x, flip);
+        let bad_sign = x.is_zero() & Choice::from_bit(u64::from(x_0));
+        (canonical & is_square & !bad_sign)
+            .to_bool_vartime()
+            .then_some(point(x, y))
+            .ok_or(InvalidEncoding)
     }
-}
-
-/// [`Decodable::decode`], with `None` for a rejection.
-fn decode_opt<C>(bytes: &[u8]) -> Option<Affine<C>>
-where
-    C: TwistedEdwards,
-{
-    if bytes.len() != encoding_len::<C>() {
-        return None;
-    }
-    let mut be: Vec<u8> = bytes.iter().rev().copied().collect();
-    let top = be.first_mut()?;
-    let x_0 = *top >> 7;
-    *top &= 0x7f;
-    // The bytes above the field's width, if any, must be zero.
-    let extra = be.len().checked_sub(C::Base::BYTES)?;
-    let (high, low) = be.split_at(extra);
-    if high.iter().any(|&b| b != 0) {
-        return None;
-    }
-    let (y, canonical) = C::Base::from_bytes_be(low);
-    let y2 = y.square();
-    let u = y2 - C::Base::ONE;
-    let v = d::<C>() * y2 + C::Base::ONE;
-    let (x, is_square) = (u * v.invert()).sqrt();
-    let parity = x.to_bytes_be().last().map_or(0, |b| b & 1);
-    let flip = Choice::from_bit(u64::from(parity ^ x_0));
-    let x = C::Base::select(&x, &-x, flip);
-    let bad_sign = x.is_zero() & Choice::from_bit(u64::from(x_0));
-    (canonical & is_square & !bad_sign)
-        .to_bool_vartime()
-        .then_some(point(x, y))
 }

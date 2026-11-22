@@ -11,7 +11,7 @@ use super::{affine::Affine as AffineOf, d, extended::Extended as ExtendedOf};
 use crate::{
     algebra::{
         curve::Curve,
-        encoding::{Decodable, Encodable},
+        encoding::{Decodable, Encodable, InvalidEncoding},
         field::{Field, PrimeField, Sqrt},
         group::Group,
         laws,
@@ -314,14 +314,14 @@ fn square_roots() {
 fn decoding() {
     let mut base = vec![0x66u8; 32];
     base[0] = 0x58;
-    assert_eq!(Affine::decode(&base).ok(), Some(Affine::generator()));
+    assert_eq!(Affine::decode(&base), Ok(Affine::generator()));
     assert_eq!(
-        Extended::from(Affine::decode(&base).ok().unwrap()),
+        Extended::from(Affine::decode(&base).unwrap()),
         Extended::generator()
     );
     let mut one = vec![0u8; 32];
     one[0] = 1;
-    assert_eq!(Affine::decode(&one).ok(), Some(Affine::identity()));
+    assert_eq!(Affine::decode(&one), Ok(Affine::identity()));
 
     // (0, -1), of order 2: y = p - 1, x = 0, sign 0.
     let mut minus_one =
@@ -331,26 +331,37 @@ fn decoding() {
     assert!(!t.is_in_prime_subgroup().to_bool_vartime());
     // ... but x = 0 with the sign bit set is the one non-canonical sign.
     minus_one[31] |= 0x80;
-    assert_eq!(Affine::decode(&minus_one).ok(), None, "x = 0, sign 1");
+    assert_eq!(
+        Affine::decode(&minus_one),
+        Err(InvalidEncoding),
+        "x = 0, sign 1"
+    );
     one[31] |= 0x80;
-    assert_eq!(Affine::decode(&one).ok(), None, "identity with sign 1");
+    assert_eq!(
+        Affine::decode(&one),
+        Err(InvalidEncoding),
+        "identity with sign 1"
+    );
 
     // The sign bit selects -x.
     let mut neg_base = base.clone();
     neg_base[31] ^= 0x80;
-    assert_eq!(Affine::decode(&neg_base).ok(), Some(-Affine::generator()));
+    assert_eq!(Affine::decode(&neg_base), Ok(-Affine::generator()));
 
     // y = p (not below p) is rejected, though it is 0 modulo p.
     let p_le =
         hex("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f");
-    assert_eq!(Affine::decode(&p_le).ok(), None, "y = p");
+    assert_eq!(Affine::decode(&p_le), Err(InvalidEncoding), "y = p");
     // y = 2: (4 - 1) / (4 d + 1) is not a square.
     let mut two = vec![0u8; 32];
     two[0] = 2;
-    assert_eq!(Affine::decode(&two).ok(), None, "no square root");
+    assert_eq!(Affine::decode(&two), Err(InvalidEncoding), "no square root");
     // Wrong lengths.
-    assert_eq!(Affine::decode(&base[..31]).ok(), None);
-    assert_eq!(Affine::decode(&[base.as_slice(), &[0]].concat()).ok(), None);
+    assert_eq!(Affine::decode(&base[..31]), Err(InvalidEncoding));
+    assert_eq!(
+        Affine::decode(&[base.as_slice(), &[0]].concat()),
+        Err(InvalidEncoding)
+    );
 }
 
 proptest! {
