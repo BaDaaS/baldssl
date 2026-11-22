@@ -8,13 +8,16 @@
 //! random in OpenSSL, so an ECDSA certificate matches in its
 //! `TBSCertificate`, and each side's signature verifies.
 
-use baldssl_core::der::syntax::{Any, BitString, RawTlv, Sequence, decode};
+use baldssl_core::{
+    der::syntax::{Any, BitString, RawTlv, Sequence, decode},
+    encoding::Decodable,
+};
 use baldssl_pkey::{Algorithm, AnyPrivateKey, PublicKey};
 use baldssl_test_utils::{fixture, hex};
 
 use super::{CertificateTemplate, SerialNumber};
 use crate::{
-    Compat, SignatureAlgorithm,
+    Certificate, CertificationRequest, Compat, SignatureAlgorithm,
     cert::Validity,
     dn::{DistinguishedName, InputEncoding, UTF8_ONLY},
 };
@@ -118,6 +121,96 @@ fn authority_key_identifier_by_release() {
     assert!(has_authority(Compat::V30));
     assert!(has_authority(Compat::V3));
     assert!(!has_authority(Compat::V4));
+}
+
+/// baldssl's certificate for a request against the one `openssl x509 -req`
+/// of each release line issues: `x509-req/issued-<line>.txt` of the
+/// fixtures (`scripts/gen-issued.py`), one CA per curve and every fixture
+/// key as the subject, the CA's own key included.
+#[test]
+fn issued_matches_openssl() {
+    for (file, compat) in [
+        ("x509-req/issued-v30.txt", Compat::V30),
+        ("x509-req/issued-v3.txt", Compat::V3),
+        ("x509-req/issued-v4.txt", Compat::V4),
+    ] {
+        let mut count = 0;
+        for line in fixture(file).lines().filter(|l| !l.starts_with('#')) {
+            let f: Vec<&str> = line.split(' ').collect();
+            let algorithm = match f[0] {
+                "P-256" => Algorithm::P256,
+                "P-384" => Algorithm::P384,
+                "P-521" => Algorithm::P521,
+                _ => Algorithm::Ed25519,
+            };
+            let ca_key =
+                AnyPrivateKey::from_secret(algorithm, &hex(f[1])).unwrap();
+            let ca_der = hex(f[2]);
+            let ca = Certificate::from_der(&ca_der).unwrap();
+            let request = CertificationRequest::decode(&hex(f[3])).unwrap();
+            let theirs = hex(f[4]);
+            let validity = Certificate::from_der(&theirs).unwrap().validity;
+            let signature_algorithm = ca_key.default_signature_algorithm();
+            let ours = CertificateTemplate::issued(
+                &request,
+                &ca,
+                &ca_key,
+                SerialNumber::new_opt(&[1, 2]).unwrap(),
+                validity,
+                compat,
+            )
+            .unwrap()
+            .sign(&ca_key, signature_algorithm)
+            .unwrap();
+            let what = format!("{file} {count}");
+            if signature_algorithm == SignatureAlgorithm::Ed25519 {
+                assert_eq!(ours, theirs, "{what}: byte for byte");
+            }
+            let (our_tbs, our_signature) = split(&ours);
+            let (their_tbs, their_signature) = split(&theirs);
+            assert_eq!(our_tbs, their_tbs, "{what}: TBSCertificate");
+            let ca_public = PublicKey::from(&ca_key);
+            for signature in [our_signature, their_signature] {
+                assert!(
+                    ca_public.verify(
+                        signature_algorithm,
+                        our_tbs.as_bytes(),
+                        &signature
+                    ),
+                    "{what}: signature"
+                );
+            }
+            count += 1;
+        }
+        assert_eq!(count, 64, "{file}");
+    }
+}
+
+/// A CA key that is not the CA certificate's is refused, as OpenSSL does.
+#[test]
+fn issued_needs_the_ca_key() {
+    let line = fixture("x509-req/issued-v3.txt")
+        .lines()
+        .find(|l| !l.starts_with('#'))
+        .unwrap()
+        .to_owned();
+    let f: Vec<&str> = line.split(' ').collect();
+    let ca_der = hex(f[2]);
+    let ca = Certificate::from_der(&ca_der).unwrap();
+    let request = CertificationRequest::decode(&hex(f[3])).unwrap();
+    let other =
+        AnyPrivateKey::from_secret(Algorithm::Ed25519, &[9; 32]).unwrap();
+    assert!(
+        CertificateTemplate::issued(
+            &request,
+            &ca,
+            &other,
+            SerialNumber::new_opt(&[1]).unwrap(),
+            Validity::from_unix_seconds(0, 1),
+            Compat::V3,
+        )
+        .is_err()
+    );
 }
 
 #[test]

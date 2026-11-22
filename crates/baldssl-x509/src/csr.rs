@@ -30,9 +30,13 @@
 
 use baldssl_core::{
     Error, Result,
-    der::syntax::{
-        Any, BitString, Implicit, RawTlv, Sequence, SetOf, Small, decode,
-        encode,
+    der::{
+        Reader,
+        syntax::{
+            Any, BitString, Implicit, RawTlv, Sequence, SetOf, Small, decode,
+            encode,
+        },
+        tag,
     },
     encoding::{Decodable, Encodable},
     pem::Pem,
@@ -41,6 +45,7 @@ use baldssl_crypto::signature::SignatureAlgorithm;
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
 
 use crate::{
+    Name,
     algorithm::{
         ALGORITHM_IDENTIFIER, AlgorithmIdentifier, from_identifier, identifier,
     },
@@ -118,6 +123,19 @@ impl CertificationRequest {
             self.algorithm,
             self.info.as_bytes(),
             &self.signature,
+        )
+    }
+
+    /// The subject, decoded.
+    ///
+    /// # Errors
+    ///
+    /// When the subject is not a well-formed Name.
+    pub fn subject_name(&self) -> Result<Name<'_>> {
+        Name::from_contents(
+            Reader::new(self.subject.as_bytes())
+                .expect(tag::SEQUENCE)?
+                .value,
         )
     }
 
