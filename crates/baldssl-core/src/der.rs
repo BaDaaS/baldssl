@@ -811,6 +811,33 @@ impl Time {
         }
     }
 
+    /// Seconds after the Unix epoch, negative before it: the inverse of
+    /// [`Time::from_unix_seconds`] on what it gives (a fraction is
+    /// dropped). The date is Howard Hinnant's [`days_from_civil`].
+    ///
+    /// [`days_from_civil`]: https://howardhinnant.github.io/date_algorithms.html#days_from_civil
+    #[must_use]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the year is at most 9999 and the other fields are \
+                  bounded by parsing, so every value stays far below 2^40"
+    )]
+    pub fn to_unix_seconds(&self) -> i64 {
+        let (month, day) = (i64::from(self.month), i64::from(self.day));
+        // Years start on 1 March, so a leap day ends one.
+        let year = i64::from(self.year) - i64::from(month <= 2);
+        let era = year.div_euclid(400);
+        let yoe = year.rem_euclid(400);
+        let mp = (month + 9) % 12;
+        let doy = (153 * mp + 2) / 5 + day - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        days * 86_400
+            + i64::from(self.hour) * 3_600
+            + i64::from(self.minute) * 60
+            + i64::from(self.second)
+    }
+
     /// The DER TLV of the time: a UTCTime (`YYMMDDHHMMSSZ`, tag 23) or a
     /// GeneralizedTime (`YYYYMMDDHHMMSS[.fff]Z`, tag 24), the inverse of
     /// [`Time::parse`].
@@ -1156,6 +1183,13 @@ mod tests {
     }
 
     proptest! {
+        /// `to_unix_seconds` inverts `from_unix_seconds`.
+        #[test]
+        fn unix_seconds_round_trip(seconds in 0u64..=253_402_300_799) {
+            let back = Time::from_unix_seconds(seconds).to_unix_seconds();
+            prop_assert_eq!(u64::try_from(back).ok(), Some(seconds));
+        }
+
         /// Every time written reads back to itself.
         #[test]
         fn times_round_trip(seconds in 0u64..=253_402_300_799) {
