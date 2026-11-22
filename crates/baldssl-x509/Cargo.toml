@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 baldssl-core.workspace = true
 baldssl-crypto.workspace = true
+baldssl-pkey.workspace = true
 
 [dev-dependencies]
 baldssl-core = { workspace = true, features = ["laws"] }
