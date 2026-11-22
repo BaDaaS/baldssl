@@ -47,8 +47,8 @@
     },
     {
       "title": "Conventions checked, not remembered",
-      "what": "Trait bounds are written in where clauses, and the code mentions no issue or pull request: it describes itself.",
-      "check": "make check-where-clauses, in CI."
+      "what": "Trait bounds are written in where clauses, imports sit at the top of their module and never inside a function or block, and the code mentions no issue or pull request: it describes itself.",
+      "check": "make check-where-clauses and make check-use-at-top, in CI."
     },
     {
       "title": "Every citation linked",

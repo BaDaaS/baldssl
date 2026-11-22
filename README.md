@@ -154,8 +154,9 @@ The same list is on the website, rendered from `website/src/practices.json`;
   pinned, and the tests run on Rust stable, beta and nightly. Checked by: make
   lint, in CI on each toolchain.
 - **Conventions checked, not remembered.** Trait bounds are written in where
-  clauses, and the code mentions no issue or pull request: it describes itself.
-  Checked by: make check-where-clauses, in CI.
+  clauses, imports sit at the top of their module and never inside a function or
+  block, and the code mentions no issue or pull request: it describes itself.
+  Checked by: make check-where-clauses and make check-use-at-top, in CI.
 - **Every citation linked.** Every standard, paper and formula cited in the code
   links its source, down to the section. Checked by: make check-urls checks
   every URL in the sources and in the rendered API documentation, including the
