@@ -1,6 +1,7 @@
 //! PKCS#8 against the keys OpenSSL wrote, and key generation.
 
 use baldssl_core::{
+    Error,
     der::syntax::{ObjectId, decode, encode},
     encoding::Encodable,
     pem::Pem,
@@ -115,20 +116,19 @@ fn any_private_key_dispatches() {
     }
 }
 
+/// Each invalid secret is refused with the error of its rule.
 #[test]
 fn invalid_secrets() {
-    assert!(PrivateKey::<P256>::from_secret(&[0u8; 32]).is_err(), "zero");
-    assert!(
-        PrivateKey::<P256>::from_secret(&[0xffu8; 32]).is_err(),
-        ">= n"
-    );
-    assert!(
-        PrivateKey::<P256>::from_secret(&[1u8; 31]).is_err(),
-        "length"
-    );
-    assert!(
-        PrivateKey::<Ed25519>::from_secret(&[1u8; 31]).is_err(),
-        "length"
+    let range = Some(Error::invalid("private scalar not in [1, n - 1]"));
+    let length = Some(Error::invalid("private key length"));
+    assert_eq!(PrivateKey::<P256>::from_secret(&[0u8; 32]).err(), range);
+    assert_eq!(PrivateKey::<P256>::from_secret(&[0xffu8; 32]).err(), range);
+    assert_eq!(PrivateKey::<P256>::from_secret(&[1u8; 31]).err(), length);
+    assert_eq!(PrivateKey::<P256>::from_secret(&[1u8; 33]).err(), length);
+    assert_eq!(PrivateKey::<Ed25519>::from_secret(&[1u8; 31]).err(), length);
+    assert_eq!(
+        AnyPrivateKey::from_secret(Algorithm::P384, &[0u8; 48]).err(),
+        range
     );
     let mut one = vec![0u8; 66];
     one[65] = 1;
