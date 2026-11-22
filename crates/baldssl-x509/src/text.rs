@@ -14,6 +14,7 @@ use baldssl_core::{
 };
 
 use baldssl_core::{der::BitString, encoding::Encodable};
+use baldssl_pkey::{AnyPrivateKey, PublicKey};
 
 use crate::{
     CertificationRequest, algorithm,
@@ -280,21 +281,131 @@ fn field_bytes(bits: usize) -> usize {
     bits.div_ceil(8)
 }
 
-fn print_public_key(
+/// What every key block shares: the key, the secret, the indentation, and
+/// the release line.
+struct KeyLayout<'a> {
+    /// The public key's bytes.
+    key: &'a [u8],
+    /// The secret, for a private key.
+    secret: Option<&'a [u8]>,
+    /// The header's indentation.
+    pad: String,
+    /// The hex dump's indentation.
+    data: usize,
+    /// Bytes per hex line.
+    per_line: usize,
+    /// `Private` or `Public`.
+    kind: &'a str,
+    /// The release line.
+    compat: Compat,
+}
+
+/// An EC key on a named curve.
+fn print_ec_key(
     out: &mut Vec<u8>,
     spki: &SubjectPublicKeyInfo<'_>,
+    layout: &KeyLayout<'_>,
+) -> Result<()> {
+    let KeyLayout {
+        key,
+        secret,
+        pad: pad16,
+        data,
+        per_line,
+        kind,
+        compat,
+    } = layout;
+    let (key, secret, data, per_line, compat) =
+        (*key, *secret, *data, *per_line, *compat);
+    let params = spki
+        .algorithm
+        .parameters
+        .ok_or_else(|| Error::invalid("EC key without parameters"))?;
+    if params.octet() != tag::OID {
+        return Err(Error::unsupported(
+            "explicit or implicit EC domain parameters",
+        ));
+    }
+    let curve_oid = baldssl_core::der::Oid::parse(params.value)?;
+    let curve = curve_oid.to_dotted()?;
+    let Some(c) = CURVES.iter().find(|c| c.oid == curve) else {
+        return Err(Error::unsupported(format!(
+            "EC curve {curve} ({})",
+            objects::short_name(&curve_oid)?
+        )));
+    };
+    let len = field_bytes(c.bits);
+    let well_formed = match key.first() {
+        Some(0x04) => key.len() == 2 * len + 1,
+        Some(0x02 | 0x03) => key.len() == len + 1,
+        _ => false,
+    };
+    // TODO(ec-point-validation): OpenSSL also rejects points that
+    // are not on the curve; that needs field arithmetic.
+    if !well_formed {
+        return Err(Error::invalid("EC point encoding"));
+    }
+    let size = match compat {
+        Compat::V30 | Compat::V3 => format!("{} bit", c.bits),
+        Compat::V4 => {
+            format!("{} bit field, {} bit security level", c.bits, c.security)
+        }
+    };
+    out.extend_from_slice(format!("{pad16}{kind}-Key: ({size})\n").as_bytes());
+    // EC_KEY_priv2buf: the scalar at the full length of the order, leading
+    // zeros kept, no sign byte, in every release line.
+    if let Some(secret) = secret {
+        out.extend_from_slice(format!("{pad16}priv:\n").as_bytes());
+        buf_print(out, secret, data, per_line);
+    }
+    out.extend_from_slice(format!("{pad16}pub:\n").as_bytes());
+    buf_print(out, key, data, per_line);
+    out.extend_from_slice(
+        format!("{pad16}ASN1 OID: {}\n{pad16}NIST CURVE: {}\n", c.sn, c.nist)
+            .as_bytes(),
+    );
+    Ok(())
+}
+
+/// A key as OpenSSL's text printers write it, at `indent` spaces (16 in a
+/// certificate, 0 for `pkey`): a header, the secret when there is one
+/// (`priv:`, at its full length), then the public
+/// key (`pub:`) and the curve.
+fn print_key(
+    out: &mut Vec<u8>,
+    spki: &SubjectPublicKeyInfo<'_>,
+    secret: Option<&[u8]>,
+    indent: usize,
     compat: Compat,
 ) -> Result<()> {
     let per_line = compat.key_bytes_per_line();
+    let kind = if secret.is_some() {
+        "Private"
+    } else {
+        "Public"
+    };
+    let data = indent.saturating_add(4);
     let alg = spki.algorithm.oid.to_dotted()?;
     let key = spki.public_key.bytes;
     if spki.public_key.unused != 0 {
         return Err(Error::invalid("public key BIT STRING with unused bits"));
     }
-    let pad16 = " ".repeat(16);
+    let pad16 = " ".repeat(indent);
+    let layout = KeyLayout {
+        key,
+        secret,
+        pad: pad16.clone(),
+        data,
+        per_line,
+        kind,
+        compat,
+    };
     match alg.as_str() {
         // rsaEncryption: RSAPublicKey ::= SEQUENCE { n INTEGER, e INTEGER }
         "1.2.840.113549.1.1.1" => {
+            if secret.is_some() {
+                return Err(Error::unsupported("RSA private keys"));
+            }
             if let Some(p) = &spki.algorithm.parameters
                 && (p.octet() != tag::NULL || !p.value.is_empty())
             {
@@ -309,68 +420,25 @@ fn print_public_key(
             out.extend_from_slice(
                 format!("{pad16}Public-Key: ({} bit)\n", n.bits()).as_bytes(),
             );
-            bn_print(out, "Modulus:", &n, 16, compat);
-            bn_print(out, "Exponent:", &e, 16, compat);
+            bn_print(out, "Modulus:", &n, indent, compat);
+            bn_print(out, "Exponent:", &e, indent, compat);
         }
         // id-ecPublicKey with a named curve.
-        "1.2.840.10045.2.1" => {
-            let params = spki
-                .algorithm
-                .parameters
-                .ok_or_else(|| Error::invalid("EC key without parameters"))?;
-            if params.octet() != tag::OID {
-                return Err(Error::unsupported(
-                    "explicit or implicit EC domain parameters",
-                ));
-            }
-            let curve_oid = baldssl_core::der::Oid::parse(params.value)?;
-            let curve = curve_oid.to_dotted()?;
-            let Some(c) = CURVES.iter().find(|c| c.oid == curve) else {
-                return Err(Error::unsupported(format!(
-                    "EC curve {curve} ({})",
-                    objects::short_name(&curve_oid)?
-                )));
-            };
-            let len = field_bytes(c.bits);
-            let well_formed = match key.first() {
-                Some(0x04) => key.len() == 2 * len + 1,
-                Some(0x02 | 0x03) => key.len() == len + 1,
-                _ => false,
-            };
-            // TODO(ec-point-validation): OpenSSL also rejects points that
-            // are not on the curve; that needs field arithmetic.
-            if !well_formed {
-                return Err(Error::invalid("EC point encoding"));
-            }
-            let size = match compat {
-                Compat::V30 | Compat::V3 => format!("{} bit", c.bits),
-                Compat::V4 => format!(
-                    "{} bit field, {} bit security level",
-                    c.bits, c.security
-                ),
-            };
-            out.extend_from_slice(
-                format!("{pad16}Public-Key: ({size})\n{pad16}pub:\n")
-                    .as_bytes(),
-            );
-            buf_print(out, key, 20, per_line);
-            out.extend_from_slice(
-                format!(
-                    "{pad16}ASN1 OID: {}\n{pad16}NIST CURVE: {}\n",
-                    c.sn, c.nist
-                )
-                .as_bytes(),
-            );
-        }
+        "1.2.840.10045.2.1" => print_ec_key(out, spki, &layout)?,
         // Ed25519 (RFC 8410): no parameters, 32-byte key.
         "1.3.101.112" => {
             if spki.algorithm.parameters.is_some() || key.len() != 32 {
                 return Err(Error::invalid("Ed25519 public key"));
             }
             out.extend_from_slice(
-                format!("{pad16}ED25519 Public-Key:\n{pad16}pub:\n").as_bytes(),
+                format!("{pad16}ED25519 {kind}-Key:\n").as_bytes(),
             );
-            buf_print(out, key, 20, per_line);
+            if let Some(secret) = secret {
+                out.extend_from_slice(format!("{pad16}priv:\n").as_bytes());
+                buf_print(out, secret, data, per_line);
+            }
+            out.extend_from_slice(format!("{pad16}pub:\n").as_bytes());
+            buf_print(out, key, data, per_line);
         }
         _ => {
             return Err(Error::unsupported(format!(
@@ -450,7 +518,46 @@ fn print_subject_public_key_info(
     );
     out.extend_from_slice(objects::long_name(&spki.algorithm.oid)?.as_bytes());
     out.push(b'\n');
-    print_public_key(out, spki, compat)
+    print_key(out, spki, None, 16, compat)
+}
+
+/// `openssl pkey -text`: a private key as OpenSSL prints it, by release
+/// line.
+///
+/// # Errors
+///
+/// As for a certificate's key (the [`Text`] of [`Certificate`]).
+pub fn print_private_key_text(
+    key: &AnyPrivateKey,
+    compat: Compat,
+) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let der = PublicKey::from(key).encode();
+    let mut r = Reader::new(&der);
+    let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
+    r.finish()?;
+    let secret = key.secret();
+    print_key(&mut out, &spki, Some(secret.expose()), 0, compat)?;
+    Ok(out)
+}
+
+/// `openssl pkey -text_pub` (or `-pubin -text`): a public key as OpenSSL
+/// prints it, by release line.
+///
+/// # Errors
+///
+/// As for a certificate's key (the [`Text`] of [`Certificate`]).
+pub fn print_public_key_text(
+    key: &PublicKey,
+    compat: Compat,
+) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let der = key.encode();
+    let mut r = Reader::new(&der);
+    let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
+    r.finish()?;
+    print_key(&mut out, &spki, None, 0, compat)?;
+    Ok(out)
 }
 
 /// The outer part of X.509's `SIGNED{ToBeSigned}` ([X.509] section 6.2),
