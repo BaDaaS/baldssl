@@ -4,16 +4,18 @@
 // The carry addition truncates to bytes on purpose.
 #![allow(clippy::cast_possible_truncation)]
 
+use baldssl_test_utils::hex;
 use proptest::prelude::*;
 
 use super::{affine::Affine as AffineOf, d, extended::Extended as ExtendedOf};
 use crate::{
     algebra::{
+        curve::Curve,
         encoding::Encodable,
-        field::{Field, PrimeField},
-        group::{Group, scalar_mul},
+        field::{Field, PrimeField, Sqrt},
+        group::Group,
         laws,
-        model::{AffineModel, CurveModel},
+        model::{AffineModel, CurveModel, ProjectiveModel},
     },
     instances::{
         Edwards25519,
@@ -28,7 +30,7 @@ type Extended = ExtendedOf<Edwards25519>;
 fn mul_le(k: &[u8]) -> Extended {
     let mut be = k.to_vec();
     be.reverse();
-    scalar_mul(&Extended::generator(), &be)
+    Edwards25519::scalar_mul_bytes(&Extended::generator(), &be)
 }
 
 fn f(v: u64) -> Field25519 {
@@ -66,7 +68,10 @@ fn constants() {
     );
     assert!(b.is_on_curve().to_bool_vartime());
     assert!(!Affine::from_coordinates(f(1), f(1)).1.to_bool_vartime());
-    let lb = scalar_mul(&Extended::generator(), &ScalarEd25519::modulus_be());
+    let lb = Edwards25519::scalar_mul_bytes(
+        &Extended::generator(),
+        &ScalarEd25519::modulus_be(),
+    );
     assert_eq!(lb, Extended::identity(), "l B = O");
     // d is not a square (Euler's criterion), which makes the addition
     // complete: d^((p-1)/2) = -1.
@@ -82,7 +87,7 @@ fn small_multiples() {
     let mut acc = Extended::identity();
     let mut expected = Affine::identity();
     for k in 1..=16u8 {
-        acc = acc.add(&Extended::generator());
+        acc = acc + Extended::generator();
         expected = reference_add(&expected, &b);
         assert_eq!(Affine::from(acc), expected, "{k}B by addition");
         assert_eq!(Affine::from(mul_le(&[k])), expected, "{k}B by mul");
@@ -93,10 +98,10 @@ fn small_multiples() {
         );
     }
     let o = Extended::identity();
-    assert_eq!(o.add(&Extended::generator()), Extended::generator());
+    assert_eq!((o + Extended::generator()), Extended::generator());
     assert_eq!(o.double(), o);
-    let minus_b = Extended::from(b.neg());
-    assert_eq!(Extended::generator().add(&minus_b), o);
+    let minus_b = Extended::from(-b);
+    assert_eq!((Extended::generator() + minus_b), o);
 }
 
 proptest! {
@@ -110,7 +115,7 @@ proptest! {
         let q = mul_le(&b);
         let (ap, aq) = (Affine::from(p), Affine::from(q));
         prop_assert!(ap.is_on_curve().to_bool_vartime());
-        prop_assert_eq!(Affine::from(p.add(&q)), reference_add(&ap, &aq));
+        prop_assert_eq!(Affine::from(p + q), reference_add(&ap, &aq));
         prop_assert_eq!(Affine::from(p.double()), reference_add(&ap, &ap));
         // (a + b) B = a B + b B, over the integers (little-endian, with carry).
         let mut sum = vec![0u8; 33];
@@ -121,8 +126,19 @@ proptest! {
             carry = s >> 8;
         }
         sum[32] = carry as u8;
-        prop_assert_eq!(mul_le(&sum), p.add(&q));
+        prop_assert_eq!(mul_le(&sum), p + q);
     }
+}
+
+/// A canonical scalar from 32 bytes, when they encode one.
+fn scalar(bytes: &[u8]) -> Option<ScalarEd25519> {
+    let mut be = bytes.to_vec();
+    be.reverse();
+    if let Some(top) = be.first_mut() {
+        *top &= 0x0f;
+    }
+    let (s, ok) = ScalarEd25519::from_bytes_be(&be);
+    ok.to_bool_vartime().then_some(s)
 }
 
 /// $\sqrt{-1} = 2^{(p - 1) / 4}$: 2 is not a square modulo $p$, as
@@ -158,14 +174,18 @@ fn torsion_is_on_the_curve_but_not_in_the_subgroup() {
         assert!(e.is_on_curve().to_bool_vartime());
         assert!(!e.is_in_prime_subgroup().to_bool_vartime());
         // B + T is on the curve, and not in G either: G is a subgroup.
-        let shifted = Extended::generator().add(&e);
+        let shifted = Extended::generator() + e;
         assert!(shifted.is_on_curve().to_bool_vartime());
         assert!(
             !shifted.is_in_prime_subgroup().to_bool_vartime(),
             "B + {name}"
         );
         // [8] T = O: the torsion is killed by the cofactor.
-        assert!(scalar_mul(&e, &[8]).is_identity().to_bool_vartime());
+        assert!(
+            Edwards25519::scalar_mul_bytes(&e, &[8])
+                .is_identity()
+                .to_bool_vartime()
+        );
     }
     let (two_t, _) = order_2;
     assert!(
@@ -213,7 +233,7 @@ fn golden_encoding() {
     let mut expected = vec![0x66u8; 32];
     expected[0] = 0x58;
     assert_eq!(Affine::generator().encode(), expected);
-    assert_eq!(Extended::generator().encode(), expected);
+    assert_eq!(Extended::generator().to_affine().encode(), expected);
     // The identity (0, 1): y = 1, x even.
     let mut one = vec![0u8; 32];
     one[0] = 1;
@@ -232,16 +252,119 @@ proptest! {
         c in prop::collection::vec(any::<u8>(), 32),
     ) {
         let (p, q, r) = (mul_le(&a), mul_le(&b), mul_le(&c));
-        laws::group(&p, &q, &r);
+        laws::group(p, q, r);
         laws::projective_model(&p);
-        laws::projective_model(&p.add(&q));
+        laws::projective_model(&(p + q));
         prop_assert!(p.is_in_prime_subgroup().to_bool_vartime());
         let (t, _) = Affine::from_coordinates(Field25519::ZERO, -Field25519::ONE);
-        let shifted = p.add(&Extended::from(t));
-        laws::group(&shifted, &q, &r);
+        let shifted = p + Extended::from(t);
+        laws::group(shifted, q, r);
         laws::projective_model(&shifted);
+        laws::closed(p, q);
+        laws::closed(shifted, q);
+        laws::encodings(&p);
+        laws::encodings(&p.to_affine());
+        laws::encodings(&shifted.to_affine());
+        let (Some(ka), Some(kb)) = (scalar(&a), scalar(&b)) else {
+            return Ok(());
+        };
+        laws::module(&p, &ka, &kb);
         prop_assert!(!shifted.is_in_prime_subgroup().to_bool_vartime());
         // [l] P = O on G.
-        prop_assert!(scalar_mul(&p, &ScalarEd25519::modulus_be()).is_identity().to_bool_vartime());
+        prop_assert!(Edwards25519::scalar_mul_bytes(&p, &ScalarEd25519::modulus_be()).is_identity().to_bool_vartime());
+    }
+}
+
+/// The square root of the base field: $p \equiv 5 \pmod 8$ (the case it
+/// implements), it is a root exactly on the squares, and the non-squares are
+/// recognised (Euler's criterion: $a^{(p-1)/2} = -1$).
+#[test]
+fn square_roots() {
+    let p = Field25519::modulus();
+    assert_eq!(p[0] % 8, 5, "p = 5 mod 8");
+    // (p - 1) / 2 = 2^254 - 10.
+    let half = [
+        0xffff_ffff_ffff_fff6,
+        u64::MAX,
+        u64::MAX,
+        0x3fff_ffff_ffff_ffff,
+    ];
+    for v in 0..200u64 {
+        let a = f(v);
+        let (r, is_square) = a.sqrt();
+        let euler_square = a.is_zero().to_bool_vartime()
+            || a.pow_vartime(&half) == Field25519::ONE;
+        assert_eq!(is_square.to_bool_vartime(), euler_square, "{v}");
+        if euler_square {
+            assert_eq!(r.square(), a, "sqrt({v})^2");
+        }
+    }
+    assert_eq!(sqrt_minus_one().square(), -Field25519::ONE);
+    let (r, ok) = (-Field25519::ONE).sqrt();
+    assert!(ok.to_bool_vartime());
+    assert_eq!(r.square(), -Field25519::ONE);
+}
+
+/// [RFC 8032, section 5.1.3][rfc8032-5.1.3] decoding: the base point and the
+/// identity decode to themselves; the small-order points decode (RFC 8032
+/// accepts them) but are not in $G$; and each rejection rule rejects.
+///
+/// [rfc8032-5.1.3]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.3
+#[test]
+fn decoding() {
+    use crate::algebra::encoding::Decodable;
+    let mut base = vec![0x66u8; 32];
+    base[0] = 0x58;
+    assert_eq!(Affine::decode(&base), Some(Affine::generator()));
+    assert_eq!(
+        Extended::from(Affine::decode(&base).unwrap()),
+        Extended::generator()
+    );
+    let mut one = vec![0u8; 32];
+    one[0] = 1;
+    assert_eq!(Affine::decode(&one), Some(Affine::identity()));
+
+    // (0, -1), of order 2: y = p - 1, x = 0, sign 0.
+    let mut minus_one =
+        hex("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f");
+    let t = Affine::decode(&minus_one).expect("(0, -1)");
+    assert!(t.is_on_curve().to_bool_vartime());
+    assert!(!t.is_in_prime_subgroup().to_bool_vartime());
+    // ... but x = 0 with the sign bit set is the one non-canonical sign.
+    minus_one[31] |= 0x80;
+    assert_eq!(Affine::decode(&minus_one), None, "x = 0, sign 1");
+    one[31] |= 0x80;
+    assert_eq!(Affine::decode(&one), None, "identity with sign 1");
+
+    // The sign bit selects -x.
+    let mut neg_base = base.clone();
+    neg_base[31] ^= 0x80;
+    assert_eq!(Affine::decode(&neg_base), Some(-Affine::generator()));
+
+    // y = p (not below p) is rejected, though it is 0 modulo p.
+    let p_le =
+        hex("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f");
+    assert_eq!(Affine::decode(&p_le), None, "y = p");
+    // y = 2: (4 - 1) / (4 d + 1) is not a square.
+    let mut two = vec![0u8; 32];
+    two[0] = 2;
+    assert_eq!(Affine::decode(&two), None, "no square root");
+    // Wrong lengths.
+    assert_eq!(Affine::decode(&base[..31]), None);
+    assert_eq!(Affine::decode(&[base.as_slice(), &[0]].concat()), None);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Canonicity of the RFC 8032 decoding over arbitrary 32-byte strings:
+    /// whatever decodes re-encodes to the same bytes, and is on the curve.
+    #[test]
+    fn decoding_is_canonical(bytes in prop::collection::vec(any::<u8>(), 32)) {
+        use crate::algebra::encoding::Decodable;
+        laws::canonical::<Affine>(&bytes);
+        if let Some(p) = Affine::decode(&bytes) {
+            prop_assert!(p.is_on_curve().to_bool_vartime());
+        }
     }
 }

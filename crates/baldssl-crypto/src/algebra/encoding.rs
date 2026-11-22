@@ -21,9 +21,15 @@
 //! needs a newtype to carry it: the newtype is where the second idempotent
 //! lives.
 //!
-//! There is no context parameter for now, since points are self-describing;
-//! a type whose encoding needs one (a version, a curve) can get it as a type
-//! parameter of [`Decodable`] when it arrives.
+//! Decoding takes no context: points are self-describing.
+//!
+//! A curve model's encoding is that of its representation: the affine chart
+//! encodes points in the standard formats (SEC 1, RFC 8032), while the
+//! projective, Jacobian and extended models encode their coordinates, so two
+//! representatives of one point encode differently. The laws hold for each
+//! with equality of points: decoding an encoding gives back the same point,
+//! and canonicity holds because encoding writes back the exact
+//! representation that was decoded.
 
 /// A canonical encoding.
 pub trait Encodable {

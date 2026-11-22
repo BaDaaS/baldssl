@@ -14,7 +14,14 @@
 //! The models in `crate::models` are generic over these traits, and the
 //! instances in `crate::instances` implement them.
 
-use crate::algebra::field::PrimeField;
+use crate::{
+    algebra::{
+        field::{PrimeField, Sqrt},
+        group::{Group, ladder},
+        model::{CurveModel, ProjectiveModel},
+    },
+    ct::Choice,
+};
 
 /// A curve: its fields, its base point and its cofactor.
 pub trait Curve: 'static {
@@ -30,6 +37,37 @@ pub trait Curve: 'static {
     const GX: &'static str;
     /// The base point's $y$, big-endian hexadecimal.
     const GY: &'static str;
+
+    /// $k P$ for a scalar $k \in \mathbb{F}_\ell$, constant time. The
+    /// default is [`ladder`]; an instance may override it with a faster
+    /// algorithm for the same map.
+    #[must_use]
+    fn scalar_mul<P>(point: &P, k: &Self::Scalar) -> P
+    where
+        P: CurveModel<Curve = Self> + Group,
+    {
+        Self::scalar_mul_bytes(point, &k.to_bytes_be())
+    }
+
+    /// $k P$ for an integer $k$ given big-endian, not necessarily reduced
+    /// modulo $\ell$ (EdDSA's clamped secret scalars are not, and on a point
+    /// outside $G$ the reduction would change the result). Constant time.
+    #[must_use]
+    fn scalar_mul_bytes<P>(point: &P, k_be: &[u8]) -> P
+    where
+        P: CurveModel<Curve = Self> + Group,
+    {
+        ladder(point, k_be)
+    }
+
+    /// Whether a point is on the curve and in the subgroup $G$ of prime order
+    /// $\ell$. Each instance implements it: with cofactor 1 it is
+    /// [`CurveModel::is_on_curve`] (by Lagrange every point is in $G$);
+    /// otherwise $E(\mathbb{F}_p) = G \oplus T$ and the instance decides
+    /// membership of $G = \ker [\ell]$.
+    fn is_in_prime_subgroup<P>(point: &P) -> Choice
+    where
+        P: ProjectiveModel<Curve = Self>;
 }
 
 /// A short Weierstrass curve $y^2 = x^3 + a x + b$ with $a = -3$, as all the
@@ -42,7 +80,7 @@ pub trait ShortWeierstrass: Curve {
 
 /// A twisted Edwards curve $a x^2 + y^2 = 1 + d x^2 y^2$ with $a = -1$, as
 /// edwards25519 is; the models' formulas assume it.
-pub trait TwistedEdwards: Curve {
+pub trait TwistedEdwards: Curve<Base: Sqrt> {
     /// The constant $d$, big-endian hexadecimal.
     const D: &'static str;
 }

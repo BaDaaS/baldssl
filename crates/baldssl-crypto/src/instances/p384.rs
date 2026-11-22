@@ -10,9 +10,13 @@
 //! [FIPS 186-5]: https://csrc.nist.gov/pubs/fips/186-5/final
 //! [SEC 2]: https://www.secg.org/sec2-v2.pdf
 
-use crate::algebra::{
-    curve::{Curve, ShortWeierstrass},
-    fp::{Fp, Modulus},
+use crate::{
+    algebra::{
+        curve::{Curve, ShortWeierstrass},
+        fp::{Fp, Modulus},
+        model::ProjectiveModel,
+    },
+    ct::Choice,
 };
 
 /// The base field of P-384, $p = 2^{384} - 2^{128} - 2^{96} + 2^{32} - 1$.
@@ -50,6 +54,15 @@ impl Curve for P384 {
         59f741e082542a385502f25dbf55296c3a545e3872760ab7";
     const GY: &'static str = "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147c\
         e9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f";
+
+    /// The cofactor is 1: by Lagrange every point on the curve has an order
+    /// dividing the prime $n$, so being on the curve is being in $G$.
+    fn is_in_prime_subgroup<P>(point: &P) -> Choice
+    where
+        P: ProjectiveModel<Curve = Self>,
+    {
+        point.is_on_curve()
+    }
 }
 
 impl ShortWeierstrass for P384 {

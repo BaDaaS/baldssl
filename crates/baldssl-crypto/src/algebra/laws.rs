@@ -5,31 +5,32 @@
 use core::fmt::Debug;
 
 use crate::algebra::{
+    curve::Curve,
     encoding::{Decodable, Encodable},
     group::{Group, GroupVartime},
-    model::{CurveModel, JacobianModel, ProjectiveModel},
+    model::{AffineModel, CurveModel, JacobianModel, ProjectiveModel},
 };
 
-/// The abelian group axioms for the constant-time group law, on three points:
-/// associativity, commutativity, the identity, inverses, `double = add(x, x)`
-/// and `sub = add . neg`. The group is closed: the results are on the curve.
-pub(crate) fn group<G>(p: &G, q: &G, r: &G)
+/// The abelian group axioms for the constant-time group law, on three
+/// points: associativity, commutativity, the identity, inverses,
+/// `double = P + P`, `P - Q = P + (-Q)` and $-(-P) = P$.
+#[expect(clippy::eq_op, reason = "P - P = O is one of the laws")]
+pub(crate) fn group<G>(p: G, q: G, r: G)
 where
     G: Group + PartialEq + Debug,
 {
     let o = G::identity();
-    assert_eq!(p.add(q).add(r), p.add(&q.add(r)), "associativity");
-    assert_eq!(p.add(q), q.add(p), "commutativity");
-    assert_eq!(p.add(&o), *p, "right identity");
-    assert_eq!(o.add(p), *p, "left identity");
-    assert!(p.add(&p.neg()).is_identity().to_bool_vartime(), "inverse");
-    assert_eq!(p.double(), p.add(p), "doubling");
-    assert_eq!(p.sub(q), p.add(&q.neg()), "subtraction");
-    assert_eq!(p.neg().neg(), *p, "involution");
-    assert!(p.add(q).is_on_curve().to_bool_vartime(), "closure");
-    assert!(
-        o.is_identity().to_bool_vartime() && o.is_on_curve().to_bool_vartime()
-    );
+    assert_eq!((p + q) + r, p + (q + r), "associativity");
+    assert_eq!(p + q, q + p, "commutativity");
+    assert_eq!(p + o, p, "right identity");
+    assert_eq!(o + p, p, "left identity");
+    assert!((p + -p).is_identity().to_bool_vartime(), "inverse");
+    assert!((p - p).is_identity().to_bool_vartime(), "p - p");
+    assert_eq!(p.double(), p + p, "doubling");
+    assert_eq!(p - q, p + -q, "subtraction");
+    assert_eq!(-(-p), p, "involution");
+    assert!(o.is_identity().to_bool_vartime(), "identity");
+    assert_eq!(-o, o, "-O = O");
 }
 
 /// The same axioms for a variable-time group law.
@@ -46,17 +47,26 @@ where
     assert_eq!(p.add_vartime(q), q.add_vartime(p), "commutativity");
     assert_eq!(p.add_vartime(&o), *p, "right identity");
     assert_eq!(o.add_vartime(p), *p, "left identity");
-    assert!(
-        p.add_vartime(&p.neg()).is_identity().to_bool_vartime(),
-        "inverse"
-    );
+    assert!(p.sub_vartime(p).is_identity().to_bool_vartime(), "inverse");
     assert_eq!(p.double_vartime(), p.add_vartime(p), "doubling");
-    assert!(p.add_vartime(q).is_on_curve().to_bool_vartime(), "closure");
+    assert_eq!(p.sub_vartime(q), p.add_vartime(&-*q), "subtraction");
+}
+
+/// The group of a model is closed on the curve: sums of points on the curve
+/// are on the curve, and stay in the subgroup when both terms are in it.
+pub(crate) fn closed<P>(p: P, q: P)
+where
+    P: ProjectiveModel + Debug,
+{
+    assert!((p + q).is_on_curve().to_bool_vartime(), "closure");
+    if (p.is_in_prime_subgroup() & q.is_in_prime_subgroup()).to_bool_vartime() {
+        assert!((p + q).is_in_prime_subgroup().to_bool_vartime(), "G closed");
+    }
 }
 
 /// A projective model is isomorphic to the affine chart: the two maps are
-/// mutually inverse on points, preserve the identity, are homomorphisms for
-/// the opposite, and preserve both predicates.
+/// mutually inverse on points, homomorphisms for the identity, the
+/// generator and the opposite, and preserve both predicates.
 pub(crate) fn projective_model<P>(p: &P)
 where
     P: ProjectiveModel + PartialEq + Debug,
@@ -71,7 +81,7 @@ where
         P::Affine::generator(),
         "generator"
     );
-    assert_eq!(p.neg().to_affine(), a.neg(), "opposite");
+    assert_eq!((-*p).to_affine(), -a, "opposite");
     assert_eq!(
         p.is_on_curve().to_bool_vartime(),
         a.is_on_curve().to_bool_vartime(),
@@ -94,11 +104,38 @@ where
     assert_eq!(J::from_affine(&a), *p, "from_affine . to_affine");
     assert_eq!(J::from_affine(&a).to_affine(), a, "to_affine . from_affine");
     assert_eq!(J::identity().to_affine(), J::Affine::identity(), "identity");
-    assert_eq!(p.neg().to_affine(), a.neg(), "opposite");
+    assert_eq!(
+        J::generator().to_affine(),
+        J::Affine::generator(),
+        "generator"
+    );
+    assert_eq!((-*p).to_affine(), -a, "opposite");
     assert_eq!(
         p.is_in_prime_subgroup().to_bool_vartime(),
         a.is_in_prime_subgroup().to_bool_vartime(),
         "in the subgroup"
+    );
+}
+
+/// The scalar multiplication is the $\mathbb{Z}$-module structure: it is a
+/// homomorphism in the scalar, $(a + b) P = a P + b P$, compatible with the
+/// product, $(a b) P = a (b P)$, and $1 P = P$, $0 P = O$.
+pub(crate) fn module<P>(
+    p: &P,
+    a: &<P::Curve as Curve>::Scalar,
+    b: &<P::Curve as Curve>::Scalar,
+) where
+    P: ProjectiveModel + PartialEq + Debug,
+{
+    use crate::algebra::field::Field;
+    type S<P> = <<P as CurveModel>::Curve as Curve>::Scalar;
+    let mul = |k: &S<P>, x: &P| <P::Curve as Curve>::scalar_mul(x, k);
+    assert_eq!(mul(&(*a + *b), p), mul(a, p) + mul(b, p), "additive");
+    assert_eq!(mul(&(*a * *b), p), mul(a, &mul(b, p)), "compatible");
+    assert_eq!(mul(&S::<P>::ONE, p), *p, "unit");
+    assert!(
+        mul(&S::<P>::ZERO, p).is_identity().to_bool_vartime(),
+        "zero"
     );
 }
 
@@ -129,4 +166,17 @@ where
             "non-canonical encoding accepted"
         );
     }
+}
+
+/// Every model's encoding round-trips and is canonical, and every point it
+/// decodes is on the curve.
+pub(crate) fn encodings<P>(p: &P)
+where
+    P: CurveModel + PartialEq + Debug,
+{
+    round_trip(p);
+    let bytes = p.encode();
+    canonical::<P>(bytes.as_ref());
+    let decoded = P::decode(bytes.as_ref());
+    assert!(decoded.is_some_and(|d| d.is_on_curve().to_bool_vartime()));
 }
