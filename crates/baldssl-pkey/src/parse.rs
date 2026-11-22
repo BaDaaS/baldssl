@@ -139,6 +139,26 @@ impl TryFrom<SubjectPublicKeyInfo> for PublicKey {
     }
 }
 
+/// The public key of a private key.
+impl From<&AnyPrivateKey> for PublicKey {
+    fn from(key: &AnyPrivateKey) -> Self {
+        match key {
+            AnyPrivateKey::P256(k) => PublicKey::P256(*k.key_pair().public()),
+            AnyPrivateKey::P384(k) => PublicKey::P384(*k.key_pair().public()),
+            AnyPrivateKey::P521(k) => PublicKey::P521(*k.key_pair().public()),
+            AnyPrivateKey::Ed25519(k) => {
+                // An Ed25519 public key is 32 bytes; zip copies without a
+                // length check that could panic.
+                let mut bytes = [0u8; 32];
+                for (b, p) in bytes.iter_mut().zip(k.key_pair().public()) {
+                    *b = *p;
+                }
+                PublicKey::Ed25519(bytes)
+            }
+        }
+    }
+}
+
 /// The SubjectPublicKeyInfo OpenSSL writes: the curve named, the point
 /// uncompressed.
 impl From<&PublicKey> for SubjectPublicKeyInfo {
