@@ -237,12 +237,12 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
-        decode_option::<C>(bytes).ok_or(InvalidEncoding)
+        decode_opt::<C>(bytes).ok_or(InvalidEncoding)
     }
 }
 
 /// [`Decodable::decode`], with `None` for a rejection.
-fn decode_option<C>(bytes: &[u8]) -> Option<Affine<C>>
+fn decode_opt<C>(bytes: &[u8]) -> Option<Affine<C>>
 where
     C: ShortWeierstrass,
 {
