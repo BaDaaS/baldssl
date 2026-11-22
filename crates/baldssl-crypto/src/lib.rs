@@ -61,4 +61,6 @@ pub mod os_rng;
 pub mod secret;
 pub mod signature;
 
-pub use hash::{Algorithm, Digest, Sha1, Sha224, Sha256, Sha384, Sha512};
+pub use hash::{
+    Algorithm, Digest, Sha1, Sha224, Sha256, Sha384, Sha512, WithHash,
+};
