@@ -246,6 +246,7 @@ fuzz: ## Fuzz a target: make fuzz FUZZ_TARGET=x509 FUZZ_SECONDS=60
 .PHONY: interop
 interop: build fixtures ## Diff baldssl against $(OPENSSL), both directions
 	scripts/interop.sh $(OPENSSL) $(BALDSSL)
+	scripts/req-interop.sh $(OPENSSL) $(BALDSSL)
 
 .PHONY: golden
 golden: fixtures ## Regenerate golden files from OpenSSL 3.0, 3.5 and 4.1
