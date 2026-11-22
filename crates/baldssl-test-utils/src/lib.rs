@@ -1,8 +1,9 @@
 //! Helpers shared by the baldssl test suites: decoding the hexadecimal of
 //! test vectors, and reading the fixtures under `tests/fixtures`.
 //!
-//! Used only as a dev-dependency, never published, and without dependencies
-//! of its own. A malformed vector or a missing fixture is a bug in the test,
+//! Used only as a dev-dependency and never published. Without dependencies
+//! of its own, except proptest for the generators of `strategies`, behind
+//! the `proptest` feature. A malformed vector or a missing fixture is a bug in the test,
 //! so the helpers panic rather than return errors.
 
 #![allow(
@@ -12,6 +13,9 @@
 )]
 
 use std::path::PathBuf;
+
+#[cfg(feature = "proptest")]
+pub mod strategies;
 
 /// The bytes of a hexadecimal string, two digits per byte, either case.
 ///

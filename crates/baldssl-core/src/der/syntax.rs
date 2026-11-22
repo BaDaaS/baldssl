@@ -1169,5 +1169,7 @@ where
     }
 }
 
+#[cfg(any(test, feature = "laws"))]
+pub mod laws;
 #[cfg(test)]
 mod tests;

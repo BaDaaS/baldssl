@@ -8,5 +8,12 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# The proptest generators of `strategies`.
+proptest = ["dep:proptest"]
+
+[dependencies]
+proptest = { workspace = true, optional = true }
+
 [lints]
 workspace = true
