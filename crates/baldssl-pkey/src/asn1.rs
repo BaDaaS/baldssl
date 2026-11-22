@@ -1,5 +1,6 @@
-//! The ASN.1 of keys, as DER syntax descriptions: each gives both the
-//! reader and the writer of its structure (`baldssl_core::der::syntax`).
+//! The ASN.1 (Abstract Syntax Notation One) of keys, as DER (Distinguished
+//! Encoding Rules) syntax descriptions: each gives both the reader and the
+//! writer of its structure (`baldssl_core::der::syntax`).
 //!
 //! The descriptions are of the *syntax*: their values keep everything the
 //! encoding holds (the optional fields, the version), so the law of a

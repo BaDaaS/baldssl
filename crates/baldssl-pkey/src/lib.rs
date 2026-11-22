@@ -2,6 +2,23 @@
 //!
 //! Supported: P-256, P-384, P-521 and Ed25519.
 //!
+//! # Terms
+//!
+//! - **PKCS**, Public-Key Cryptography Standards: the series RSA
+//!   Laboratories published, of which PKCS#8 (below) is the eighth.
+//! - **PEM**, Privacy-Enhanced Mail: a secure email protocol of 1993 ([RFC
+//!   1421][rfc1421]) whose text armour outlived it. A PEM file is base64
+//!   between `-----BEGIN <label>-----` and `-----END <label>-----` lines; [RFC
+//!   7468][rfc7468] standardises it for keys and certificates on its own.
+//! - **ASN.1**, Abstract Syntax Notation One ([ITU-T X.680][x680]): the
+//!   language the structures below are written in.
+//! - **DER**, Distinguished Encoding Rules ([ITU-T X.690][x690], clause 10):
+//!   the encoding of ASN.1 values with exactly one byte string per value.
+//! - **EC**, elliptic curve; **NIST**, the US National Institute of Standards
+//!   and Technology, which standardised P-256, P-384 and P-521; **RFC**,
+//!   Request for Comments, the IETF's standards series; **OID**, object
+//!   identifier, an ASN.1 name for an algorithm or a curve.
+//!
 //! # PKCS#8
 //!
 //! PKCS#8 is the eighth of RSA Laboratories' Public-Key Cryptography
@@ -26,7 +43,7 @@
 //! `CurvePrivateKey`, the seed as an OCTET STRING ([RFC 8410][rfc8410]).
 //! PKCS#8 also defines `EncryptedPrivateKeyInfo`, the same structure
 //! encrypted under a password, which baldssl does not write. In PEM the
-//! label is `PRIVATE KEY` ([RFC 7468, section 10][rfc7468]).
+//! label is `PRIVATE KEY` ([RFC 7468, section 10][rfc7468-10]).
 //!
 //! # The encoding OpenSSL writes
 //!
@@ -54,11 +71,15 @@
 //! built. Its encoding is the [`Encodable`] implementation, from the syntax
 //! descriptions of `asn1`, and [`Pem`] gives the armour.
 //!
+//! [rfc1421]: https://www.rfc-editor.org/rfc/rfc1421
+//! [x680]: https://www.itu.int/rec/T-REC-X.680
+//! [x690]: https://www.itu.int/rec/T-REC-X.690
 //! [rfc5208]: https://www.rfc-editor.org/rfc/rfc5208#section-5
 //! [rfc5958]: https://www.rfc-editor.org/rfc/rfc5958#section-2
 //! [rfc5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
 //! [rfc8410]: https://www.rfc-editor.org/rfc/rfc8410#section-7
-//! [rfc7468]: https://www.rfc-editor.org/rfc/rfc7468#section-10
+//! [rfc7468]: https://www.rfc-editor.org/rfc/rfc7468
+//! [rfc7468-10]: https://www.rfc-editor.org/rfc/rfc7468#section-10
 //! [pkey35]: https://docs.openssl.org/3.5/man1/openssl-pkey/
 //! [pkey41]: https://docs.openssl.org/4.1/man1/openssl-pkey/
 
