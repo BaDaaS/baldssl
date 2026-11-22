@@ -71,9 +71,10 @@ pub trait Curve: 'static {
 }
 
 /// A short Weierstrass curve $y^2 = x^3 + a x + b$ with $a = -3$, as all the
-/// NIST curves are; the models' formulas assume it. A curve with another
+/// NIST curves are; the models' formulas assume it. Its base field has square
+/// roots, for decoding compressed points. A curve with another
 /// $a$ (secp256k1 has $a = 0$) needs its own formulas.
-pub trait ShortWeierstrass: Curve {
+pub trait ShortWeierstrass: Curve<Base: Sqrt> {
     /// The constant $b$, big-endian hexadecimal.
     const B: &'static str;
 }

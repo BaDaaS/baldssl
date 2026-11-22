@@ -62,6 +62,7 @@
 )]
 
 pub mod affine;
+pub mod compressed;
 pub mod jacobian;
 pub mod maps;
 pub mod projective;

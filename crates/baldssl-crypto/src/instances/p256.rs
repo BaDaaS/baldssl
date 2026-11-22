@@ -13,6 +13,7 @@
 use crate::{
     algebra::{
         curve::{Curve, ShortWeierstrass},
+        field::Sqrt,
         fp::{Fp, Modulus},
         model::ProjectiveModel,
     },
@@ -68,4 +69,11 @@ impl Curve for P256 {
 impl ShortWeierstrass for P256 {
     const B: &'static str =
         "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b";
+}
+
+/// $p \equiv 3 \pmod 4$: the root is $a^{(p + 1)/4}$.
+impl Sqrt for FieldP256 {
+    fn sqrt(&self) -> (Self, Choice) {
+        self.sqrt_3_mod_4()
+    }
 }
