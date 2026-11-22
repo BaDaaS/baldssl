@@ -28,7 +28,11 @@ use baldssl_core::{
     },
 };
 
-use crate::objects;
+use crate::{
+    cert::Extension as ExtensionView,
+    conf::{Config, replace_push},
+    objects,
+};
 
 /// `subjectKeyIdentifier`, 2.5.29.14.
 const ID_CE_SUBJECT_KEY_IDENTIFIER: ObjectId =
@@ -168,7 +172,10 @@ impl GeneralName {
     }
 
     /// One `kind:value` item of a `subjectAltName` value.
-    fn from_conf(kind: &str, value: Option<&str>) -> Result<Self> {
+    fn from_conf(name: &str, value: Option<&str>) -> Result<Self> {
+        // ossl_v3_name_cmp: "DNS" and "DNS.<anything>" both name DNS, which
+        // is how a section lists several (DNS.1, DNS.2).
+        let kind = name.split_once('.').map_or(name, |(k, _)| k);
         let value = value.ok_or_else(|| {
             Error::Usage(format!("subjectAltName: {kind} without a value"))
         })?;
@@ -230,6 +237,14 @@ pub enum ExtensionValue {
     ///
     /// [RFC 5280 section 4.2.1.12]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.12
     ExtendedKeyUsage(Vec<ObjectId>),
+    /// Any other extension, as its identifier and the DER of its value:
+    /// what copying a request's extensions carries without reading it.
+    Other {
+        /// `extnID`.
+        oid: ObjectId,
+        /// The contents of `extnValue`.
+        der: Vec<u8>,
+    },
 }
 
 impl ExtensionValue {
@@ -246,6 +261,7 @@ impl ExtensionValue {
             ExtensionValue::SubjectAltName(_) => ID_CE_SUBJECT_ALT_NAME,
             ExtensionValue::BasicConstraints { .. } => ID_CE_BASIC_CONSTRAINTS,
             ExtensionValue::ExtendedKeyUsage(_) => ID_CE_EXT_KEY_USAGE,
+            ExtensionValue::Other { oid, .. } => oid.clone(),
         }
     }
 
@@ -282,6 +298,7 @@ impl ExtensionValue {
             ExtensionValue::ExtendedKeyUsage(purposes) => {
                 encode(&SequenceOf(ObjectIdentifier), purposes)
             }
+            ExtensionValue::Other { der, .. } => der.clone(),
         }
     }
 }
@@ -319,6 +336,24 @@ impl Extension {
         }
     }
 
+    /// An extension as read from a certificate or a request, kept opaque
+    /// ([`ExtensionValue::Other`]): what copying needs.
+    ///
+    /// # Errors
+    ///
+    /// None in practice: the identifier was checked when read.
+    pub(crate) fn from_view(view: &ExtensionView<'_>) -> Result<Self> {
+        let oid = ObjectId::from_dotted_opt(&view.oid.to_dotted()?)
+            .ok_or_else(|| Error::invalid("extension identifier"))?;
+        Ok(Extension {
+            critical: view.critical,
+            value: ExtensionValue::Other {
+                oid,
+                der: view.value.to_vec(),
+            },
+        })
+    }
+
     /// The DER `Extension`.
     pub(crate) fn to_raw(&self) -> RawTlv {
         let syntax: ExtensionSyntax = Sequence((
@@ -345,13 +380,39 @@ impl Extension {
         let (name, value) = line.split_once('=').ok_or_else(|| {
             Error::Usage(format!("extension {line:?}: expected name=value"))
         })?;
-        let (name, value) = (name.trim(), value.trim());
+        Self::from_conf_value(name.trim(), value.trim(), None)
+    }
+
+    /// The extension `name = value` of a configuration section, as
+    /// [`Extension::from_conf`] reads a line; a value `@section` lists the
+    /// values of that section of `config` instead of its own items, as
+    /// OpenSSL's `X509V3_EXT_nconf` reads them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Extension::from_conf`], and [`Error::Usage`] for an `@section`
+    /// without a configuration or with no such section.
+    pub fn from_conf_value(
+        name: &str,
+        value: &str,
+        config: Option<&Config>,
+    ) -> Result<Self> {
         // v3_check_critical: exactly "critical,", then spaces.
         let (critical, value) = match value.strip_prefix("critical,") {
             Some(rest) => (true, rest.trim_start()),
             None => (false, value),
         };
-        let items = conf_list(value)?;
+        let items = match value.strip_prefix('@') {
+            Some(section) => config
+                .and_then(|c| c.section_opt(section))
+                .ok_or_else(|| {
+                    Error::Usage(format!("{name}: no section {section:?}"))
+                })?
+                .iter()
+                .map(|(n, v)| (n.clone(), Some(v.clone())))
+                .collect(),
+            None => conf_list(value)?,
+        };
         let names = || items.iter().map(|(name, _)| name.as_str());
         // OpenSSL looks the name up with OBJ_sn2nid: short names only.
         let dotted =
@@ -442,17 +503,40 @@ impl Extensions {
     /// These extensions, overridden with `other` (see the type).
     #[must_use]
     pub fn override_with(&self, other: &Extensions) -> Extensions {
-        let replaced = |e: &&Extension| {
-            other.0.iter().any(|o| o.value.oid() == e.value.oid())
-        };
-        Extensions(
-            self.0
-                .iter()
-                .filter(|e| !replaced(e))
-                .chain(&other.0)
-                .cloned()
-                .collect(),
-        )
+        let mut out = self.0.clone();
+        for extension in &other.0 {
+            replace_push(&mut out, extension.clone(), |a, b| {
+                a.value.oid() == b.value.oid()
+            });
+        }
+        Extensions(out)
+    }
+
+    /// The extensions of a configuration section, in order, a later one
+    /// replacing an earlier one of its kind, as OpenSSL adds a section.
+    ///
+    /// # Errors
+    ///
+    /// As [`Extension::from_conf_value`] for each line; [`Error::Usage`]
+    /// when there is no such section.
+    pub fn from_section(config: &Config, section: &str) -> Result<Extensions> {
+        config
+            .section_opt(section)
+            .ok_or_else(|| {
+                Error::Usage(format!("no extension section {section:?}"))
+            })?
+            .iter()
+            .map(|(name, value)| {
+                Extension::from_conf_value(name, value, Some(config))
+            })
+            .collect()
+    }
+
+    /// Whether there is an extension of the kind of `value`.
+    #[must_use]
+    pub fn contains_kind(&self, value: &ExtensionValue) -> bool {
+        let oid = value.oid();
+        self.0.iter().any(|e| e.value.oid() == oid)
     }
 
     /// The extensions, in order.

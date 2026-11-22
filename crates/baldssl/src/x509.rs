@@ -37,8 +37,8 @@ use std::{ffi::OsString, io::Write as _};
 use baldssl_core::{Error, Result, pem};
 use baldssl_crypto::Algorithm;
 use baldssl_x509::{
-    Certificate, CertificateTemplate, Compat, Format, certificate_der,
-    fingerprint_line, print_text, serial_line, time_rfc822,
+    Certificate, CertificateTemplate, Compat, Format, IssuedExtensions,
+    certificate_der, fingerprint_line, print_text, serial_line, time_rfc822,
 };
 
 use crate::{
@@ -448,6 +448,7 @@ fn issue(o: &Options, compat: Compat) -> Result<Vec<u8>> {
         &ca_key,
         serial_source(s).next("x509")?,
         s.lifetime.validity("x509")?,
+        &IssuedExtensions::default(),
         compat,
     )?
     .sign(&ca_key, signature_algorithm(&ca_key, s.digest))

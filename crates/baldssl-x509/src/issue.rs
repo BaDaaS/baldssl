@@ -130,6 +130,62 @@ impl Validity {
     }
 }
 
+/// The extensions a CA is asked to write, and where they come from:
+/// copied from the request ([`CopyExtensions`]), then an extension file's
+/// section ([`Extensions::from_section`]). Whether there was a file decides
+/// whether OpenSSL 4 adds its default key identifiers.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IssuedExtensions {
+    /// The extensions, in order.
+    pub extensions: Extensions,
+    /// Whether an extension file gave some of them (`-extfile`).
+    pub from_file: bool,
+}
+
+/// Which of a request's extensions a CA copies into the certificate
+/// (`-copy_extensions`), as OpenSSL's `copy_extensions` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyExtensions {
+    /// None (`none`, the default).
+    #[default]
+    None,
+    /// Those of a kind the certificate does not have yet (`copy`).
+    Copy,
+    /// All of them, each replacing the certificate's of its kind
+    /// (`copyall`).
+    CopyAll,
+}
+
+impl CopyExtensions {
+    /// `base` with the request's extensions copied in, in the request's
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// A request attribute other than `extensionRequest`, or malformed
+    /// extensions.
+    pub fn apply(
+        self,
+        base: &Extensions,
+        request: &CertificationRequest,
+    ) -> Result<Extensions> {
+        let mut out = base.clone();
+        if self == CopyExtensions::None {
+            return Ok(out);
+        }
+        for view in request.requested_extensions()? {
+            let extension = Extension::from_view(&view)?;
+            if self == CopyExtensions::Copy
+                && out.contains_kind(&extension.value)
+            {
+                continue;
+            }
+            out = out.override_with(&[extension].into_iter().collect());
+        }
+        Ok(out)
+    }
+}
+
 /// The key identifier of a public key: the SHA-1 of the bits of its
 /// `subjectPublicKey` ([RFC 5280 section 4.2.1.2], method 1), as OpenSSL's
 /// `hash` computes it.
@@ -199,20 +255,34 @@ impl CertificateTemplate {
     }
 
     /// The certificate a CA issues for `request`, as `openssl x509 -req -CA`
-    /// of the release line `compat` writes it (see the module
-    /// documentation). The request's signature is not checked here.
+    /// of the release line `compat` writes it: the request's subject and
+    /// key, the CA's subject as issuer, and `extensions` (see
+    /// [`IssuedExtensions`]) with the key identifiers OpenSSL adds. The
+    /// request's signature is not checked here.
+    ///
+    /// The key identifiers are a subject key identifier (the hash of the
+    /// request's key) and an authority key identifier (the CA's own key
+    /// identifier). OpenSSL 3 adds each one missing when it signs
+    /// (`do_X509_sign`), leaving the authority key identifier out when the
+    /// request's key is the CA's; OpenSSL 3.0 only to a certificate that
+    /// has extensions already, so with none it writes version 1. OpenSSL 4
+    /// takes them from its default configuration file instead
+    /// (`extensions = default_skid_akid`), applied after the copied
+    /// extensions, and only without an extension file.
     ///
     /// # Errors
     ///
     /// When `ca_key` is not the key of `ca`, which OpenSSL reports as "CA
-    /// certificate and CA private key do not match", or when `ca`'s key
-    /// cannot be read.
+    /// certificate and CA private key do not match"; unsupported when the
+    /// CA certificate has no subject key identifier, where OpenSSL names
+    /// the issuer and serial instead.
     pub fn issued(
         request: &CertificationRequest,
         ca: &Certificate<'_>,
         ca_key: &AnyPrivateKey,
         serial: SerialNumber,
         validity: Validity,
+        extensions: &IssuedExtensions,
         compat: Compat,
     ) -> Result<Self> {
         if !ca.matches_private_key(ca_key) {
@@ -222,29 +292,48 @@ impl CertificateTemplate {
         }
         let ca_public = PublicKey::from(ca_key);
         let subject_key = request.public_key();
-        let mut extensions = Vec::new();
-        if compat != Compat::V30 {
-            extensions.push(Extension::new(
-                ExtensionValue::SubjectKeyIdentifier(key_identifier(
-                    subject_key,
-                )),
-            ));
-            if compat == Compat::V4 || subject_key != &ca_public {
-                let id = ca
-                    .subject_key_identifier_opt()
-                    .map_or_else(|| key_identifier(&ca_public), <[u8]>::to_vec);
-                extensions.push(Extension::new(
-                    ExtensionValue::AuthorityKeyIdentifier(id),
-                ));
+        let ski = || {
+            ExtensionValue::SubjectKeyIdentifier(key_identifier(subject_key))
+        };
+        let akid = || {
+            ca.subject_key_identifier_opt()
+                .map(|id| ExtensionValue::AuthorityKeyIdentifier(id.to_vec()))
+                .ok_or_else(|| {
+                    Error::unsupported(
+                        "a CA certificate without a subject key identifier",
+                    )
+                })
+        };
+        let given = &extensions.extensions;
+        let all = match compat {
+            Compat::V4 if extensions.from_file => given.clone(),
+            Compat::V4 => given.override_with(
+                &[Extension::new(ski()), Extension::new(akid()?)]
+                    .into_iter()
+                    .collect(),
+            ),
+            Compat::V30 if given.is_empty() => Extensions::new(),
+            Compat::V30 | Compat::V3 => {
+                let mut defaults = Vec::new();
+                if !given.contains_kind(&ski()) {
+                    defaults.push(Extension::new(ski()));
+                }
+                if subject_key != &ca_public {
+                    let akid = akid()?;
+                    if !given.contains_kind(&akid) {
+                        defaults.push(Extension::new(akid));
+                    }
+                }
+                given.as_slice().iter().cloned().chain(defaults).collect()
             }
-        }
+        };
         Ok(CertificateTemplate {
             serial,
             issuer: ca.subject_der.to_vec(),
             validity,
             subject: request.subject_der().to_vec(),
             public_key: subject_key.clone(),
-            extensions: extensions.into_iter().collect(),
+            extensions: all,
         })
     }
 

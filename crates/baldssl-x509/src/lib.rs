@@ -28,6 +28,7 @@
 
 mod algorithm;
 mod cert;
+mod conf;
 mod csr;
 mod dn;
 mod ext;
@@ -41,6 +42,7 @@ mod version;
 
 pub use baldssl_crypto::signature::SignatureAlgorithm;
 pub use cert::{Certificate, Validity};
+pub use conf::Config;
 pub use csr::CertificationRequest;
 pub use dn::{
     DistinguishedName, InputEncoding, StringTypes, SubjError, SubjWarning,
@@ -49,7 +51,9 @@ pub use dn::{
 pub use extension::{
     Extension, ExtensionValue, Extensions, GeneralName, Ia5String, KeyUsage,
 };
-pub use issue::{CertificateTemplate, SerialNumber};
+pub use issue::{
+    CertificateTemplate, CopyExtensions, IssuedExtensions, SerialNumber,
+};
 pub use name::{Name, NameStyle};
 pub use text::{
     Compat, print_request_text, print_text, serial_line, time_rfc822,
