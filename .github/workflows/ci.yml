@@ -210,6 +210,8 @@ jobs:
       os-rng (Android ${{ matrix.mode }}, API ${{ matrix.api }}${{
       matrix.run_api && format(' on {0}', matrix.run_api) || '' }})
     runs-on: ubuntu-26.04
+    # A hung emulator must not hold a runner for the 6-hour default.
+    timeout-minutes: 30
     env:
       RUSTC_WRAPPER: ''
     strategy:
@@ -279,6 +281,7 @@ jobs:
   os-rng-bsd:
     name: os-rng (${{ matrix.os }} ${{ matrix.release }})
     runs-on: ubuntu-26.04
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

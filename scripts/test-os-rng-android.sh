@@ -67,27 +67,47 @@ sdk="${ANDROID_HOME:?the Android SDK is needed}"
 image="system-images;android-${run_api};default;x86_64"
 yes | "$sdk/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 "$sdk/cmdline-tools/latest/bin/sdkmanager" --install \
-    emulator platform-tools "$image" >/dev/null
+    emulator platform-tools "$image"
 echo no | "$sdk/cmdline-tools/latest/bin/avdmanager" create avd \
     --force --name os-rng --package "$image" --device pixel_5
 adb="$sdk/platform-tools/adb"
+log="$root/target/emulator.log"
 
+# Every wait below is bounded, and a failure prints the emulator's own log:
+# an emulator that dies at start-up otherwise leaves `adb wait-for-device`
+# blocked until the job times out, with nothing in the output.
+fail() {
+    echo "FAIL: $1" >&2
+    echo "--- emulator log (last 80 lines) ---" >&2
+    tail -n 80 "$log" >&2 || true
+    exit 1
+}
+"$sdk/emulator/emulator" -accel-check || true
 "$sdk/emulator/emulator" -avd os-rng -no-window -no-audio -no-boot-anim \
-    -no-snapshot -gpu swiftshader_indirect >"$root/target/emulator.log" 2>&1 &
+    -no-snapshot -gpu swiftshader_indirect >"$log" 2>&1 &
 emulator_pid=$!
 trap 'kill "$emulator_pid" 2>/dev/null || true' EXIT
 
-"$adb" wait-for-device
+booted=0
 for _ in $(seq 1 120); do
-    if [[ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]]; then
+    kill -0 "$emulator_pid" 2>/dev/null || fail "the emulator exited"
+    state="$(timeout 10 "$adb" shell getprop sys.boot_completed 2>/dev/null |
+        tr -d '\r' || true)"
+    if [[ "$state" == 1 ]]; then
+        booted=1
         break
     fi
     sleep 5
 done
-echo "emulator: Android API $("$adb" shell getprop ro.build.version.sdk | tr -d '\r')"
+[[ "$booted" == 1 ]] || fail "the emulator did not boot in 10 minutes"
+echo "emulator: Android API $(timeout 30 "$adb" shell getprop \
+    ro.build.version.sdk | tr -d '\r')"
 
-"$adb" push "$bin" /data/local/tmp/os-rng-tests
-"$adb" shell chmod 755 /data/local/tmp/os-rng-tests
+timeout 120 "$adb" push "$bin" /data/local/tmp/os-rng-tests ||
+    fail "adb push"
+timeout 60 "$adb" shell chmod 755 /data/local/tmp/os-rng-tests ||
+    fail "adb shell chmod"
 # adb shell returns the remote exit status (Android 7 and later).
-"$adb" shell /data/local/tmp/os-rng-tests os_rng
+timeout 600 "$adb" shell /data/local/tmp/os-rng-tests os_rng ||
+    fail "the os_rng tests failed or timed out"
 echo "ok: built for API $build_api, os_rng tests pass on API $run_api"
