@@ -85,7 +85,7 @@ fn asn1_string_print(out: &mut Vec<u8>, bytes: &[u8]) {
 pub(crate) fn integer_to_string(int: &Integer) -> String {
     let sign = if int.negative { "-" } else { "" };
     if int.bits() < 128 {
-        let v = int.magnitude_u128().unwrap_or(0);
+        let v = int.magnitude_u128_opt().unwrap_or(0);
         format!("{sign}{v}")
     } else {
         format!("{sign}0x{}", hex::plain(&int.magnitude, Case::Upper))

@@ -195,7 +195,7 @@ where
         )
     }
 
-    fn coordinates(&self) -> Option<(Base<Self>, Base<Self>)> {
+    fn coordinates_opt(&self) -> Option<(Base<Self>, Base<Self>)> {
         (!self.infinity.to_bool_vartime()).then_some((self.x, self.y))
     }
 }

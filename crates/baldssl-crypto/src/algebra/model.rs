@@ -92,7 +92,7 @@ pub trait AffineModel: CurveModel {
     fn from_coordinates(x: Base<Self>, y: Base<Self>) -> (Self, Choice);
 
     /// The coordinates $(x, y)$, `None` for a point at infinity.
-    fn coordinates(&self) -> Option<(Base<Self>, Base<Self>)>;
+    fn coordinates_opt(&self) -> Option<(Base<Self>, Base<Self>)>;
 }
 
 /// A projective model with complete formulas: a constant-time group, and an

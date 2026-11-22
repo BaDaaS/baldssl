@@ -24,7 +24,7 @@ fn cmp_dotted(a: &str, b: &str) -> core::cmp::Ordering {
     }
 }
 
-fn find(dotted: &str) -> Option<(&'static str, &'static str)> {
+fn find_opt(dotted: &str) -> Option<(&'static str, &'static str)> {
     OBJECTS
         .binary_search_by(|(d, _, _)| cmp_dotted(d, dotted))
         .ok()
@@ -39,7 +39,7 @@ fn find(dotted: &str) -> Option<(&'static str, &'static str)> {
 /// When the OID cannot be rendered (see [`Oid::to_dotted`]).
 pub fn short_name(oid: &Oid<'_>) -> Result<String> {
     let dotted = oid.to_dotted()?;
-    Ok(find(&dotted).map_or(dotted, |(sn, _)| sn.to_string()))
+    Ok(find_opt(&dotted).map_or(dotted, |(sn, _)| sn.to_string()))
 }
 
 /// `i2a_ASN1_OBJECT` / `OBJ_obj2txt(.., 0)`: the long name if OpenSSL knows
@@ -50,13 +50,13 @@ pub fn short_name(oid: &Oid<'_>) -> Result<String> {
 /// When the OID cannot be rendered (see [`Oid::to_dotted`]).
 pub fn long_name(oid: &Oid<'_>) -> Result<String> {
     let dotted = oid.to_dotted()?;
-    Ok(find(&dotted).map_or(dotted, |(_, ln)| ln.to_string()))
+    Ok(find_opt(&dotted).map_or(dotted, |(_, ln)| ln.to_string()))
 }
 
 /// Whether OpenSSL has this object in its table.
 #[must_use]
 pub fn is_known(dotted: &str) -> bool {
-    find(dotted).is_some()
+    find_opt(dotted).is_some()
 }
 
 #[cfg(test)]
@@ -79,11 +79,11 @@ mod tests {
     #[test]
     fn lookups() {
         assert_eq!(
-            find("1.2.840.113549.1.1.11"),
+            find_opt("1.2.840.113549.1.1.11"),
             Some(("RSA-SHA256", "sha256WithRSAEncryption"))
         );
-        assert_eq!(find("2.5.4.3"), Some(("CN", "commonName")));
-        assert_eq!(find("1.2.3.4.5"), None);
+        assert_eq!(find_opt("2.5.4.3"), Some(("CN", "commonName")));
+        assert_eq!(find_opt("1.2.3.4.5"), None);
         let oid = Oid::parse(&[0x2a, 0x03, 0x04, 0x05]).unwrap();
         assert_eq!(long_name(&oid).unwrap(), "1.2.3.4.5");
     }

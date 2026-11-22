@@ -50,7 +50,7 @@ const ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Maps one alphabet byte to its 6-bit value.
-fn sextet(c: u8) -> Option<u8> {
+fn sextet_opt(c: u8) -> Option<u8> {
     if c >= b'A' && c <= b'Z' {
         Some(c - b'A')
     } else if c >= b'a' && c <= b'z' {
@@ -67,7 +67,7 @@ fn sextet(c: u8) -> Option<u8> {
 }
 
 fn sextet_at(input: &[u8], i: usize) -> Result<u8, Base64Error> {
-    match sextet(input[i]) {
+    match sextet_opt(input[i]) {
         Some(v) => Ok(v),
         None if input[i] == b'=' => Err(Base64Error::InvalidPadding),
         None => Err(Base64Error::InvalidCharacter(i)),
@@ -192,9 +192,9 @@ mod tests {
     #[test]
     fn alphabet_is_inverse_of_sextet() {
         for (v, &c) in ALPHABET.iter().enumerate() {
-            assert_eq!(sextet(c), Some(u8::try_from(v).unwrap()));
+            assert_eq!(sextet_opt(c), Some(u8::try_from(v).unwrap()));
         }
-        let valid = (0..=255u8).filter(|&c| sextet(c).is_some()).count();
+        let valid = (0..=255u8).filter(|&c| sextet_opt(c).is_some()).count();
         assert_eq!(valid, 64);
     }
 

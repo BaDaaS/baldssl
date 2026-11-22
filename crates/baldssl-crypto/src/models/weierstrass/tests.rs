@@ -13,7 +13,7 @@ use proptest::prelude::*;
 use super::{affine::Affine, jacobian::Jacobian, projective::Projective};
 use crate::{
     algebra::{
-        curve::{ShortWeierstrass, element},
+        curve::{ShortWeierstrass, element_opt},
         encoding::{Decodable, Encodable},
         field::{Field, PrimeField},
         group::{Group, GroupVartime},
@@ -46,7 +46,8 @@ fn reference_add<C>(p: &Affine<C>, q: &Affine<C>) -> Affine<C>
 where
     C: ShortWeierstrass,
 {
-    let (Some((x1, y1)), Some((x2, y2))) = (p.coordinates(), q.coordinates())
+    let (Some((x1, y1)), Some((x2, y2))) =
+        (p.coordinates_opt(), q.coordinates_opt())
     else {
         return if p.is_identity().to_bool_vartime() {
             *q
@@ -96,9 +97,9 @@ fn check_constants<C>()
 where
     C: ShortWeierstrass,
 {
-    assert!(element::<C::Base>(C::B).is_some(), "{} b", C::NAME);
-    assert!(element::<C::Base>(C::GX).is_some(), "{} gx", C::NAME);
-    assert!(element::<C::Base>(C::GY).is_some(), "{} gy", C::NAME);
+    assert!(element_opt::<C::Base>(C::B).is_some(), "{} b", C::NAME);
+    assert!(element_opt::<C::Base>(C::GX).is_some(), "{} gx", C::NAME);
+    assert!(element_opt::<C::Base>(C::GY).is_some(), "{} gy", C::NAME);
     let g = Affine::<C>::generator();
     assert!(
         g.is_on_curve().to_bool_vartime(),
@@ -211,7 +212,7 @@ fn small_multiples() {
 
 /// A scalar from arbitrary bytes, with the bits above the order's length
 /// cleared; `None` when still not below the order.
-fn scalar_from<C>(bytes: &[u8]) -> Option<C::Scalar>
+fn scalar_from_opt<C>(bytes: &[u8]) -> Option<C::Scalar>
 where
     C: ShortWeierstrass,
 {
@@ -230,7 +231,8 @@ fn check_laws<C>(a: &[u8], b: &[u8])
 where
     C: ShortWeierstrass,
 {
-    let (Some(k1), Some(k2)) = (scalar_from::<C>(a), scalar_from::<C>(b))
+    let (Some(k1), Some(k2)) =
+        (scalar_from_opt::<C>(a), scalar_from_opt::<C>(b))
     else {
         return;
     };
@@ -324,8 +326,8 @@ where
         C::NAME
     );
     let (off_point, on_curve) = Affine::<C>::from_coordinates(
-        ap.coordinates().unwrap().0,
-        ap.coordinates().unwrap().1 + C::Base::ONE,
+        ap.coordinates_opt().unwrap().0,
+        ap.coordinates_opt().unwrap().1 + C::Base::ONE,
     );
     assert!(!on_curve.to_bool_vartime());
     assert_eq!(off_point, Affine::identity());
@@ -333,7 +335,7 @@ where
 
 /// $x + p$ big-endian on `len` bytes, if it fits: the same residue as $x$,
 /// written non-canonically.
-fn plus_modulus<C>(x: &[u8]) -> Option<Vec<u8>>
+fn plus_modulus_opt<C>(x: &[u8]) -> Option<Vec<u8>>
 where
     C: ShortWeierstrass,
 {
@@ -360,7 +362,7 @@ where
     let enc = Affine::<C>::generator().encode();
     laws::canonical::<Affine<C>>(&enc);
     let len = C::Base::BYTES;
-    let Some(x) = plus_modulus::<C>(&enc[1..=len]) else {
+    let Some(x) = plus_modulus_opt::<C>(&enc[1..=len]) else {
         return false;
     };
     let mut alias = enc.clone();
@@ -471,7 +473,7 @@ fn openssl_key_pairs() {
     {
         let d_hex = d_hex.trim_start_matches('0');
         let padded = format!("{d_hex:0>width$}", width = 2 * C::Scalar::BYTES);
-        let d = element::<C::Scalar>(&padded).expect("private scalar");
+        let d = element_opt::<C::Scalar>(&padded).expect("private scalar");
         let q = hex(q_hex);
         assert_eq!(affine(&mul_generator::<C>(&d)).encode(), q, "{}", C::NAME);
     }

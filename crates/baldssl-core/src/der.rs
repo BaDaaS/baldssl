@@ -150,7 +150,7 @@ impl Tag {
     /// The single identifier octet for low tag numbers, `None` for tag
     /// numbers of 31 and above.
     #[must_use]
-    pub fn octet(self) -> Option<u8> {
+    pub fn octet_opt(self) -> Option<u8> {
         let class = match self.class {
             Class::Universal => 0x00,
             Class::Application => 0x40,
@@ -247,7 +247,7 @@ impl Tlv<'_> {
     /// The low-form identifier octet, `0` for high tag numbers.
     #[must_use]
     pub fn octet(&self) -> u8 {
-        self.tag.octet().unwrap_or(0)
+        self.tag.octet_opt().unwrap_or(0)
     }
 }
 
@@ -364,7 +364,7 @@ impl<'a> Reader<'a> {
 
     /// The identifier octet of the next TLV, if any.
     #[must_use]
-    pub fn peek_octet(&self) -> Option<u8> {
+    pub fn peek_octet_opt(&self) -> Option<u8> {
         self.data.first().copied()
     }
 
@@ -374,7 +374,7 @@ impl<'a> Reader<'a> {
     ///
     /// [`DerError::UnexpectedTag`] on a mismatch.
     pub fn expect(&mut self, octet: u8) -> Result<Tlv<'a>, DerError> {
-        let found = self.peek_octet().ok_or(DerError::UnexpectedEnd)?;
+        let found = self.peek_octet_opt().ok_or(DerError::UnexpectedEnd)?;
         if found != octet {
             return Err(DerError::UnexpectedTag {
                 expected: octet,
@@ -390,7 +390,7 @@ impl<'a> Reader<'a> {
     ///
     /// See [`parse_tlv`].
     pub fn optional(&mut self, octet: u8) -> Result<Option<Tlv<'a>>, DerError> {
-        if self.peek_octet() == Some(octet) {
+        if self.peek_octet_opt() == Some(octet) {
             self.read().map(Some)
         } else {
             Ok(None)
@@ -488,7 +488,7 @@ impl Integer {
 
     /// The value as `u64` when non-negative and small enough.
     #[must_use]
-    pub fn to_u64(&self) -> Option<u64> {
+    pub fn to_u64_opt(&self) -> Option<u64> {
         if self.negative || self.magnitude.len() > 8 {
             return None;
         }
@@ -501,7 +501,7 @@ impl Integer {
 
     /// The magnitude as `u128` when it fits.
     #[must_use]
-    pub fn magnitude_u128(&self) -> Option<u128> {
+    pub fn magnitude_u128_opt(&self) -> Option<u128> {
         if self.magnitude.len() > 16 {
             return None;
         }
@@ -677,7 +677,7 @@ pub struct Time {
     pub fraction: String,
 }
 
-fn digits(s: &[u8]) -> Option<u16> {
+fn digits_opt(s: &[u8]) -> Option<u16> {
     s.iter().try_fold(0u16, |acc, &c| {
         if c.is_ascii_digit() {
             acc.checked_mul(10)?
@@ -690,7 +690,7 @@ fn digits(s: &[u8]) -> Option<u16> {
 
 fn two(s: &[u8], at: usize) -> Result<u8, DerError> {
     let end = at.checked_add(2).ok_or(DerError::InvalidTime)?;
-    let v = digits(s.get(at..end).ok_or(DerError::InvalidTime)?)
+    let v = digits_opt(s.get(at..end).ok_or(DerError::InvalidTime)?)
         .ok_or(DerError::InvalidTime)?;
     u8::try_from(v).map_err(|_| DerError::InvalidTime)
 }
@@ -724,8 +724,9 @@ impl Time {
                 (year, body.get(2..).ok_or(DerError::InvalidTime)?)
             }
             TimeKind::Generalized => {
-                let year = digits(body.get(..4).ok_or(DerError::InvalidTime)?)
-                    .ok_or(DerError::InvalidTime)?;
+                let year =
+                    digits_opt(body.get(..4).ok_or(DerError::InvalidTime)?)
+                        .ok_or(DerError::InvalidTime)?;
                 (year, body.get(4..).ok_or(DerError::InvalidTime)?)
             }
         };
@@ -932,19 +933,19 @@ mod tests {
         assert_eq!(parse_null(&[0]), Err(DerError::InvalidNull));
 
         let n = |b: &[u8]| Integer::parse(b).unwrap();
-        assert_eq!(n(&[0x01, 0x02]).to_u64(), Some(0x0102));
+        assert_eq!(n(&[0x01, 0x02]).to_u64_opt(), Some(0x0102));
         let eight = [0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe];
-        assert_eq!(n(&eight).to_u64(), Some(0x7fff_ffff_ffff_fffe));
+        assert_eq!(n(&eight).to_u64_opt(), Some(0x7fff_ffff_ffff_fffe));
         let mut nine = vec![0x01];
         nine.extend([0u8; 8]);
-        assert_eq!(n(&nine).to_u64(), None);
-        assert_eq!(n(&[0xff]).to_u64(), None);
+        assert_eq!(n(&nine).to_u64_opt(), None);
+        assert_eq!(n(&[0xff]).to_u64_opt(), None);
         let mut sixteen = vec![0x7f];
         sixteen.extend([0xffu8; 15]);
-        assert_eq!(n(&sixteen).magnitude_u128(), Some(u128::MAX >> 1));
+        assert_eq!(n(&sixteen).magnitude_u128_opt(), Some(u128::MAX >> 1));
         let mut seventeen = vec![0x01];
         seventeen.extend([0u8; 16]);
-        assert_eq!(n(&seventeen).magnitude_u128(), None);
+        assert_eq!(n(&seventeen).magnitude_u128_opt(), None);
         // `[0xff, x]` is minimal exactly when x has its top bit clear.
         assert!(Integer::parse(&[0xff, 0x7f]).is_ok());
         assert!(Integer::parse(&[0x00, 0x80]).is_ok());
@@ -959,15 +960,15 @@ mod tests {
         assert_eq!(tag::context(2), 0x82);
         assert_eq!(tag::context_constructed(3), 0xa3);
         for b in [0x02u8, 0x30, 0x5e, 0x80, 0xa3, 0xde] {
-            assert_eq!(Tag::from_octet(b).octet(), Some(b));
+            assert_eq!(Tag::from_octet(b).octet_opt(), Some(b));
         }
         let t = Tag {
             class: Class::Application,
             constructed: true,
             number: 30,
         };
-        assert_eq!(t.octet(), Some(0x7e));
-        assert_eq!(Tag { number: 31, ..t }.octet(), None);
+        assert_eq!(t.octet_opt(), Some(0x7e));
+        assert_eq!(Tag { number: 31, ..t }.octet_opt(), None);
         let (tlv, _) = parse_tlv(&[0x5f, 0x81, 0x00, 0x00]).unwrap();
         assert_eq!((tlv.tag.number, tlv.octet()), (128, 0));
     }
@@ -1073,7 +1074,7 @@ mod tests {
             }
             let int = Integer::parse(&bytes[start..]).unwrap();
             prop_assert_eq!(int.negative, v < 0);
-            let mag = int.magnitude_u128().unwrap();
+            let mag = int.magnitude_u128_opt().unwrap();
             prop_assert_eq!(mag, u128::from(v.unsigned_abs()));
         }
 

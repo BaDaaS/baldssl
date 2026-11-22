@@ -150,7 +150,7 @@ where
     }
 
     /// Every point is affine: the model has no point at infinity.
-    fn coordinates(&self) -> Option<(Base<Self>, Base<Self>)> {
+    fn coordinates_opt(&self) -> Option<(Base<Self>, Base<Self>)> {
         Some((self.x, self.y))
     }
 }

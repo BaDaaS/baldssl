@@ -97,7 +97,7 @@ fn oid() -> impl Strategy<Value = ObjectId> {
             for arc in rest {
                 write!(dotted, ".{arc}").unwrap();
             }
-            ObjectId::from_dotted(&dotted).expect("a valid identifier")
+            ObjectId::from_dotted_opt(&dotted).expect("a valid identifier")
         })
 }
 
@@ -242,7 +242,7 @@ proptest! {
 
     #[test]
     fn choices_and_refinements(k in any::<u64>(), s in bytes(50), v in 0u64..3, at in any::<usize>(), xor in 1u8..) {
-        let choice = Choice::new(Small, OctetString).unwrap();
+        let choice = Choice::new_opt(Small, OctetString).unwrap();
         round_trip(&choice, &Either::First(k));
         round_trip(&choice, &Either::Second(s.clone()));
         let enc = encode(&choice, &Either::First(k));
@@ -271,7 +271,7 @@ proptest! {
         canonical(&Implicit::<0, _>(OctetString), &data);
         canonical(&Optional(Boolean), &data);
         canonical(&WithDefault::new(Boolean, false), &data);
-        canonical(&Choice::new(Small, OctetString).unwrap(), &data);
+        canonical(&Choice::new_opt(Small, OctetString).unwrap(), &data);
         canonical(&version(), &data);
         canonical(&OctetStringOf(Small), &data);
         canonical(&Sequence((ObjectIdentifier, (OptionalLast(Any), ()))), &data);
@@ -291,7 +291,7 @@ fn golden() {
         encode(&Unsigned, &Natural::from_be_bytes(&[0, 0, 0xff])),
         [0x02, 0x02, 0x00, 0xff]
     );
-    let rsa = ObjectId::from_dotted("1.2.840.113549").unwrap();
+    let rsa = ObjectId::from_dotted_opt("1.2.840.113549").unwrap();
     assert_eq!(
         encode(&ObjectIdentifier, &rsa),
         [0x06, 0x06, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d]
@@ -322,7 +322,7 @@ fn golden() {
 fn static_identifiers() {
     const EC: ObjectId =
         ObjectId::from_static(&[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]);
-    assert_eq!(Some(EC), ObjectId::from_dotted("1.2.840.10045.2.1"));
+    assert_eq!(Some(EC), ObjectId::from_dotted_opt("1.2.840.10045.2.1"));
     assert_eq!(
         decode(&ObjectIdentifier, &encode(&ObjectIdentifier, &EC)),
         Ok(EC)
@@ -403,7 +403,7 @@ fn rejections() {
 
     // Constructors that would break the law.
     assert!(
-        Choice::new(Small, Unsigned).is_none(),
+        Choice::new_opt(Small, Unsigned).is_none(),
         "two INTEGER alternatives"
     );
 }

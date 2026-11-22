@@ -43,7 +43,7 @@ pub struct Opt {
 }
 
 /// Splits `arg` into an option name (dashes removed) and an inline value.
-fn split_option(arg: &OsStr) -> Option<(String, Option<OsString>)> {
+fn split_option_opt(arg: &OsStr) -> Option<(String, Option<OsString>)> {
     let s = arg.to_str()?;
     let body = s.strip_prefix("--").or_else(|| s.strip_prefix('-'))?;
     if body.is_empty() {
@@ -72,7 +72,7 @@ pub fn parse(
     let mut out = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        let Some((name, inline)) = split_option(arg) else {
+        let Some((name, inline)) = split_option_opt(arg) else {
             return Err(Error::Usage(format!(
                 "{command}: Extra option: \"{}\"",
                 arg.to_string_lossy()

@@ -53,7 +53,7 @@ fn trim_cr(line: &[u8]) -> &[u8] {
     line.strip_suffix(b"\r").unwrap_or(line)
 }
 
-fn boundary<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+fn boundary_opt<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     line.strip_prefix(prefix)?.strip_suffix(DASHES)
 }
 
@@ -69,13 +69,13 @@ pub fn decode_first(
 ) -> Result<PemBlock, PemError> {
     let mut lines = input.split(|&b| b == b'\n').map(trim_cr);
     while let Some(line) = lines.next() {
-        let Some(label) = boundary(line, BEGIN) else {
+        let Some(label) = boundary_opt(line, BEGIN) else {
             continue;
         };
         let mut body = Vec::new();
         let mut terminated = false;
         for inner in lines.by_ref() {
-            if let Some(end) = boundary(inner, END) {
+            if let Some(end) = boundary_opt(inner, END) {
                 if end != label {
                     return Err(PemError::Unterminated);
                 }

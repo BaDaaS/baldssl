@@ -289,7 +289,7 @@ impl Syntax for Small {
         if int.negative {
             return Err(DerError::UnexpectedValue);
         }
-        Ok((int.to_u64().ok_or(DerError::UnexpectedValue)?, rest))
+        Ok((int.to_u64_opt().ok_or(DerError::UnexpectedValue)?, rest))
     }
 }
 
@@ -448,8 +448,8 @@ impl ObjectId {
     /// The identifier written in dotted form (`1.2.840.10045.2.1`), or `None`
     /// when it is not a valid object identifier.
     #[must_use]
-    pub fn from_dotted(dotted: &str) -> Option<Self> {
-        let encoded = write::oid(dotted)?;
+    pub fn from_dotted_opt(dotted: &str) -> Option<Self> {
+        let encoded = write::oid_opt(dotted)?;
         let (tlv, _) = parse_tlv(&encoded).ok()?;
         Some(ObjectId(Cow::Owned(tlv.value.to_vec())))
     }
@@ -1021,7 +1021,7 @@ where
     /// The choice, or `None` when the two tags are equal (the encoding
     /// would not say which alternative it is).
     #[must_use]
-    pub fn new(first: A, second: B) -> Option<Self> {
+    pub fn new_opt(first: A, second: B) -> Option<Self> {
         (first.tag() != second.tag()).then_some(Choice { first, second })
     }
 }

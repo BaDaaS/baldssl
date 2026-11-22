@@ -371,6 +371,7 @@ jobs:
       - run: make check-unsafe
       - run: make check-where-clauses
       - run: make check-use-at-top
+      - run: make check-opt-suffix
       - run: make doc
       - run: make check-aeneas
       - run: make lint-shell

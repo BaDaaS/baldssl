@@ -45,8 +45,8 @@ fn f(v: u64) -> Field25519 {
 ///
 /// [bbjlp]: https://eprint.iacr.org/2008/013
 fn reference_add(p: &Affine, q: &Affine) -> Affine {
-    let (x1, y1) = p.coordinates().unwrap();
-    let (x2, y2) = q.coordinates().unwrap();
+    let (x1, y1) = p.coordinates_opt().unwrap();
+    let (x2, y2) = q.coordinates_opt().unwrap();
     let t = d::<Edwards25519>() * x1 * x2 * y1 * y2;
     let x3 = (x1 * y2 + y1 * x2) * (Field25519::ONE + t).invert();
     let y3 = (y1 * y2 + x1 * x2) * (Field25519::ONE - t).invert();
@@ -60,9 +60,9 @@ fn constants() {
     // d = -121665 / 121666, and B has y = 4/5, x even, and order l.
     assert_eq!(d::<Edwards25519>(), -f(121_665) * f(121_666).invert());
     let b = Affine::generator();
-    assert_eq!(b.coordinates().unwrap().1, f(4) * f(5).invert());
+    assert_eq!(b.coordinates_opt().unwrap().1, f(4) * f(5).invert());
     assert_eq!(
-        b.coordinates().unwrap().0.to_bytes_be()[31] & 1,
+        b.coordinates_opt().unwrap().0.to_bytes_be()[31] & 1,
         0,
         "x even"
     );
@@ -131,7 +131,7 @@ proptest! {
 }
 
 /// A canonical scalar from 32 bytes, when they encode one.
-fn scalar(bytes: &[u8]) -> Option<ScalarEd25519> {
+fn scalar_opt(bytes: &[u8]) -> Option<ScalarEd25519> {
     let mut be = bytes.to_vec();
     be.reverse();
     if let Some(top) = be.first_mut() {
@@ -210,7 +210,7 @@ fn torsion_is_on_the_curve_but_not_in_the_subgroup() {
 #[test]
 fn off_curve() {
     let b = Affine::generator();
-    let (x, y) = b.coordinates().unwrap();
+    let (x, y) = b.coordinates_opt().unwrap();
     let off = Extended::new(
         x,
         y + Field25519::ONE,
@@ -265,7 +265,7 @@ proptest! {
         laws::encodings(&p);
         laws::encodings(&p.to_affine());
         laws::encodings(&shifted.to_affine());
-        let (Some(ka), Some(kb)) = (scalar(&a), scalar(&b)) else {
+        let (Some(ka), Some(kb)) = (scalar_opt(&a), scalar_opt(&b)) else {
             return Ok(());
         };
         laws::module(&p, &ka, &kb);

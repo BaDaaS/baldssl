@@ -53,8 +53,8 @@ pub fn plain(bytes: &[u8], case: Case) -> String {
 ///
 /// Returns `None` on odd length or a non-hex digit.
 #[must_use]
-pub fn parse(s: &str) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u8> {
+pub fn parse_opt(s: &str) -> Option<Vec<u8>> {
+    fn val_opt(c: u8) -> Option<u8> {
         match c {
             b'0'..=b'9' => c.checked_sub(b'0'),
             b'a'..=b'f' => c.checked_sub(b'a' - 10),
@@ -69,7 +69,7 @@ pub fn parse(s: &str) -> Option<Vec<u8>> {
     bytes
         .chunks(2)
         .map(|p| match p {
-            [h, l] => Some((val(*h)? << 4) | val(*l)?),
+            [h, l] => Some((val_opt(*h)? << 4) | val_opt(*l)?),
             _ => None,
         })
         .collect()
@@ -86,16 +86,16 @@ mod tests {
         assert_eq!(colon(&[0xde, 0xad, 0x01], Case::Upper), "DE:AD:01");
         assert_eq!(colon(&[], Case::Upper), "");
         assert_eq!(plain(&[0x0f, 0xa0], Case::Upper), "0FA0");
-        assert_eq!(parse("0fA0"), Some(vec![0x0f, 0xa0]));
-        assert_eq!(parse("0"), None);
-        assert_eq!(parse("zz"), None);
+        assert_eq!(parse_opt("0fA0"), Some(vec![0x0f, 0xa0]));
+        assert_eq!(parse_opt("0"), None);
+        assert_eq!(parse_opt("zz"), None);
     }
 
     proptest! {
         #[test]
         fn roundtrip(data in prop::collection::vec(any::<u8>(), 0..64)) {
-            prop_assert_eq!(parse(&plain(&data, Case::Lower)).unwrap(), data.clone());
-            prop_assert_eq!(parse(&plain(&data, Case::Upper)).unwrap(), data.clone());
+            prop_assert_eq!(parse_opt(&plain(&data, Case::Lower)).unwrap(), data.clone());
+            prop_assert_eq!(parse_opt(&plain(&data, Case::Upper)).unwrap(), data.clone());
             let c = colon(&data, Case::Lower);
             prop_assert_eq!(c.len(), (data.len() * 3).saturating_sub(1));
         }
