@@ -422,6 +422,73 @@ impl Tagged for BitString {
     }
 }
 
+/// A named bit list (X.680 section 22.7, `BIT STRING { a(0), b(1), ... }`)
+/// as the set of the bits it names: bit `i` of the value is the list's bit
+/// `i`, which is the most significant bit of the first octet for `i = 0`.
+/// DER removes trailing zero bits (X.690 section 11.2.2), so a set has one
+/// encoding, the shortest: no bit is `03 01 00`. Reading accepts that
+/// encoding only, and at most 64 bits.
+#[derive(Debug, Clone, Copy)]
+pub struct NamedBits;
+
+impl Syntax for NamedBits {
+    type Value = u64;
+
+    fn write(&self, value: &u64, out: &mut Vec<u8>) {
+        // The highest bit named, and the octets up to it.
+        let Some(highest) = (0..64u32).rev().find(|&i| value >> i & 1 == 1)
+        else {
+            out.extend(write::tlv(tag::BIT_STRING, &[0]));
+            return;
+        };
+        let octets =
+            usize::try_from(highest / 8).unwrap_or(0).saturating_add(1);
+        let unused =
+            u8::try_from(7u32.saturating_sub(highest % 8)).unwrap_or(0);
+        let mut contents = vec![0u8; octets.saturating_add(1)];
+        if let Some(first) = contents.first_mut() {
+            *first = unused;
+        }
+        for i in (0..=highest).filter(|&i| value >> i & 1 == 1) {
+            let at = usize::try_from(i / 8).unwrap_or(0).saturating_add(1);
+            if let Some(octet) = contents.get_mut(at) {
+                *octet |= 0x80 >> (i % 8);
+            }
+        }
+        out.extend(write::tlv(tag::BIT_STRING, &contents));
+    }
+
+    fn read<'a>(&self, input: &'a [u8]) -> Result<(u64, &'a [u8]), DerError> {
+        let (contents, rest) = expect(input, tag::BIT_STRING)?;
+        let bits = BitStringContents::parse(contents)?;
+        let total = bits
+            .bytes
+            .len()
+            .saturating_mul(8)
+            .saturating_sub(usize::from(bits.unused));
+        if total > 64 {
+            return Err(DerError::UnexpectedValue);
+        }
+        let mut value = 0u64;
+        for i in 0..total {
+            if bits.bit(i) {
+                value |= 1 << i;
+            }
+        }
+        // The last bit kept must be set: otherwise a shorter encoding exists.
+        if total > 0 && !bits.bit(total.saturating_sub(1)) {
+            return Err(DerError::UnexpectedValue);
+        }
+        Ok((value, rest))
+    }
+}
+
+impl Tagged for NamedBits {
+    fn tag(&self) -> u8 {
+        tag::BIT_STRING
+    }
+}
+
 /// An object identifier, as its DER contents octets (base-128 arcs, minimal,
 /// X.690 8.19), checked when built.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
