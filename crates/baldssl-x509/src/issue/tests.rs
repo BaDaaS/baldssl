@@ -20,6 +20,7 @@ use crate::{
     Certificate, CertificationRequest, Compat, SignatureAlgorithm,
     cert::Validity,
     dn::{DistinguishedName, InputEncoding, UTF8_ONLY},
+    extension::ExtensionValue,
 };
 
 /// The parts of a DER certificate: what is signed, and the signature.
@@ -115,8 +116,9 @@ fn authority_key_identifier_by_release() {
             compat,
         )
         .extensions
+        .as_slice()
         .iter()
-        .any(|e| matches!(e, super::Extension::AuthorityKeyIdentifier(_)))
+        .any(|e| matches!(e.value, ExtensionValue::AuthorityKeyIdentifier(_)))
     };
     assert!(has_authority(Compat::V30));
     assert!(has_authority(Compat::V3));

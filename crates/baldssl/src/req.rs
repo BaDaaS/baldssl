@@ -360,6 +360,7 @@ fn create(o: &Options) -> Result<CertificationRequest> {
         &subject(o)?,
         &key,
         signature_algorithm(&key, o.digest),
+        &[],
     )
 }
 

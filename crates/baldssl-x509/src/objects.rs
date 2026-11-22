@@ -53,6 +53,15 @@ pub(crate) fn long_name(oid: &Oid<'_>) -> Result<String> {
     Ok(find_opt(&dotted).map_or(dotted, |(_, ln)| ln.to_string()))
 }
 
+/// The dotted OID of a short name only, as OpenSSL's `OBJ_sn2nid` finds
+/// it: how a configuration names an extension.
+pub(crate) fn find_by_short_name_opt(text: &str) -> Option<&'static str> {
+    OBJECTS
+        .iter()
+        .find(|(_, sn, _)| *sn == text)
+        .map(|(d, _, _)| *d)
+}
+
 /// `OBJ_txt2nid`: the object a short name, a long name, or a dotted OID
 /// names, in that order, when OpenSSL has it in its table. Names are
 /// case-sensitive, as in OpenSSL.

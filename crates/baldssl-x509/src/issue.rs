@@ -50,9 +50,8 @@ use baldssl_core::{
     der::{
         Time,
         syntax::{
-            Any, BitString, Boolean, Explicit, Implicit, Natural, ObjectId,
-            ObjectIdentifier, OctetString, RawTlv, Sequence, SequenceOf, Small,
-            Unsigned, WithDefault, encode,
+            Any, BitString, Explicit, Natural, RawTlv, Sequence, SequenceOf,
+            Small, Unsigned, encode,
         },
     },
     encoding::Encodable,
@@ -67,6 +66,7 @@ use crate::{
     algorithm::{ALGORITHM_IDENTIFIER, identifier},
     cert::Validity,
     dn::DistinguishedName,
+    extension::{Extension, ExtensionValue, Extensions},
 };
 
 /// A certificate serial number: a positive integer of at most 20 octets
@@ -130,81 +130,6 @@ impl Validity {
     }
 }
 
-/// `subjectKeyIdentifier`, 2.5.29.14.
-const ID_CE_SUBJECT_KEY_IDENTIFIER: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x0e]);
-/// `basicConstraints`, 2.5.29.19.
-const ID_CE_BASIC_CONSTRAINTS: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x13]);
-/// `authorityKeyIdentifier`, 2.5.29.35.
-const ID_CE_AUTHORITY_KEY_IDENTIFIER: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x23]);
-
-/// An extension a certificate written here can carry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Extension {
-    /// The subject's key identifier ([RFC 5280 section 4.2.1.2]).
-    ///
-    /// [RFC 5280 section 4.2.1.2]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.2
-    SubjectKeyIdentifier(Vec<u8>),
-    /// The issuer's key identifier, alone ([RFC 5280 section 4.2.1.1]).
-    ///
-    /// [RFC 5280 section 4.2.1.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.1
-    AuthorityKeyIdentifier(Vec<u8>),
-    /// Whether the subject is a CA, and how many CAs may follow it
-    /// ([RFC 5280 section 4.2.1.9]); critical, as `v3_ca` writes it.
-    ///
-    /// [RFC 5280 section 4.2.1.9]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.9
-    BasicConstraints {
-        /// `cA`.
-        ca: bool,
-        /// `pathLenConstraint`.
-        path_length: Option<u64>,
-    },
-}
-
-/// `Extension ::= SEQUENCE { extnID OBJECT IDENTIFIER, critical BOOLEAN
-/// DEFAULT FALSE, extnValue OCTET STRING }` (RFC 5280 section 4.1).
-type ExtensionSyntax =
-    Sequence<(ObjectIdentifier, (WithDefault<Boolean>, (OctetString, ())))>;
-
-impl Extension {
-    /// The extension's DER `Extension`.
-    fn to_raw(&self) -> RawTlv {
-        let (oid, critical, value) = match self {
-            Extension::SubjectKeyIdentifier(id) => (
-                ID_CE_SUBJECT_KEY_IDENTIFIER,
-                false,
-                encode(&OctetString, id),
-            ),
-            Extension::AuthorityKeyIdentifier(id) => (
-                ID_CE_AUTHORITY_KEY_IDENTIFIER,
-                false,
-                encode(
-                    &Sequence((Implicit::<0, _>(OctetString), ())),
-                    &(id.clone(), ()),
-                ),
-            ),
-            Extension::BasicConstraints { ca, path_length } => {
-                let ca_field = WithDefault::new(Boolean, false);
-                let value = match path_length {
-                    Some(n) => encode(
-                        &Sequence((ca_field, (Small, ()))),
-                        &(*ca, (*n, ())),
-                    ),
-                    None => encode(&Sequence((ca_field, ())), &(*ca, ())),
-                };
-                (ID_CE_BASIC_CONSTRAINTS, true, value)
-            }
-        };
-        let syntax: ExtensionSyntax = Sequence((
-            ObjectIdentifier,
-            (WithDefault::new(Boolean, false), (OctetString, ())),
-        ));
-        RawTlv::encode(&syntax, &(oid, (critical, (value, ()))))
-    }
-}
-
 /// The key identifier of a public key: the SHA-1 of the bits of its
 /// `subjectPublicKey` ([RFC 5280 section 4.2.1.2], method 1), as OpenSSL's
 /// `hash` computes it.
@@ -229,7 +154,7 @@ pub struct CertificateTemplate {
     /// `subjectPublicKeyInfo`.
     pub public_key: PublicKey,
     /// `extensions`, in order.
-    pub extensions: Vec<Extension>,
+    pub extensions: Extensions,
 }
 
 impl CertificateTemplate {
@@ -247,23 +172,29 @@ impl CertificateTemplate {
     ) -> Self {
         let name = subject.encode();
         let id = key_identifier(key);
-        let mut extensions = vec![Extension::SubjectKeyIdentifier(id.clone())];
+        let mut extensions = vec![Extension::new(
+            ExtensionValue::SubjectKeyIdentifier(id.clone()),
+        )];
         // OpenSSL 4's `v3_ca` asks for an authority key identifier only
         // when the certificate is not self-signed (`keyid:nonss`).
         if compat != Compat::V4 {
-            extensions.push(Extension::AuthorityKeyIdentifier(id));
+            extensions.push(Extension::new(
+                ExtensionValue::AuthorityKeyIdentifier(id),
+            ));
         }
-        extensions.push(Extension::BasicConstraints {
-            ca: true,
-            path_length: None,
-        });
+        extensions.push(Extension::critical(
+            ExtensionValue::BasicConstraints {
+                ca: true,
+                path_length: None,
+            },
+        ));
         CertificateTemplate {
             serial,
             issuer: name.clone(),
             validity,
             subject: name,
             public_key: key.clone(),
-            extensions,
+            extensions: extensions.into_iter().collect(),
         }
     }
 
@@ -293,14 +224,18 @@ impl CertificateTemplate {
         let subject_key = request.public_key();
         let mut extensions = Vec::new();
         if compat != Compat::V30 {
-            extensions.push(Extension::SubjectKeyIdentifier(key_identifier(
-                subject_key,
-            )));
+            extensions.push(Extension::new(
+                ExtensionValue::SubjectKeyIdentifier(key_identifier(
+                    subject_key,
+                )),
+            ));
             if compat == Compat::V4 || subject_key != &ca_public {
                 let id = ca
                     .subject_key_identifier_opt()
                     .map_or_else(|| key_identifier(&ca_public), <[u8]>::to_vec);
-                extensions.push(Extension::AuthorityKeyIdentifier(id));
+                extensions.push(Extension::new(
+                    ExtensionValue::AuthorityKeyIdentifier(id),
+                ));
             }
         }
         Ok(CertificateTemplate {
@@ -309,15 +244,19 @@ impl CertificateTemplate {
             validity,
             subject: request.subject_der().to_vec(),
             public_key: subject_key.clone(),
-            extensions,
+            extensions: extensions.into_iter().collect(),
         })
     }
 
     /// The DER `TBSCertificate`, signed with `algorithm`.
     fn tbs(&self, algorithm: SignatureAlgorithm) -> Result<Vec<u8>> {
         let raw = |der: &[u8]| RawTlv::parse(der);
-        let extensions: Vec<RawTlv> =
-            self.extensions.iter().map(Extension::to_raw).collect();
+        let extensions: Vec<RawTlv> = self
+            .extensions
+            .as_slice()
+            .iter()
+            .map(Extension::to_raw)
+            .collect();
         let validity = Sequence((Any, (Any, ())));
         let tbs = Sequence((
             Explicit::<0, _>(Small),

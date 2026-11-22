@@ -68,6 +68,7 @@ fn matches_openssl() {
             &subject(&case.subject),
             &case.key,
             algorithm,
+            &[],
         )
         .unwrap();
         assert!(ours.verify(), "{what}: ours verifies");
@@ -125,15 +126,21 @@ fn rejections() {
         "the signature algorithm does not match the key",
     ));
     assert_eq!(
-        CertificationRequest::sign(&name, &ec.key, SignatureAlgorithm::Ed25519)
-            .err(),
+        CertificationRequest::sign(
+            &name,
+            &ec.key,
+            SignatureAlgorithm::Ed25519,
+            &[]
+        )
+        .err(),
         mismatch
     );
     assert_eq!(
         CertificationRequest::sign(
             &name,
             &ed.key,
-            SignatureAlgorithm::Ecdsa(Hash::Sha256)
+            SignatureAlgorithm::Ecdsa(Hash::Sha256),
+            &[],
         )
         .err(),
         mismatch
@@ -144,7 +151,7 @@ fn rejections() {
         SignatureAlgorithm::Ecdsa(Hash::Sha512),
     ] {
         let request =
-            CertificationRequest::sign(&name, &ec.key, algorithm).unwrap();
+            CertificationRequest::sign(&name, &ec.key, algorithm, &[]).unwrap();
         assert!(request.verify(), "{algorithm:?}");
         assert_eq!(
             CertificationRequest::decode(&request.encode())
