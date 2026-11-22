@@ -546,6 +546,13 @@ impl RawTlv {
         &self.0
     }
 
+    /// The TLV with the one-octet identifier `tag` and these contents, the
+    /// length written minimally. Total: every such pair is one TLV.
+    #[must_use]
+    pub fn from_tag_and_contents(tag: u8, contents: &[u8]) -> Self {
+        RawTlv(write::tlv(tag, contents))
+    }
+
     /// The encoding of `value` by a tagged description, kept raw. Total:
     /// the encodings of a tagged description are single TLVs, by its law.
     #[must_use]

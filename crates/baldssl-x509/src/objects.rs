@@ -53,6 +53,19 @@ pub(crate) fn long_name(oid: &Oid<'_>) -> Result<String> {
     Ok(find_opt(&dotted).map_or(dotted, |(_, ln)| ln.to_string()))
 }
 
+/// `OBJ_txt2nid`: the object a short name, a long name, or a dotted OID
+/// names, in that order, when OpenSSL has it in its table. Names are
+/// case-sensitive, as in OpenSSL.
+#[must_use]
+pub(crate) fn find_by_name_opt(text: &str) -> Option<&'static str> {
+    OBJECTS
+        .iter()
+        .find(|(_, sn, _)| *sn == text)
+        .or_else(|| OBJECTS.iter().find(|(_, _, ln)| *ln == text))
+        .or_else(|| OBJECTS.iter().find(|(d, _, _)| *d == text))
+        .map(|(d, _, _)| *d)
+}
+
 /// Whether OpenSSL has this object in its table.
 #[must_use]
 pub(crate) fn is_known(dotted: &str) -> bool {
