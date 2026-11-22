@@ -30,6 +30,9 @@ linker="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android${bui
 rustup target add "$target"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$linker"
 export CARGO_TARGET_DIR="$root/target/android-$build_api"
+# The binary's path is read from cargo's output, which must be plain text
+# (CI sets CARGO_TERM_COLOR=always).
+export CARGO_TERM_COLOR=never
 log="$(mktemp)"
 set +e
 (cd "$root" && cargo test --locked -p baldssl-crypto --lib --no-run \
@@ -63,6 +66,10 @@ fi
 bin="$(sed -n 's/.*Executable unittests src\/lib.rs (\(.*\))/\1/p' "$log" |
     head -n 1)"
 [[ "$bin" == /* ]] || bin="$root/$bin"
+[[ -f "$bin" ]] || {
+    echo "FAIL: no test binary found in cargo's output (got '$bin')" >&2
+    exit 1
+}
 
 sdk="${ANDROID_HOME:?the Android SDK is needed}"
 image="system-images;android-${run_api};default;x86_64"
