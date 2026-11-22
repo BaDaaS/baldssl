@@ -150,6 +150,7 @@ use baldssl_crypto::{
     keys::{EcKeyPair, EdDsaKeyPair},
     models::weierstrass::{affine::Affine, compressed::Compressed},
     os_rng::{self, RngError},
+    secret::SecretBytes,
     signature::eddsa::{Ed25519, Ed25519Parameters},
 };
 
@@ -289,9 +290,17 @@ pub trait KeyAlgorithm: 'static {
     /// The PKCS#8 encoding of a pair, as `openssl genpkey` writes it.
     fn pkcs8(pair: &Self::KeyPair) -> Vec<u8>;
 
-    /// The secret as [`KeyAlgorithm::from_secret`] takes it.
-    #[cfg(test)]
-    fn secret_bytes(pair: &Self::KeyPair) -> Vec<u8>;
+    /// The key in its algorithm's own, "traditional", encoding, when it has
+    /// one: SEC1's `ECPrivateKey` with the curve and the public key
+    /// ([RFC 5915] section 3), as OpenSSL 3 writes a private key in DER;
+    /// `None` for Ed25519, which has only PKCS#8.
+    ///
+    /// [RFC 5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
+    fn traditional_opt(pair: &Self::KeyPair) -> Option<Vec<u8>>;
+
+    /// The secret as [`KeyAlgorithm::from_secret`] takes it, in memory
+    /// that is wiped when dropped.
+    fn secret(pair: &Self::KeyPair) -> SecretBytes;
 }
 
 /// An EC curve with a name in PKCS#8: its object identifier and its
@@ -381,9 +390,24 @@ where
         )
     }
 
-    #[cfg(test)]
-    fn secret_bytes(pair: &EcKeyPair<C>) -> Vec<u8> {
-        pair.secret().to_bytes_be()
+    fn traditional_opt(pair: &EcKeyPair<C>) -> Option<Vec<u8>> {
+        Some(encode_with(
+            &EC_PRIVATE_KEY,
+            &(
+                1,
+                (
+                    pair.secret().to_bytes_be(),
+                    (
+                        Some(RawTlv::encode(&ObjectIdentifier, &C::OID)),
+                        (Some(pair.public().encode()), ()),
+                    ),
+                ),
+            ),
+        ))
+    }
+
+    fn secret(pair: &EcKeyPair<C>) -> SecretBytes {
+        SecretBytes::new(pair.secret().to_bytes_be())
     }
 }
 
@@ -426,9 +450,14 @@ impl KeyAlgorithm for Ed25519 {
         )
     }
 
-    #[cfg(test)]
-    fn secret_bytes(pair: &EdDsaKeyPair<Ed25519Parameters>) -> Vec<u8> {
-        pair.seed().to_vec()
+    fn traditional_opt(
+        _pair: &EdDsaKeyPair<Ed25519Parameters>,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn secret(pair: &EdDsaKeyPair<Ed25519Parameters>) -> SecretBytes {
+        SecretBytes::new(pair.seed().to_vec())
     }
 }
 
@@ -514,10 +543,11 @@ where
         A::public_key_bytes(&self.pair)
     }
 
-    /// The secret as [`PrivateKey::from_secret`] takes it.
-    #[cfg(test)]
-    pub(crate) fn secret_bytes(&self) -> Vec<u8> {
-        A::secret_bytes(&self.pair)
+    /// The secret as [`PrivateKey::from_secret`] takes it, in memory that
+    /// is wiped when dropped: what `pkey -text` prints.
+    #[must_use]
+    pub fn secret(&self) -> SecretBytes {
+        A::secret(&self.pair)
     }
 }
 
@@ -636,14 +666,26 @@ impl AnyPrivateKey {
         }
     }
 
-    /// The secret (see [`PrivateKey::from_secret`]).
-    #[cfg(test)]
-    pub(crate) fn secret_bytes(&self) -> Vec<u8> {
+    /// The key's traditional encoding, when it has one (see
+    /// [`KeyAlgorithm::traditional_opt`]).
+    #[must_use]
+    pub fn traditional_opt(&self) -> Option<Vec<u8>> {
         match self {
-            AnyPrivateKey::P256(k) => k.secret_bytes(),
-            AnyPrivateKey::P384(k) => k.secret_bytes(),
-            AnyPrivateKey::P521(k) => k.secret_bytes(),
-            AnyPrivateKey::Ed25519(k) => k.secret_bytes(),
+            AnyPrivateKey::P256(k) => P256::traditional_opt(k.key_pair()),
+            AnyPrivateKey::P384(k) => P384::traditional_opt(k.key_pair()),
+            AnyPrivateKey::P521(k) => P521::traditional_opt(k.key_pair()),
+            AnyPrivateKey::Ed25519(k) => Ed25519::traditional_opt(k.key_pair()),
+        }
+    }
+
+    /// The secret (see [`PrivateKey::secret`]).
+    #[must_use]
+    pub fn secret(&self) -> SecretBytes {
+        match self {
+            AnyPrivateKey::P256(k) => k.secret(),
+            AnyPrivateKey::P384(k) => k.secret(),
+            AnyPrivateKey::P521(k) => k.secret(),
+            AnyPrivateKey::Ed25519(k) => k.secret(),
         }
     }
 }

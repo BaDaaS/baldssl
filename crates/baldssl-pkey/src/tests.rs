@@ -75,7 +75,7 @@ where
     let a = PrivateKey::<A>::generate().unwrap();
     let b = PrivateKey::<A>::generate().unwrap();
     assert_ne!(a.public_key(), b.public_key(), "{:?}", A::ALGORITHM);
-    let again = PrivateKey::<A>::from_secret(&a.secret_bytes()).unwrap();
+    let again = PrivateKey::<A>::from_secret(a.secret().expose()).unwrap();
     assert_eq!(again.public_key(), a.public_key());
     assert_eq!(again.encode(), a.encode());
     records_round_trip(&a.encode());
@@ -106,7 +106,7 @@ fn any_private_key_dispatches() {
         let key = AnyPrivateKey::generate(alg).unwrap();
         assert_eq!(key.algorithm(), alg);
         let again =
-            AnyPrivateKey::from_secret(alg, &key.secret_bytes()).unwrap();
+            AnyPrivateKey::from_secret(alg, key.secret().expose()).unwrap();
         assert_eq!(again.encode(), key.encode());
         assert_eq!(again.public_key_bytes(), key.public_key_bytes());
         assert_eq!(
