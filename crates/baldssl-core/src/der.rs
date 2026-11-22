@@ -761,6 +761,78 @@ fn days_in_month(year: u16, month: u8) -> u8 {
 }
 
 impl Time {
+    /// The time `seconds` after the Unix epoch, in the encoding RFC 5280
+    /// requires of a certificate ([section 4.1.2.5]): UTCTime through 2049,
+    /// GeneralizedTime from 2050, never with a fraction. The date is
+    /// Howard Hinnant's [`civil_from_days`].
+    ///
+    /// [section 4.1.2.5]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
+    /// [`civil_from_days`]: https://howardhinnant.github.io/date_algorithms.html#civil_from_days
+    ///
+    /// Times after the end of 9999 are clamped to it (253402300799 seconds),
+    /// the last instant a four-digit year can write.
+    #[must_use]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "with seconds clamped to the end of 9999, every intermediate \
+                  value is below 2^40, so no operation overflows, and the \
+                  algorithm's invariants (doe < 146097, yoe < 400, \
+                  doy < 366) keep each subtraction non-negative"
+    )]
+    pub fn from_unix_seconds(seconds: u64) -> Self {
+        let seconds = seconds.min(253_402_300_799);
+        let days = seconds / 86_400;
+        let rest = seconds % 86_400;
+        // Shift the era to start on 0000-03-01, so leap days end a year.
+        let z = days + 719_468;
+        let era = z / 146_097;
+        let doe = z % 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + u64::from(month <= 2);
+        let narrow = |v: u64| u8::try_from(v).unwrap_or(u8::MAX);
+        let year = u16::try_from(year).unwrap_or(u16::MAX);
+        Time {
+            kind: if year < 2050 {
+                TimeKind::Utc
+            } else {
+                TimeKind::Generalized
+            },
+            year,
+            month: narrow(month),
+            day: narrow(day),
+            hour: narrow(rest / 3_600),
+            minute: narrow(rest % 3_600 / 60),
+            second: narrow(rest % 60),
+            fraction: String::new(),
+        }
+    }
+
+    /// The DER TLV of the time: a UTCTime (`YYMMDDHHMMSSZ`, tag 23) or a
+    /// GeneralizedTime (`YYYYMMDDHHMMSS[.fff]Z`, tag 24), the inverse of
+    /// [`Time::parse`].
+    #[must_use]
+    pub fn to_der(&self) -> Vec<u8> {
+        let (tag, mut text) = match self.kind {
+            TimeKind::Utc => (0x17, format!("{:02}", self.year % 100)),
+            TimeKind::Generalized => (0x18, format!("{:04}", self.year)),
+        };
+        let _ = write!(
+            text,
+            "{:02}{:02}{:02}{:02}{:02}",
+            self.month, self.day, self.hour, self.minute, self.second
+        );
+        if !self.fraction.is_empty() {
+            text.push('.');
+            text.push_str(&self.fraction);
+        }
+        text.push('Z');
+        write::tlv(tag, text.as_bytes())
+    }
+
     /// Decodes a UTCTime (`YYMMDDHHMMSSZ`) or GeneralizedTime
     /// (`YYYYMMDDHHMMSS[.fff]Z`) in its DER form.
     ///
@@ -1059,6 +1131,39 @@ mod tests {
         assert_eq!(dotted(&[80]), "2.0");
         assert_eq!(dotted(&[0x81, 0x00]), "2.48");
         assert_eq!(dotted(&[0x2a, 0x81, 0x7f]), "1.2.255");
+    }
+
+    /// `from_unix_seconds` against dates computed independently (Python's
+    /// `datetime`), and RFC 5280's switch to GeneralizedTime in 2050.
+    #[test]
+    fn times_from_unix_seconds() {
+        for (seconds, utc_or_generalized) in [
+            (0u64, &b"\x17\x0d700101000000Z"[..]),
+            (951_782_400, b"\x17\x0d000229000000Z"),
+            (1_795_350_000, b"\x17\x0d261122122000Z"),
+            (2_524_607_999, b"\x17\x0d491231235959Z"),
+            (2_524_608_000, b"\x18\x0f20500101000000Z"),
+            (4_102_444_800, b"\x18\x0f21000101000000Z"),
+            (253_402_300_799, b"\x18\x0f99991231235959Z"),
+            (u64::MAX, b"\x18\x0f99991231235959Z"),
+        ] {
+            assert_eq!(
+                Time::from_unix_seconds(seconds).to_der(),
+                utc_or_generalized,
+                "{seconds}"
+            );
+        }
+    }
+
+    proptest! {
+        /// Every time written reads back to itself.
+        #[test]
+        fn times_round_trip(seconds in 0u64..=253_402_300_799) {
+            let time = Time::from_unix_seconds(seconds);
+            let der = time.to_der();
+            let kind = if der[0] == 0x17 { TimeKind::Utc } else { TimeKind::Generalized };
+            prop_assert_eq!(Time::parse(kind, &der[2..]), Ok(time));
+        }
     }
 
     #[test]
