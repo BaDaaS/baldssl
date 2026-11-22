@@ -12,6 +12,7 @@
 
 pub mod base64;
 pub mod der;
+pub mod encoding;
 pub mod error;
 pub mod hex;
 pub mod pem;

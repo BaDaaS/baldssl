@@ -21,7 +21,7 @@ use super::{affine::Affine, d};
 use crate::{
     algebra::{
         curve::TwistedEdwards,
-        encoding::{Decodable, Encodable},
+        encoding::{Decodable, Encodable, InvalidEncoding},
         field::{Field, PrimeField},
         group::Group,
         model::{AffineModel, CurveModel, ProjectiveModel},
@@ -277,18 +277,28 @@ impl<C> Decodable for Extended<C>
 where
     C: TwistedEdwards,
 {
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != 4 * C::Base::BYTES {
-            return None;
-        }
-        let mut chunks = bytes.chunks(C::Base::BYTES);
-        let (x, x_ok) = C::Base::from_bytes_be(chunks.next()?);
-        let (y, y_ok) = C::Base::from_bytes_be(chunks.next()?);
-        let (z, z_ok) = C::Base::from_bytes_be(chunks.next()?);
-        let (t, t_ok) = C::Base::from_bytes_be(chunks.next()?);
-        let candidate = Self::new(x, y, z, t);
-        (x_ok & y_ok & z_ok & t_ok & candidate.is_on_curve())
-            .to_bool_vartime()
-            .then_some(candidate)
+    type Error = InvalidEncoding;
+
+    fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
+        decode_opt::<C>(bytes).ok_or(InvalidEncoding)
     }
+}
+
+/// [`Decodable::decode`], with `None` for a rejection.
+fn decode_opt<C>(bytes: &[u8]) -> Option<Extended<C>>
+where
+    C: TwistedEdwards,
+{
+    if bytes.len() != 4 * C::Base::BYTES {
+        return None;
+    }
+    let mut chunks = bytes.chunks(C::Base::BYTES);
+    let (x, x_ok) = C::Base::from_bytes_be(chunks.next()?);
+    let (y, y_ok) = C::Base::from_bytes_be(chunks.next()?);
+    let (z, z_ok) = C::Base::from_bytes_be(chunks.next()?);
+    let (t, t_ok) = C::Base::from_bytes_be(chunks.next()?);
+    let candidate = Extended::<C>::new(x, y, z, t);
+    (x_ok & y_ok & z_ok & t_ok & candidate.is_on_curve())
+        .to_bool_vartime()
+        .then_some(candidate)
 }

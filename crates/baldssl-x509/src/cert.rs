@@ -155,7 +155,7 @@ impl<'a> Certificate<'a> {
                 let mut r = Reader::new(v.value);
                 let int = Integer::parse(r.expect(tag::INTEGER)?.value)?;
                 r.finish()?;
-                match int.to_u64() {
+                match int.to_u64_opt() {
                     Some(n @ 0..=2) => u8::try_from(n).unwrap_or(0),
                     _ => {
                         return Err(Error::unsupported(
@@ -185,8 +185,8 @@ impl<'a> Certificate<'a> {
         };
         spki_r.finish()?;
 
-        if tbs.peek_octet() == Some(tag::context(1))
-            || tbs.peek_octet() == Some(tag::context(2))
+        if tbs.peek_octet_opt() == Some(tag::context(1))
+            || tbs.peek_octet_opt() == Some(tag::context(2))
         {
             return Err(Error::unsupported("issuerUniqueID / subjectUniqueID"));
         }

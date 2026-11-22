@@ -174,7 +174,7 @@ fn expand_fingerprint_value(args: &[OsString]) -> Vec<OsString> {
         if is_fp
             && let Some(next) = it.peek().and_then(|n| n.to_str())
             && !next.starts_with('-')
-            && Algorithm::from_name(next).is_some()
+            && Algorithm::from_name_opt(next).is_some()
         {
             out.push(OsString::from(format!("-{next}")));
             it.next();
@@ -186,7 +186,7 @@ fn expand_fingerprint_value(args: &[OsString]) -> Vec<OsString> {
 fn parse_options(raw: &[OsString]) -> Result<Options> {
     let raw = expand_fingerprint_value(raw);
     let opts = args::parse("x509", &raw, SPECS, |n| {
-        Algorithm::from_name(n).is_some() || is_unimplemented_digest(n)
+        Algorithm::from_name_opt(n).is_some() || is_unimplemented_digest(n)
     })?;
     let mut o = Options {
         input: None,
@@ -224,7 +224,7 @@ fn parse_options(raw: &[OsString]) -> Result<Options> {
                 mark(&mut o, Print::EndDate);
             }
             "fingerprint" => mark(&mut o, Print::Fingerprint),
-            name => match Algorithm::from_name(name) {
+            name => match Algorithm::from_name_opt(name) {
                 Some(alg) => o.digest = (alg, name.to_string()),
                 None => {
                     return Err(Error::unsupported(format!("digest {name}")));
@@ -267,7 +267,7 @@ pub const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
 fn compat() -> Result<Compat> {
     match std::env::var(COMPAT_ENV) {
         Err(_) => Ok(Compat::default()),
-        Ok(v) => Compat::from_version(&v).ok_or_else(|| {
+        Ok(v) => Compat::from_version_opt(&v).ok_or_else(|| {
             Error::Usage(format!(
                 "{COMPAT_ENV}: expected 3.0, 3 or 4, got {v:?}"
             ))

@@ -77,7 +77,7 @@ impl Algorithm {
 
     /// Looks an algorithm up by its OpenSSL name, ignoring ASCII case.
     #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
+    pub fn from_name_opt(name: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|a| a.name().eq_ignore_ascii_case(name))
@@ -202,13 +202,13 @@ mod tests {
     #[test]
     fn names() {
         for alg in Algorithm::ALL {
-            assert_eq!(Algorithm::from_name(alg.name()), Some(alg));
+            assert_eq!(Algorithm::from_name_opt(alg.name()), Some(alg));
             assert_eq!(
-                Algorithm::from_name(&alg.name().to_uppercase()),
+                Algorithm::from_name_opt(&alg.name().to_uppercase()),
                 Some(alg)
             );
         }
-        assert_eq!(Algorithm::from_name("md5"), None);
+        assert_eq!(Algorithm::from_name_opt("md5"), None);
         assert_eq!(Sha1::OUTPUT_LEN, 20);
         assert_eq!(Sha224::OUTPUT_LEN, 28);
         assert_eq!(Sha256::OUTPUT_LEN, 32);

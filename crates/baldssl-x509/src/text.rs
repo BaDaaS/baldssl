@@ -65,7 +65,7 @@ impl Compat {
     /// Parses a profile (`3.0`, `3` or `4`) or an OpenSSL version
     /// (`3.0.22`, `3.5.9`, `4.1.0`).
     #[must_use]
-    pub fn from_version(s: &str) -> Option<Self> {
+    pub fn from_version_opt(s: &str) -> Option<Self> {
         let s = s.trim();
         if s == "3.0" || s.starts_with("3.0.") {
             return Some(Compat::V30);
@@ -137,7 +137,7 @@ fn bn_print(
         return;
     }
     if n.magnitude.len() <= 8 {
-        let v = n.magnitude_u128().unwrap_or(0);
+        let v = n.magnitude_u128_opt().unwrap_or(0);
         out.extend_from_slice(
             format!("{label} {neg}{v} ({neg}0x{v:x})\n").as_bytes(),
         );
@@ -166,17 +166,19 @@ fn print_serial(out: &mut Vec<u8>, serial: &Integer) {
     // ASN1_INTEGER_get succeeds when the value fits a 64-bit long; it
     // returns -1 on failure, so a serial of exactly -1 also takes the long
     // form.
-    let fits = match serial.to_u64() {
+    let fits = match serial.to_u64_opt() {
         Some(v) => i64::try_from(v).is_ok(),
         None => {
             serial.negative
                 && serial.magnitude.len() <= 8
-                && serial.magnitude_u128().is_some_and(|m| m <= 1u128 << 63)
+                && serial
+                    .magnitude_u128_opt()
+                    .is_some_and(|m| m <= 1u128 << 63)
         }
     };
     let minus_one = serial.negative && serial.magnitude == [1];
     if fits && !minus_one {
-        let v = serial.magnitude_u128().unwrap_or(0);
+        let v = serial.magnitude_u128_opt().unwrap_or(0);
         let neg = if serial.negative { "-" } else { "" };
         out.extend_from_slice(format!(" {neg}{v} ({neg}0x{v:x})\n").as_bytes());
     } else {
@@ -539,11 +541,11 @@ mod tests {
         let mut out = Vec::new();
         bn_print(&mut out, "Modulus:", &int(&big), 0, Compat::V4);
         assert!(out.starts_with(b"Modulus:\n    80:80:"));
-        assert_eq!(Compat::from_version("4.1.0"), Some(Compat::V4));
-        assert_eq!(Compat::from_version("3"), Some(Compat::V3));
-        assert_eq!(Compat::from_version("1.1.1"), None);
-        assert_eq!(Compat::from_version("3.0"), Some(Compat::V30));
-        assert_eq!(Compat::from_version("3.0.22"), Some(Compat::V30));
-        assert_eq!(Compat::from_version("3.5.9"), Some(Compat::V3));
+        assert_eq!(Compat::from_version_opt("4.1.0"), Some(Compat::V4));
+        assert_eq!(Compat::from_version_opt("3"), Some(Compat::V3));
+        assert_eq!(Compat::from_version_opt("1.1.1"), None);
+        assert_eq!(Compat::from_version_opt("3.0"), Some(Compat::V30));
+        assert_eq!(Compat::from_version_opt("3.0.22"), Some(Compat::V30));
+        assert_eq!(Compat::from_version_opt("3.5.9"), Some(Compat::V3));
     }
 }

@@ -92,7 +92,7 @@ pub fn null() -> Vec<u8> {
 /// $40 a_1 + a_2$, and each sub-identifier is base 128, most significant
 /// group first, with the high bit on every byte but the last.
 #[must_use]
-pub fn oid(dotted: &str) -> Option<Vec<u8>> {
+pub fn oid_opt(dotted: &str) -> Option<Vec<u8>> {
     let arcs: Vec<u128> = dotted
         .split('.')
         .map(|a| {
@@ -175,17 +175,20 @@ mod tests {
     fn known_oids() {
         // id-ecPublicKey, prime256v1, Ed25519.
         assert_eq!(
-            oid("1.2.840.10045.2.1").unwrap(),
+            oid_opt("1.2.840.10045.2.1").unwrap(),
             [0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
         );
         assert_eq!(
-            oid("1.2.840.10045.3.1.7").unwrap(),
+            oid_opt("1.2.840.10045.3.1.7").unwrap(),
             [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]
         );
-        assert_eq!(oid("1.3.101.112").unwrap(), [0x06, 0x03, 0x2b, 0x65, 0x70]);
-        assert_eq!(oid("2.999").unwrap(), [0x06, 0x02, 0x88, 0x37]);
+        assert_eq!(
+            oid_opt("1.3.101.112").unwrap(),
+            [0x06, 0x03, 0x2b, 0x65, 0x70]
+        );
+        assert_eq!(oid_opt("2.999").unwrap(), [0x06, 0x02, 0x88, 0x37]);
         for bad in ["", "1", "3.1", "1.40", "1.2.x", "1..2", "1.02", "-1.2"] {
-            assert_eq!(oid(bad), None, "{bad}");
+            assert_eq!(oid_opt(bad), None, "{bad}");
         }
     }
 
@@ -224,7 +227,7 @@ mod tests {
             for arc in &rest {
                 write!(dotted, ".{arc}").unwrap();
             }
-            let enc = oid(&dotted).unwrap();
+            let enc = oid_opt(&dotted).unwrap();
             let (t, _) = parse_tlv(&enc).unwrap();
             prop_assert_eq!(Oid::parse(t.value).unwrap().to_dotted().unwrap(), dotted);
         }

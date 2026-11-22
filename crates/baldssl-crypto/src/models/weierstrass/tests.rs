@@ -13,7 +13,7 @@ use proptest::prelude::*;
 use super::{affine::Affine, jacobian::Jacobian, projective::Projective};
 use crate::{
     algebra::{
-        curve::{ShortWeierstrass, element},
+        curve::{ShortWeierstrass, element_opt},
         encoding::{Decodable, Encodable},
         field::{Field, PrimeField},
         group::{Group, GroupVartime},
@@ -46,7 +46,8 @@ fn reference_add<C>(p: &Affine<C>, q: &Affine<C>) -> Affine<C>
 where
     C: ShortWeierstrass,
 {
-    let (Some((x1, y1)), Some((x2, y2))) = (p.coordinates(), q.coordinates())
+    let (Some((x1, y1)), Some((x2, y2))) =
+        (p.coordinates_opt(), q.coordinates_opt())
     else {
         return if p.is_identity().to_bool_vartime() {
             *q
@@ -96,9 +97,9 @@ fn check_constants<C>()
 where
     C: ShortWeierstrass,
 {
-    assert!(element::<C::Base>(C::B).is_some(), "{} b", C::NAME);
-    assert!(element::<C::Base>(C::GX).is_some(), "{} gx", C::NAME);
-    assert!(element::<C::Base>(C::GY).is_some(), "{} gy", C::NAME);
+    assert!(element_opt::<C::Base>(C::B).is_some(), "{} b", C::NAME);
+    assert!(element_opt::<C::Base>(C::GX).is_some(), "{} gx", C::NAME);
+    assert!(element_opt::<C::Base>(C::GY).is_some(), "{} gy", C::NAME);
     let g = Affine::<C>::generator();
     assert!(
         g.is_on_curve().to_bool_vartime(),
@@ -211,7 +212,7 @@ fn small_multiples() {
 
 /// A scalar from arbitrary bytes, with the bits above the order's length
 /// cleared; `None` when still not below the order.
-fn scalar_from<C>(bytes: &[u8]) -> Option<C::Scalar>
+fn scalar_from_opt<C>(bytes: &[u8]) -> Option<C::Scalar>
 where
     C: ShortWeierstrass,
 {
@@ -230,7 +231,8 @@ fn check_laws<C>(a: &[u8], b: &[u8])
 where
     C: ShortWeierstrass,
 {
-    let (Some(k1), Some(k2)) = (scalar_from::<C>(a), scalar_from::<C>(b))
+    let (Some(k1), Some(k2)) =
+        (scalar_from_opt::<C>(a), scalar_from_opt::<C>(b))
     else {
         return;
     };
@@ -312,15 +314,20 @@ where
     laws::round_trip(&ap);
     laws::round_trip(&Affine::<C>::identity());
     let enc = ap.encode();
-    assert_eq!(Affine::<C>::decode(&enc), Some(ap));
+    assert_eq!(Affine::<C>::decode(&enc).ok(), Some(ap));
     let mut off = enc.clone();
     if let Some(last) = off.last_mut() {
         *last ^= 1;
     }
-    assert_eq!(Affine::<C>::decode(&off), None, "{} off-curve", C::NAME);
+    assert_eq!(
+        Affine::<C>::decode(&off).ok(),
+        None,
+        "{} off-curve",
+        C::NAME
+    );
     let (off_point, on_curve) = Affine::<C>::from_coordinates(
-        ap.coordinates().unwrap().0,
-        ap.coordinates().unwrap().1 + C::Base::ONE,
+        ap.coordinates_opt().unwrap().0,
+        ap.coordinates_opt().unwrap().1 + C::Base::ONE,
     );
     assert!(!on_curve.to_bool_vartime());
     assert_eq!(off_point, Affine::identity());
@@ -328,7 +335,7 @@ where
 
 /// $x + p$ big-endian on `len` bytes, if it fits: the same residue as $x$,
 /// written non-canonically.
-fn plus_modulus<C>(x: &[u8]) -> Option<Vec<u8>>
+fn plus_modulus_opt<C>(x: &[u8]) -> Option<Vec<u8>>
 where
     C: ShortWeierstrass,
 {
@@ -355,12 +362,12 @@ where
     let enc = Affine::<C>::generator().encode();
     laws::canonical::<Affine<C>>(&enc);
     let len = C::Base::BYTES;
-    let Some(x) = plus_modulus::<C>(&enc[1..=len]) else {
+    let Some(x) = plus_modulus_opt::<C>(&enc[1..=len]) else {
         return false;
     };
     let mut alias = enc.clone();
     alias[1..=len].copy_from_slice(&x);
-    assert_eq!(Affine::<C>::decode(&alias), None, "{} x + p", C::NAME);
+    assert_eq!(Affine::<C>::decode(&alias).ok(), None, "{} x + p", C::NAME);
     true
 }
 
@@ -384,7 +391,7 @@ fn golden_encoding() {
     );
     let g = hex(g);
     assert_eq!(Affine::<P256>::generator().encode(), g);
-    assert_eq!(Affine::<P256>::decode(&g), Some(Affine::generator()));
+    assert_eq!(Affine::<P256>::decode(&g).ok(), Some(Affine::generator()));
     assert_eq!(Affine::<P256>::identity().encode(), vec![0x00]);
 }
 
@@ -435,18 +442,18 @@ where
     C: ShortWeierstrass,
 {
     let enc = Affine::<C>::generator().encode();
-    assert_eq!(Affine::<C>::decode(&enc[..enc.len() - 1]), None);
+    assert_eq!(Affine::<C>::decode(&enc[..enc.len() - 1]).ok(), None);
     let mut prefix = enc.clone();
     prefix[0] = 0x02;
-    assert_eq!(Affine::<C>::decode(&prefix), None);
+    assert_eq!(Affine::<C>::decode(&prefix).ok(), None);
     let mut big = enc.clone();
     for byte in &mut big[1..=C::Base::BYTES] {
         *byte = 0xff;
     }
-    assert_eq!(Affine::<C>::decode(&big), None);
+    assert_eq!(Affine::<C>::decode(&big).ok(), None);
     assert_eq!(Affine::<C>::identity().encode(), vec![0x00]);
     // SEC 1 section 2.3.4: 00 is the identity, so encoding round-trips at O.
-    assert_eq!(Affine::<C>::decode(&[0x00]), Some(Affine::identity()));
+    assert_eq!(Affine::<C>::decode(&[0x00]).ok(), Some(Affine::identity()));
 }
 
 #[test]
@@ -466,7 +473,7 @@ fn openssl_key_pairs() {
     {
         let d_hex = d_hex.trim_start_matches('0');
         let padded = format!("{d_hex:0>width$}", width = 2 * C::Scalar::BYTES);
-        let d = element::<C::Scalar>(&padded).expect("private scalar");
+        let d = element_opt::<C::Scalar>(&padded).expect("private scalar");
         let q = hex(q_hex);
         assert_eq!(affine(&mul_generator::<C>(&d)).encode(), q, "{}", C::NAME);
     }

@@ -95,6 +95,11 @@ check-use-at-top: ## Fail on a `use` inside a function or block
 	find crates fuzz/fuzz_targets -name '*.rs' -not -path '*/target/*' \
 		-print0 | xargs -0 python3 scripts/use_at_top.py
 
+.PHONY: check-opt-suffix
+check-opt-suffix: ## Fail on a function returning an Option without _opt
+	find crates fuzz/fuzz_targets -name '*.rs' -not -path '*/target/*' \
+		-print0 | xargs -0 python3 scripts/opt_suffix.py
+
 .PHONY: check-urls
 check-urls: doc ## Check every URL in the sources and the rendered docs
 	python3 scripts/check_urls.py crates fuzz/fuzz_targets scripts README.md \
@@ -233,7 +238,7 @@ lean: ## Build the Lean 4 skeleton in proofs/ (Aeneas library, Mathlib cache)
 
 .PHONY: ci
 ci: check-format lint test doc check-no-deps check-unsafe check-aeneas \
-	check-where-clauses check-use-at-top \
+	check-where-clauses check-use-at-top check-opt-suffix \
 	lint-shell ## Run the CI checks locally
 
 .PHONY: clean

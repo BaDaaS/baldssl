@@ -8,7 +8,10 @@
 //!
 //! [rfc7468]: https://www.rfc-editor.org/rfc/rfc7468
 
-use crate::base64::{self, Base64Error};
+use crate::{
+    base64::{self, Base64Error},
+    encoding::Encodable,
+};
 
 /// Why a PEM document was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +53,7 @@ fn trim_cr(line: &[u8]) -> &[u8] {
     line.strip_suffix(b"\r").unwrap_or(line)
 }
 
-fn boundary<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+fn boundary_opt<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     line.strip_prefix(prefix)?.strip_suffix(DASHES)
 }
 
@@ -66,13 +69,13 @@ pub fn decode_first(
 ) -> Result<PemBlock, PemError> {
     let mut lines = input.split(|&b| b == b'\n').map(trim_cr);
     while let Some(line) = lines.next() {
-        let Some(label) = boundary(line, BEGIN) else {
+        let Some(label) = boundary_opt(line, BEGIN) else {
             continue;
         };
         let mut body = Vec::new();
         let mut terminated = false;
         for inner in lines.by_ref() {
-            if let Some(end) = boundary(inner, END) {
+            if let Some(end) = boundary_opt(inner, END) {
                 if end != label {
                     return Err(PemError::Unterminated);
                 }
@@ -117,6 +120,24 @@ pub fn encode(label: &str, contents: &[u8]) -> String {
     out.push_str(label);
     out.push_str("-----\n");
     out
+}
+
+/// A type with a PEM armour ([RFC 7468][rfc7468]): its canonical encoding
+/// ([`Encodable`]), base64 between `-----BEGIN` and `-----END` lines naming
+/// its label. One label per type, as there is one encoding per type; a
+/// second armour (`EC PRIVATE KEY` beside `PRIVATE KEY`) goes on the newtype
+/// that carries the second encoding.
+///
+/// [rfc7468]: https://www.rfc-editor.org/rfc/rfc7468
+pub trait Pem: Encodable {
+    /// The label of the BEGIN and END lines.
+    const LABEL: &'static str;
+
+    /// The PEM armour of the encoding.
+    #[must_use]
+    fn to_pem(&self) -> String {
+        encode(Self::LABEL, self.encode().as_ref())
+    }
 }
 
 #[cfg(test)]

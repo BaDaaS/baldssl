@@ -45,8 +45,8 @@ fn f(v: u64) -> Field25519 {
 ///
 /// [bbjlp]: https://eprint.iacr.org/2008/013
 fn reference_add(p: &Affine, q: &Affine) -> Affine {
-    let (x1, y1) = p.coordinates().unwrap();
-    let (x2, y2) = q.coordinates().unwrap();
+    let (x1, y1) = p.coordinates_opt().unwrap();
+    let (x2, y2) = q.coordinates_opt().unwrap();
     let t = d::<Edwards25519>() * x1 * x2 * y1 * y2;
     let x3 = (x1 * y2 + y1 * x2) * (Field25519::ONE + t).invert();
     let y3 = (y1 * y2 + x1 * x2) * (Field25519::ONE - t).invert();
@@ -60,9 +60,9 @@ fn constants() {
     // d = -121665 / 121666, and B has y = 4/5, x even, and order l.
     assert_eq!(d::<Edwards25519>(), -f(121_665) * f(121_666).invert());
     let b = Affine::generator();
-    assert_eq!(b.coordinates().unwrap().1, f(4) * f(5).invert());
+    assert_eq!(b.coordinates_opt().unwrap().1, f(4) * f(5).invert());
     assert_eq!(
-        b.coordinates().unwrap().0.to_bytes_be()[31] & 1,
+        b.coordinates_opt().unwrap().0.to_bytes_be()[31] & 1,
         0,
         "x even"
     );
@@ -131,7 +131,7 @@ proptest! {
 }
 
 /// A canonical scalar from 32 bytes, when they encode one.
-fn scalar(bytes: &[u8]) -> Option<ScalarEd25519> {
+fn scalar_opt(bytes: &[u8]) -> Option<ScalarEd25519> {
     let mut be = bytes.to_vec();
     be.reverse();
     if let Some(top) = be.first_mut() {
@@ -210,7 +210,7 @@ fn torsion_is_on_the_curve_but_not_in_the_subgroup() {
 #[test]
 fn off_curve() {
     let b = Affine::generator();
-    let (x, y) = b.coordinates().unwrap();
+    let (x, y) = b.coordinates_opt().unwrap();
     let off = Extended::new(
         x,
         y + Field25519::ONE,
@@ -265,7 +265,7 @@ proptest! {
         laws::encodings(&p);
         laws::encodings(&p.to_affine());
         laws::encodings(&shifted.to_affine());
-        let (Some(ka), Some(kb)) = (scalar(&a), scalar(&b)) else {
+        let (Some(ka), Some(kb)) = (scalar_opt(&a), scalar_opt(&b)) else {
             return Ok(());
         };
         laws::module(&p, &ka, &kb);
@@ -314,14 +314,14 @@ fn square_roots() {
 fn decoding() {
     let mut base = vec![0x66u8; 32];
     base[0] = 0x58;
-    assert_eq!(Affine::decode(&base), Some(Affine::generator()));
+    assert_eq!(Affine::decode(&base).ok(), Some(Affine::generator()));
     assert_eq!(
-        Extended::from(Affine::decode(&base).unwrap()),
+        Extended::from(Affine::decode(&base).ok().unwrap()),
         Extended::generator()
     );
     let mut one = vec![0u8; 32];
     one[0] = 1;
-    assert_eq!(Affine::decode(&one), Some(Affine::identity()));
+    assert_eq!(Affine::decode(&one).ok(), Some(Affine::identity()));
 
     // (0, -1), of order 2: y = p - 1, x = 0, sign 0.
     let mut minus_one =
@@ -331,26 +331,26 @@ fn decoding() {
     assert!(!t.is_in_prime_subgroup().to_bool_vartime());
     // ... but x = 0 with the sign bit set is the one non-canonical sign.
     minus_one[31] |= 0x80;
-    assert_eq!(Affine::decode(&minus_one), None, "x = 0, sign 1");
+    assert_eq!(Affine::decode(&minus_one).ok(), None, "x = 0, sign 1");
     one[31] |= 0x80;
-    assert_eq!(Affine::decode(&one), None, "identity with sign 1");
+    assert_eq!(Affine::decode(&one).ok(), None, "identity with sign 1");
 
     // The sign bit selects -x.
     let mut neg_base = base.clone();
     neg_base[31] ^= 0x80;
-    assert_eq!(Affine::decode(&neg_base), Some(-Affine::generator()));
+    assert_eq!(Affine::decode(&neg_base).ok(), Some(-Affine::generator()));
 
     // y = p (not below p) is rejected, though it is 0 modulo p.
     let p_le =
         hex("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f");
-    assert_eq!(Affine::decode(&p_le), None, "y = p");
+    assert_eq!(Affine::decode(&p_le).ok(), None, "y = p");
     // y = 2: (4 - 1) / (4 d + 1) is not a square.
     let mut two = vec![0u8; 32];
     two[0] = 2;
-    assert_eq!(Affine::decode(&two), None, "no square root");
+    assert_eq!(Affine::decode(&two).ok(), None, "no square root");
     // Wrong lengths.
-    assert_eq!(Affine::decode(&base[..31]), None);
-    assert_eq!(Affine::decode(&[base.as_slice(), &[0]].concat()), None);
+    assert_eq!(Affine::decode(&base[..31]).ok(), None);
+    assert_eq!(Affine::decode(&[base.as_slice(), &[0]].concat()).ok(), None);
 }
 
 proptest! {
@@ -360,8 +360,8 @@ proptest! {
     /// whatever decodes re-encodes to the same bytes, and is on the curve.
     #[test]
     fn decoding_is_canonical(bytes in prop::collection::vec(any::<u8>(), 32)) {
-            laws::canonical::<Affine>(&bytes);
-        if let Some(p) = Affine::decode(&bytes) {
+        laws::canonical::<Affine>(&bytes);
+        if let Ok(p) = Affine::decode(&bytes) {
             prop_assert!(p.is_on_curve().to_bool_vartime());
         }
     }

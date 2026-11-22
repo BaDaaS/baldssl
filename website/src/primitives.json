@@ -46,7 +46,7 @@
     {
       "id": "der-writer",
       "name": "DER writer",
-      "purpose": "Encoding ASN.1 structures: keys now, certificate requests and certificates next.",
+      "purpose": "Encoding ASN.1 structures, and DER syntax descriptions: one description per ASN.1 type gives both the reader and the writer, which round-trip and are canonical by construction (public keys use them).",
       "status": "implemented",
       "link": "https://github.com/BaDaaS/baldssl/pull/10"
     },

@@ -88,7 +88,7 @@ pub trait TwistedEdwards: Curve<Base: Sqrt> {
 /// Decodes a big-endian hexadecimal constant into a field element; `None`
 /// if it is not a canonical element. The instances' constants are checked
 /// by their tests, so callers may treat `None` as unreachable.
-pub(crate) fn element<F>(hex: &str) -> Option<F>
+pub(crate) fn element_opt<F>(hex: &str) -> Option<F>
 where
     F: PrimeField,
 {
@@ -106,11 +106,11 @@ where
     valid.to_bool_vartime().then_some(value)
 }
 
-/// [`element`], with zero for a constant that is not canonical (which the
+/// [`element_opt`], with zero for a constant that is not canonical (which the
 /// instances' tests rule out).
 pub(crate) fn constant<F>(hex: &str) -> F
 where
     F: PrimeField,
 {
-    element(hex).unwrap_or(F::ZERO)
+    element_opt(hex).unwrap_or(F::ZERO)
 }

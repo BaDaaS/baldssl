@@ -15,7 +15,7 @@ use super::projective::Projective;
 use crate::{
     algebra::{
         curve::{ShortWeierstrass, constant},
-        encoding::{Decodable, Encodable},
+        encoding::{Decodable, Encodable, InvalidEncoding},
         field::{Field, PrimeField},
         model::{AffineModel, Base, CurveModel},
     },
@@ -195,7 +195,7 @@ where
         )
     }
 
-    fn coordinates(&self) -> Option<(Base<Self>, Base<Self>)> {
+    fn coordinates_opt(&self) -> Option<(Base<Self>, Base<Self>)> {
         (!self.infinity.to_bool_vartime()).then_some((self.x, self.y))
     }
 }
@@ -234,17 +234,27 @@ impl<C> Decodable for Affine<C>
 where
     C: ShortWeierstrass,
 {
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes == [0x00] {
-            return Some(Self::identity());
-        }
-        let len = C::Base::BYTES;
-        if bytes.len() != 1 + 2 * len || bytes.first() != Some(&0x04) {
-            return None;
-        }
-        let (x, x_ok) = C::Base::from_bytes_be(bytes.get(1..=len)?);
-        let (y, y_ok) = C::Base::from_bytes_be(bytes.get(1 + len..)?);
-        let (point, on_curve) = Self::from_coordinates(x, y);
-        (x_ok & y_ok & on_curve).to_bool_vartime().then_some(point)
+    type Error = InvalidEncoding;
+
+    fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
+        decode_opt::<C>(bytes).ok_or(InvalidEncoding)
     }
+}
+
+/// [`Decodable::decode`], with `None` for a rejection.
+fn decode_opt<C>(bytes: &[u8]) -> Option<Affine<C>>
+where
+    C: ShortWeierstrass,
+{
+    if bytes == [0x00] {
+        return Some(Affine::<C>::identity());
+    }
+    let len = C::Base::BYTES;
+    if bytes.len() != 1 + 2 * len || bytes.first() != Some(&0x04) {
+        return None;
+    }
+    let (x, x_ok) = C::Base::from_bytes_be(bytes.get(1..=len)?);
+    let (y, y_ok) = C::Base::from_bytes_be(bytes.get(1 + len..)?);
+    let (point, on_curve) = Affine::<C>::from_coordinates(x, y);
+    (x_ok & y_ok & on_curve).to_bool_vartime().then_some(point)
 }
