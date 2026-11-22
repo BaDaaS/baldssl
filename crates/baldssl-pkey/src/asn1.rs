@@ -9,9 +9,16 @@
 //! in range); several records denote one key (with or without the optional
 //! public key), and the writer picks the one `openssl genpkey` writes.
 
-use baldssl_core::der::syntax::{
-    Any, BitString, Explicit, ObjectId, ObjectIdentifier, OctetString,
-    Optional, OptionalLast, Sequence, Small,
+use baldssl_core::{
+    Error,
+    der::{
+        DerError,
+        syntax::{
+            Any, BitString, Explicit, ObjectId, ObjectIdentifier, OctetString,
+            Optional, OptionalLast, RawTlv, Sequence, Small, decode, encode,
+        },
+    },
+    encoding::{Decodable, Encodable},
 };
 
 /// `id-ecPublicKey`, 1.2.840.10045.2.1 ([RFC 5480] section 2.1.1).
@@ -51,6 +58,10 @@ pub(crate) type AlgorithmIdentifier =
 pub(crate) const ALGORITHM_IDENTIFIER: AlgorithmIdentifier =
     Sequence((ObjectIdentifier, (OptionalLast(Any), ())));
 
+/// The value of an AlgorithmIdentifier: the algorithm, and its parameters
+/// as one TLV when present.
+pub(crate) type AlgorithmIdentifierValue = (ObjectId, (Option<RawTlv>, ()));
+
 /// `SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
 /// subjectPublicKey BIT STRING }` ([RFC 5280] section 4.1), the key a whole
 /// number of bytes ([RFC 5480] section 2 for EC, [RFC 8410] section 4 for
@@ -59,11 +70,52 @@ pub(crate) const ALGORITHM_IDENTIFIER: AlgorithmIdentifier =
 /// [RFC 5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
 /// [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2
 /// [RFC 8410]: https://www.rfc-editor.org/rfc/rfc8410#section-4
-pub(crate) type SubjectPublicKeyInfo =
+pub(crate) type SubjectPublicKeyInfoSyntax =
     Sequence<(AlgorithmIdentifier, (BitString, ()))>;
 
-pub(crate) const SUBJECT_PUBLIC_KEY_INFO: SubjectPublicKeyInfo =
+pub(crate) const SUBJECT_PUBLIC_KEY_INFO: SubjectPublicKeyInfoSyntax =
     Sequence((ALGORITHM_IDENTIFIER, (BitString, ())));
+
+/// A SubjectPublicKeyInfo as the DER holds it, before any check of the key:
+/// the AlgorithmIdentifier, and the bytes of the BIT STRING.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubjectPublicKeyInfo {
+    /// The key type and its parameters.
+    pub(crate) algorithm: AlgorithmIdentifierValue,
+    /// The key, as the algorithm encodes it.
+    pub(crate) key: Vec<u8>,
+}
+
+/// Read with [`SUBJECT_PUBLIC_KEY_INFO`].
+impl Decodable for SubjectPublicKeyInfo {
+    type Error = Error;
+
+    fn decode(der: &[u8]) -> Result<Self, Error> {
+        match decode(&SUBJECT_PUBLIC_KEY_INFO, der) {
+            Ok((algorithm, (key, ()))) => {
+                Ok(SubjectPublicKeyInfo { algorithm, key })
+            }
+            // The only refinement in the description: a BIT STRING of whole
+            // bytes.
+            Err(DerError::UnexpectedValue) => {
+                Err(Error::invalid("public key: not a whole number of bytes"))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+/// Written with [`SUBJECT_PUBLIC_KEY_INFO`].
+impl Encodable for SubjectPublicKeyInfo {
+    type Bytes = Vec<u8>;
+
+    fn encode(&self) -> Vec<u8> {
+        encode(
+            &SUBJECT_PUBLIC_KEY_INFO,
+            &(self.algorithm.clone(), (self.key.clone(), ())),
+        )
+    }
+}
 
 /// `PrivateKeyInfo` ([RFC 5208] section 5): version, algorithm, and the
 /// private key as an OCTET STRING, whose contents the algorithm determines

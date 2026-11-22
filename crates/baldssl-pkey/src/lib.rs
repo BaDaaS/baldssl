@@ -65,10 +65,14 @@
 //!
 //! # Reading keys
 //!
-//! [`AnyPrivateKey::from_der`] and [`AnyPrivateKey::from_pem`] read PKCS#8
-//! (`PRIVATE KEY`, [RFC 5958]) and SEC 1 (`EC PRIVATE KEY`, [RFC 5915]);
-//! [`PublicKey`] reads SubjectPublicKeyInfo (`PUBLIC KEY`, [RFC 5480], and
-//! [RFC 8410] for Ed25519).
+//! [`AnyPrivateKey`] reads PKCS#8 (`PRIVATE KEY`, [RFC 5958]) and SEC 1 (`EC
+//! PRIVATE KEY`, [RFC 5915]); [`PublicKey`] reads SubjectPublicKeyInfo (`PUBLIC
+//! KEY`, [RFC 5480], and [RFC 8410] for Ed25519). Reading mirrors writing: DER
+//! through [`Decodable`] (the inverse of [`Encodable`]), and PEM by finding the
+//! block (a [`PemBlock`](baldssl_core::pem::PemBlock)) and converting it with
+//! `TryFrom`, which checks the label. A public key is read in two steps: the
+//! DER record of the SubjectPublicKeyInfo, then the checks that make it a key,
+//! so the encoding and the validation are separate.
 //!
 //! ## Validation, and where it differs from OpenSSL
 //!
@@ -182,15 +186,17 @@ impl EcCurve {
     /// off the curve, an $x$ with no point, or `00`.
     pub(crate) fn decode_point_opt(self, bytes: &[u8]) -> Option<Vec<u8>> {
         match self {
-            EcCurve::P256 => decode_point_opt::<P256>(bytes),
-            EcCurve::P384 => decode_point_opt::<P384>(bytes),
-            EcCurve::P521 => decode_point_opt::<P521>(bytes),
+            EcCurve::P256 => point_opt::<P256>(bytes).map(|p| p.encode()),
+            EcCurve::P384 => point_opt::<P384>(bytes).map(|p| p.encode()),
+            EcCurve::P521 => point_opt::<P521>(bytes).map(|p| p.encode()),
         }
     }
 }
 
-/// [`EcCurve::decode_point_opt`] on the curve `C`.
-fn decode_point_opt<C>(bytes: &[u8]) -> Option<Vec<u8>>
+/// A public point of the curve `C` in either SEC 1 form, as
+/// [`EcCurve::decode_point_opt`] reads it, as a point: `None` for the
+/// identity and for whatever is not a point.
+pub(crate) fn point_opt<C>(bytes: &[u8]) -> Option<Affine<C>>
 where
     C: ShortWeierstrass,
 {
@@ -199,7 +205,7 @@ where
         0x02 | 0x03 => Compressed::<C>::decode_opt(bytes)?.0,
         _ => return None,
     };
-    (!point.is_identity().to_bool_vartime()).then(|| point.encode())
+    (!point.is_identity().to_bool_vartime()).then_some(point)
 }
 
 impl Algorithm {

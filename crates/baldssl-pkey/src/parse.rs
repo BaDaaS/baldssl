@@ -17,20 +17,26 @@
 use baldssl_core::{
     Error, Result,
     der::{
-        BitString as BitStringContents, DerError, Integer, Reader,
-        syntax::{ObjectId, ObjectIdentifier, RawTlv, decode, encode},
+        BitString as BitStringContents, Integer, Reader,
+        syntax::{ObjectIdentifier, RawTlv, decode},
         tag,
     },
-    encoding::Encodable,
-    pem::{self, Pem, PemError},
+    encoding::{Decodable, Encodable},
+    pem::{self, Pem, PemBlock, PemError},
+};
+use baldssl_crypto::{
+    algebra::curve::ShortWeierstrass,
+    instances::{P256, P384, P521},
+    models::weierstrass::affine::Affine,
 };
 
 use crate::{
     Algorithm, AnyPrivateKey,
     asn1::{
-        ALGORITHM_IDENTIFIER, ID_EC_PUBLIC_KEY, ID_ED25519,
-        SUBJECT_PUBLIC_KEY_INFO,
+        ALGORITHM_IDENTIFIER, AlgorithmIdentifierValue, ID_EC_PUBLIC_KEY,
+        ID_ED25519, SubjectPublicKeyInfo,
     },
+    point_opt,
 };
 
 /// The PEM labels of private keys, as OpenSSL reads them.
@@ -46,60 +52,47 @@ const OTHER_ALGORITHMS: &[(&str, &str)] = &[
     ("1.3.101.113", "Ed448"),
 ];
 
-/// A public key.
+/// A public key, read from a SubjectPublicKeyInfo: the point for the EC
+/// curves, whatever SEC 1 form it was read in, and the 32-byte encoding of
+/// [RFC 8032] section 5.1.2 for Ed25519 (which OpenSSL does not check
+/// further when it reads a key, so neither does baldssl).
+///
+/// [RFC 8032]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublicKey {
-    algorithm: Algorithm,
-    /// The uncompressed point, or the 32-byte Ed25519 public key.
-    bytes: Vec<u8>,
+pub enum PublicKey {
+    /// A point of P-256 other than the identity.
+    P256(Affine<P256>),
+    /// A point of P-384 other than the identity.
+    P384(Affine<P384>),
+    /// A point of P-521 other than the identity.
+    P521(Affine<P521>),
+    /// An Ed25519 public key.
+    Ed25519([u8; 32]),
 }
 
 impl PublicKey {
     /// The key type.
     #[must_use]
     pub fn algorithm(&self) -> Algorithm {
-        self.algorithm
+        match self {
+            PublicKey::P256(_) => Algorithm::P256,
+            PublicKey::P384(_) => Algorithm::P384,
+            PublicKey::P521(_) => Algorithm::P521,
+            PublicKey::Ed25519(_) => Algorithm::Ed25519,
+        }
     }
 
-    /// The public key: an uncompressed point (`04 || x || y`, whatever
-    /// form it was read in), or the 32-byte Ed25519 encoding.
+    /// The key's own encoding: the point's (SEC 1 uncompressed, `04 || x ||
+    /// y`, big-endian, through its [`Encodable`]), or the 32 bytes of an
+    /// Ed25519 key.
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Reads a DER SubjectPublicKeyInfo.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Der`] for malformed DER or trailing bytes,
-    /// [`Error::Invalid`] for a point that is not on the curve, the identity,
-    /// or an Ed25519 key that is not 32 bytes, and [`Error::Unsupported`] for
-    /// other algorithms and explicit curve parameters.
-    pub fn from_der(der: &[u8]) -> Result<Self> {
-        let ((alg, (key, ())), ()) = match decode(&SUBJECT_PUBLIC_KEY_INFO, der)
-        {
-            Ok(v) => (v, ()),
-            Err(DerError::UnexpectedValue) => {
-                // The only refinement in the description: a BIT STRING of
-                // whole bytes.
-                return Err(Error::invalid(
-                    "public key: not a whole number of bytes",
-                ));
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let algorithm = algorithm(&alg)?;
-        let bytes = match algorithm.curve_opt() {
-            Some(curve) => curve.decode_point_opt(&key).ok_or_else(|| {
-                Error::invalid("public key: not a point of the curve")
-            })?,
-            None if key.len() == 32 => key,
-            None => {
-                return Err(Error::invalid("Ed25519 public key: not 32 bytes"));
-            }
-        };
-        Ok(PublicKey { algorithm, bytes })
+    pub fn public_key_bytes(&self) -> Vec<u8> {
+        match self {
+            PublicKey::P256(p) => p.encode(),
+            PublicKey::P384(p) => p.encode(),
+            PublicKey::P521(p) => p.encode(),
+            PublicKey::Ed25519(key) => key.to_vec(),
+        }
     }
 
     /// Reads the first `PUBLIC KEY` block of a PEM input.
@@ -107,9 +100,65 @@ impl PublicKey {
     /// # Errors
     ///
     /// [`Error::Pem`] when there is no such block, and the errors of
-    /// [`PublicKey::from_der`].
+    /// [`PublicKey::try_from`] a [`PemBlock`].
     pub fn from_pem(input: &[u8]) -> Result<Self> {
-        Self::from_der(&pem::decode_first(input, &["PUBLIC KEY"])?.contents)
+        Self::try_from(&pem::decode_first(input, &[Self::LABEL])?)
+    }
+}
+
+/// The point of `C` that `key` encodes, as [`point_opt`] reads it.
+fn point<C>(key: &[u8]) -> Result<Affine<C>>
+where
+    C: ShortWeierstrass,
+{
+    point_opt::<C>(key)
+        .ok_or_else(|| Error::invalid("public key: not a point of the curve"))
+}
+
+/// The checks that make a SubjectPublicKeyInfo a public key.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for a point that is not on the curve, the identity, or
+/// an Ed25519 key that is not 32 bytes, and [`Error::Unsupported`] for other
+/// algorithms and explicit curve parameters.
+impl TryFrom<SubjectPublicKeyInfo> for PublicKey {
+    type Error = Error;
+
+    fn try_from(spki: SubjectPublicKeyInfo) -> Result<Self> {
+        Ok(match algorithm(&spki.algorithm)? {
+            Algorithm::P256 => PublicKey::P256(point(&spki.key)?),
+            Algorithm::P384 => PublicKey::P384(point(&spki.key)?),
+            Algorithm::P521 => PublicKey::P521(point(&spki.key)?),
+            Algorithm::Ed25519 => {
+                PublicKey::Ed25519(spki.key.try_into().map_err(|_| {
+                    Error::invalid("Ed25519 public key: not 32 bytes")
+                })?)
+            }
+        })
+    }
+}
+
+/// The SubjectPublicKeyInfo OpenSSL writes: the curve named, the point
+/// uncompressed.
+impl From<&PublicKey> for SubjectPublicKeyInfo {
+    fn from(key: &PublicKey) -> Self {
+        SubjectPublicKeyInfo {
+            algorithm: algorithm_value(key.algorithm()),
+            key: key.public_key_bytes(),
+        }
+    }
+}
+
+/// A DER SubjectPublicKeyInfo ([RFC 5280] section 4.1): the record, then
+/// its checks ([`PublicKey::try_from`]).
+///
+/// [RFC 5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+impl Decodable for PublicKey {
+    type Error = Error;
+
+    fn decode(der: &[u8]) -> Result<Self> {
+        SubjectPublicKeyInfo::decode(der)?.try_into()
     }
 }
 
@@ -121,10 +170,7 @@ impl Encodable for PublicKey {
     type Bytes = Vec<u8>;
 
     fn encode(&self) -> Vec<u8> {
-        encode(
-            &SUBJECT_PUBLIC_KEY_INFO,
-            &(algorithm_value(self.algorithm), (self.bytes.clone(), ())),
-        )
+        SubjectPublicKeyInfo::from(self).encode()
     }
 }
 
@@ -136,21 +182,61 @@ impl Pem for PublicKey {
     const LABEL: &'static str = "PUBLIC KEY";
 }
 
+/// A `PUBLIC KEY` PEM block: its contents, decoded.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for a block with another label, and the errors of
+/// [`PublicKey::decode`].
+impl TryFrom<&PemBlock> for PublicKey {
+    type Error = Error;
+
+    fn try_from(block: &PemBlock) -> Result<Self> {
+        if block.label != Self::LABEL {
+            return Err(Error::invalid(format!(
+                "PEM: {} where PUBLIC KEY was expected",
+                block.label
+            )));
+        }
+        Self::decode(&block.contents)
+    }
+}
+
 impl AnyPrivateKey {
-    /// Reads a DER private key: PKCS#8 (`PrivateKeyInfo` or
-    /// `OneAsymmetricKey`) or SEC 1 (`ECPrivateKey`), told apart by their
-    /// structure as OpenSSL does.
+    /// Reads the first private key block of a PEM input: `PRIVATE KEY`
+    /// (PKCS#8) or `EC PRIVATE KEY` (SEC 1).
     ///
     /// # Errors
     ///
-    /// [`Error::Der`] for malformed DER or trailing bytes,
-    /// [`Error::Invalid`] for an invalid key (see [Reading
-    /// keys](crate#reading-keys)), and [`Error::Unsupported`] for other
-    /// algorithms and explicit curve parameters.
-    pub fn from_der(der: &[u8]) -> Result<Self> {
-        let mut outer = Reader::new(der);
-        let mut seq = outer.sequence()?;
-        outer.finish()?;
+    /// [`Error::Pem`] when there is no such block,
+    /// [`Error::Unsupported`] for an encrypted key, and the errors of
+    /// [`AnyPrivateKey::try_from`] a [`PemBlock`].
+    pub fn from_pem(input: &[u8]) -> Result<Self> {
+        let block =
+            pem::decode_first(input, PRIVATE_LABELS).map_err(|e| match e {
+                PemError::HeadersUnsupported => Error::unsupported(
+                    "encrypted PEM keys (Proc-Type and DEK-Info headers)",
+                ),
+                other => Error::Pem(other),
+            })?;
+        Self::try_from(&block)
+    }
+}
+
+/// A DER private key: PKCS#8 (`PrivateKeyInfo` or `OneAsymmetricKey`) or
+/// SEC 1 (`ECPrivateKey`), told apart by their structure as OpenSSL does.
+///
+/// # Errors
+///
+/// [`Error::Der`] for malformed DER or trailing bytes, [`Error::Invalid`]
+/// for an invalid key (see [Reading keys](crate#reading-keys)), and
+/// [`Error::Unsupported`] for other algorithms and explicit curve
+/// parameters.
+impl Decodable for AnyPrivateKey {
+    type Error = Error;
+
+    fn decode(der: &[u8]) -> Result<Self> {
+        let mut seq = outer_sequence(der)?;
         let version = small_integer(&mut seq, "version")?;
         // PKCS#8 has an AlgorithmIdentifier (a SEQUENCE) next; SEC 1 has
         // the private key (an OCTET STRING), and only version 1.
@@ -160,43 +246,46 @@ impl AnyPrivateKey {
             sec1(version, seq, None)
         }
     }
+}
 
-    /// Reads the first private key block of a PEM input: `PRIVATE KEY`
-    /// (PKCS#8) or `EC PRIVATE KEY` (SEC 1).
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Pem`] when there is no such block,
-    /// [`Error::Unsupported`] for an encrypted key, and the errors of
-    /// [`AnyPrivateKey::from_der`].
-    pub fn from_pem(input: &[u8]) -> Result<Self> {
-        let block =
-            pem::decode_first(input, PRIVATE_LABELS).map_err(|e| match e {
-                PemError::HeadersUnsupported => Error::unsupported(
-                    "encrypted PEM keys (Proc-Type and DEK-Info headers)",
-                ),
-                other => Error::Pem(other),
-            })?;
+/// A private key PEM block, read as its label says: `PRIVATE KEY` as
+/// PKCS#8, `EC PRIVATE KEY` as SEC 1.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] for `ENCRYPTED PRIVATE KEY`, [`Error::Invalid`]
+/// for any other label, and the errors of [`AnyPrivateKey::decode`].
+impl TryFrom<&PemBlock> for AnyPrivateKey {
+    type Error = Error;
+
+    fn try_from(block: &PemBlock) -> Result<Self> {
         match block.label.as_str() {
-            "ENCRYPTED PRIVATE KEY" => Err(Error::unsupported(
-                "encrypted private keys (ENCRYPTED PRIVATE KEY)",
-            )),
-            "EC PRIVATE KEY" => {
-                let mut outer = Reader::new(&block.contents);
-                let mut seq = outer.sequence()?;
-                outer.finish()?;
-                let version = small_integer(&mut seq, "version")?;
-                sec1(version, seq, None)
-            }
-            _ => {
-                let mut outer = Reader::new(&block.contents);
-                let mut seq = outer.sequence()?;
-                outer.finish()?;
+            "PRIVATE KEY" => {
+                let mut seq = outer_sequence(&block.contents)?;
                 let version = small_integer(&mut seq, "version")?;
                 pkcs8(version, seq)
             }
+            "EC PRIVATE KEY" => {
+                let mut seq = outer_sequence(&block.contents)?;
+                let version = small_integer(&mut seq, "version")?;
+                sec1(version, seq, None)
+            }
+            "ENCRYPTED PRIVATE KEY" => Err(Error::unsupported(
+                "encrypted private keys (ENCRYPTED PRIVATE KEY)",
+            )),
+            other => Err(Error::invalid(format!(
+                "PEM: {other} where a private key was expected"
+            ))),
         }
     }
+}
+
+/// The one SEQUENCE `der` holds, with nothing after it.
+fn outer_sequence(der: &[u8]) -> Result<Reader<'_>> {
+    let mut outer = Reader::new(der);
+    let seq = outer.sequence()?;
+    outer.finish()?;
+    Ok(seq)
 }
 
 /// A small non-negative INTEGER.
@@ -246,7 +335,7 @@ fn ec_parameters(params: &RawTlv) -> Result<Algorithm> {
 /// [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2.1.1
 /// [RFC 8410]: https://www.rfc-editor.org/rfc/rfc8410#section-3
 fn algorithm(
-    (oid, (params, ())): &(ObjectId, (Option<RawTlv>, ())),
+    (oid, (params, ())): &AlgorithmIdentifierValue,
 ) -> Result<Algorithm> {
     if *oid == ID_EC_PUBLIC_KEY {
         return match params {
@@ -278,7 +367,7 @@ fn algorithm_identifier(r: &mut Reader<'_>) -> Result<Algorithm> {
 }
 
 /// The AlgorithmIdentifier of a key type, as written by OpenSSL.
-fn algorithm_value(algorithm: Algorithm) -> (ObjectId, (Option<RawTlv>, ())) {
+fn algorithm_value(algorithm: Algorithm) -> AlgorithmIdentifierValue {
     match algorithm.curve_oid_opt() {
         Some(curve) => (
             ID_EC_PUBLIC_KEY,
