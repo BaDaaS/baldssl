@@ -29,8 +29,13 @@ dependencies = [
 name = "baldssl-crypto"
 version = "0.1.0"
 dependencies = [
+ "baldssl-test-utils",
  "proptest",
 ]
+
+[[package]]
+name = "baldssl-test-utils"
+version = "0.1.0"
 
 [[package]]
 name = "baldssl-x509"

@@ -98,15 +98,10 @@ impl Algorithm {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use baldssl_test_utils::hex;
     use proptest::prelude::*;
 
-    fn hex(s: &str) -> Vec<u8> {
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-            .collect()
-    }
+    use super::*;
 
     /// Known answers from the [FIPS 180-4 example documents][examples] (NIST CSRC,
     /// "Examples with Intermediate Values"): "abc", the empty string, the

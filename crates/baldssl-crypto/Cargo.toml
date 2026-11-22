@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dev-dependencies]
+baldssl-test-utils.workspace = true
 proptest.workspace = true
 
 [lints]
