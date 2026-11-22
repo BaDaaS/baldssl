@@ -25,6 +25,9 @@ practices" says what the project does; this file says how to work in it.
 - Constant-time code takes `Choice`, never `bool`, and never branches or indexes
   on secret data. Name the property: `_ct` for constant time, `_vartime` for
   variable time.
+- A function or method that can fail returns a `Result` with the reason under
+  its plain name (`decode`, `from_secret`); one that returns an `Option` instead
+  carries the `_opt` suffix (`decode_opt`, `from_dotted_opt`).
 - Export only what a caller needs; everything else is `pub(crate)` or private.
 - No `unwrap`, `expect`, `panic!` or slice indexing in library code; return an
   error.
@@ -39,6 +42,9 @@ practices" says what the project does; this file says how to work in it.
   (`make check-urls`).
 - Every encoding says its byte order (big-endian or little-endian) and its
   length.
+- Say what every acronym stands for where a document first uses it (PEM,
+  Privacy-Enhanced Mail; DER, Distinguished Encoding Rules), and once per crate
+  in its top-level documentation, with a link to the defining standard.
 - ASCII only.
 
 ## Tests
