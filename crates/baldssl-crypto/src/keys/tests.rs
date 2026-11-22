@@ -39,7 +39,8 @@ fn scripted(
 #[test]
 fn zero_is_not_a_secret() {
     assert!(
-        EcKeyPair::<P256>::from_secret(<P256 as Curve>::Scalar::ZERO).is_none()
+        EcKeyPair::<P256>::from_secret_opt(<P256 as Curve>::Scalar::ZERO)
+            .is_none()
     );
 }
 
@@ -49,7 +50,7 @@ where
     C: ShortWeierstrass,
 {
     let d = C::Scalar::from_u64(k);
-    let pair = EcKeyPair::<C>::from_secret(d).unwrap();
+    let pair = EcKeyPair::<C>::from_secret_opt(d).unwrap();
     assert_eq!(pair.secret(), &d);
     let q = C::scalar_mul(&Projective::<C>::generator(), &d).to_affine();
     assert_eq!(pair.public(), &q);
@@ -136,7 +137,7 @@ fn ed25519_pairs() {
 #[test]
 fn no_secret_in_debug() {
     let d = <P256 as Curve>::Scalar::from_u64(0x1234_5678);
-    let pair = EcKeyPair::<P256>::from_secret(d).unwrap();
+    let pair = EcKeyPair::<P256>::from_secret_opt(d).unwrap();
     let shown = format!("{pair:?}");
     assert!(shown.contains("prime256v1"), "{shown}");
     assert!(!shown.to_lowercase().contains("12345678"), "{shown}");

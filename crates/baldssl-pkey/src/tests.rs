@@ -7,13 +7,18 @@ use baldssl_core::{
 };
 use baldssl_test_utils::{fixture, hex};
 
-use super::{Algorithm, PrivateKey};
+use baldssl_crypto::{
+    instances::{P256, P384, P521},
+    signature::eddsa::Ed25519,
+};
+
+use super::{Algorithm, AnyPrivateKey, KeyAlgorithm, PrivateKey};
 use crate::asn1::{
     CURVE_PRIVATE_KEY, EC_PRIVATE_KEY, ID_EC_PUBLIC_KEY, ID_ED25519,
     PRIME256V1, PRIVATE_KEY_INFO, SECP384R1, SECP521R1,
 };
 
-fn algorithm(name: &str) -> Option<Algorithm> {
+fn algorithm_opt(name: &str) -> Option<Algorithm> {
     match name {
         "P-256" => Some(Algorithm::P256),
         "P-384" => Some(Algorithm::P384),
@@ -44,9 +49,13 @@ fn pkcs8_matches_openssl() {
         else {
             continue;
         };
-        let Some(alg) = algorithm(name) else { continue };
-        let key = PrivateKey::from_secret(alg, &secret(alg, private)).unwrap();
-        assert_eq!(key.public_key(), hex(public), "{name} public key");
+        let Some(alg) = algorithm_opt(name) else {
+            continue;
+        };
+        let key =
+            AnyPrivateKey::from_secret(alg, &secret(alg, private)).unwrap();
+        assert_eq!(key.algorithm(), alg);
+        assert_eq!(key.public_key_bytes(), hex(public), "{name} public key");
         assert_eq!(key.encode(), hex(der), "{name} PKCS#8");
         records_round_trip(&key.encode());
         seen += 1;
@@ -54,25 +63,53 @@ fn pkcs8_matches_openssl() {
     assert_eq!(seen, 16);
 }
 
+/// For one algorithm, as a type: two generated keys differ, re-deriving
+/// from the secret gives the same key, the encodings read back, and the
+/// Debug output cannot contain the secret. Keys of another algorithm are
+/// another type, so they cannot be compared here by mistake.
+fn check_generated<A>()
+where
+    A: KeyAlgorithm,
+{
+    let a = PrivateKey::<A>::generate().unwrap();
+    let b = PrivateKey::<A>::generate().unwrap();
+    assert_ne!(a.public_key(), b.public_key(), "{:?}", A::ALGORITHM);
+    let again = PrivateKey::<A>::from_secret(&a.secret_bytes()).unwrap();
+    assert_eq!(again.public_key(), a.public_key());
+    assert_eq!(again.encode(), a.encode());
+    records_round_trip(&a.encode());
+    assert!(a.to_pem().starts_with("-----BEGIN PRIVATE KEY-----\n"));
+    assert_eq!(
+        format!("{a:?}"),
+        format!("PrivateKey {{ algorithm: {:?}, .. }}", A::ALGORITHM)
+    );
+}
+
 #[test]
 fn generated_keys_are_valid_and_distinct() {
+    check_generated::<P256>();
+    check_generated::<P384>();
+    check_generated::<P521>();
+    check_generated::<Ed25519>();
+}
+
+/// The run-time enum dispatches to the typed key of the algorithm named.
+#[test]
+fn any_private_key_dispatches() {
     for alg in [
         Algorithm::P256,
         Algorithm::P384,
         Algorithm::P521,
         Algorithm::Ed25519,
     ] {
-        let a = PrivateKey::generate(alg).unwrap();
-        let b = PrivateKey::generate(alg).unwrap();
-        assert_ne!(a.public_key(), b.public_key(), "{alg:?}");
-        // Re-deriving from the secret gives the same key.
-        let again = PrivateKey::from_secret(alg, &a.secret_bytes()).unwrap();
-        assert_eq!(again.encode(), a.encode());
-        records_round_trip(&a.encode());
-        assert!(a.to_pem().starts_with("-----BEGIN PRIVATE KEY-----\n"));
-        // The Debug output is fixed: it cannot contain the secret.
+        let key = AnyPrivateKey::generate(alg).unwrap();
+        assert_eq!(key.algorithm(), alg);
+        let again =
+            AnyPrivateKey::from_secret(alg, &key.secret_bytes()).unwrap();
+        assert_eq!(again.encode(), key.encode());
+        assert_eq!(again.public_key_bytes(), key.public_key_bytes());
         assert_eq!(
-            format!("{a:?}"),
+            format!("{key:?}"),
             format!("PrivateKey {{ algorithm: {alg:?}, .. }}")
         );
     }
@@ -80,28 +117,22 @@ fn generated_keys_are_valid_and_distinct() {
 
 #[test]
 fn invalid_secrets() {
+    assert!(PrivateKey::<P256>::from_secret(&[0u8; 32]).is_err(), "zero");
     assert!(
-        PrivateKey::from_secret(Algorithm::P256, &[0u8; 32]).is_err(),
-        "zero"
-    );
-    assert!(
-        PrivateKey::from_secret(Algorithm::P256, &[0xffu8; 32]).is_err(),
+        PrivateKey::<P256>::from_secret(&[0xffu8; 32]).is_err(),
         ">= n"
     );
     assert!(
-        PrivateKey::from_secret(Algorithm::P256, &[1u8; 31]).is_err(),
+        PrivateKey::<P256>::from_secret(&[1u8; 31]).is_err(),
         "length"
     );
     assert!(
-        PrivateKey::from_secret(Algorithm::Ed25519, &[1u8; 31]).is_err(),
+        PrivateKey::<Ed25519>::from_secret(&[1u8; 31]).is_err(),
         "length"
     );
     let mut one = vec![0u8; 66];
     one[65] = 1;
-    assert!(
-        PrivateKey::from_secret(Algorithm::P521, &one).is_ok(),
-        "d = 1"
-    );
+    assert!(PrivateKey::<P521>::from_secret(&one).is_ok(), "d = 1");
 }
 
 /// The PKCS#8 written reads back, with the descriptions, to records that
@@ -141,6 +172,6 @@ fn object_identifiers() {
         (SECP384R1, "1.3.132.0.34"),
         (SECP521R1, "1.3.132.0.35"),
     ] {
-        assert_eq!(Some(id), ObjectId::from_dotted(dotted), "{dotted}");
+        assert_eq!(Some(id), ObjectId::from_dotted_opt(dotted), "{dotted}");
     }
 }

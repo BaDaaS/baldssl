@@ -57,7 +57,7 @@ where
 {
     /// The pair of the secret scalar `d`, or `None` when `d` is zero.
     #[must_use]
-    pub fn from_secret(d: C::Scalar) -> Option<Self> {
+    pub fn from_secret_opt(d: C::Scalar) -> Option<Self> {
         (!d.is_zero().to_bool_vartime()).then(|| Self::of_nonzero(d))
     }
 
