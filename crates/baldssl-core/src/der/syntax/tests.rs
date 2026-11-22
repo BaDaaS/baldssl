@@ -2,101 +2,27 @@
 //! isomorphism, prefix-freeness of tagged encodings), golden encodings, and
 //! the rejections X.690 requires.
 
-use core::fmt::{Debug, Write as _};
+use core::fmt::Debug;
 
+use baldssl_test_utils::strategies::{
+    bytes, bytes_not_starting_with, dotted_oid,
+};
 use proptest::prelude::*;
 
 use super::{
     Any, BitString, Boolean, Choice, Constant, Either, Explicit, Implicit, Map,
     Natural, Null, ObjectId, ObjectIdentifier, OctetString, OctetStringOf,
     Optional, OptionalLast, RawTlv, Sequence, SequenceOf, SetOf, Small, Syntax,
-    Tagged, Unsigned, WithDefault, decode, encode,
+    Unsigned, WithDefault, decode, encode,
+    laws::{canonical, laws, round_trip},
 };
 use crate::der::DerError;
 
-/// The partial-isomorphism law from `write`'s side: reading
-/// `write(v) ++ suffix` gives back `v` and `suffix`. For a tagged
-/// description any suffix will do (its encodings are a prefix code); for an
-/// optional field, the suffix must not start with the field's tag, the rule
-/// ASN.1 sets on whatever follows an OPTIONAL or DEFAULT field.
-fn round_trip<S>(syntax: &S, value: &S::Value, suffix: &[u8])
-where
-    S: Syntax,
-    S::Value: PartialEq + Debug,
-{
-    let mut bytes = encode(syntax, value);
-    bytes.extend_from_slice(suffix);
-    let (back, rest) = syntax.read(&bytes).expect("reads its own encoding");
-    assert_eq!(&back, value, "round trip");
-    assert_eq!(rest, suffix, "consumes exactly the encoding");
-}
-
-/// The law from `read`'s side, canonicity: whatever `read` accepts is
-/// `write(v) ++ rest`, byte for byte.
-fn canonical<S>(syntax: &S, bytes: &[u8])
-where
-    S: Syntax,
-{
-    if let Ok((value, rest)) = syntax.read(bytes) {
-        let mut again = encode(syntax, &value);
-        again.extend_from_slice(rest);
-        assert_eq!(again, bytes, "a non-canonical encoding was accepted");
-    }
-}
-
-/// Prefix-freeness: no proper prefix of an encoding is accepted, so
-/// encodings factor uniquely. Only for tagged descriptions: an absent
-/// OPTIONAL encodes to nothing, a prefix of everything.
-fn prefix_free<S>(syntax: &S, value: &S::Value)
-where
-    S: Tagged,
-{
-    let bytes = encode(syntax, value);
-    assert_eq!(bytes.first(), Some(&syntax.tag()), "starts with its tag");
-    for k in 0..bytes.len() {
-        assert!(syntax.read(&bytes[..k]).is_err(), "prefix of length {k}");
-    }
-}
-
-/// Every law, plus canonicity on mutations of the encoding (one byte
-/// changed, one byte dropped), which reach accepted inputs far more often
-/// than random strings.
-fn laws<S>(syntax: &S, value: &S::Value, at: usize, xor: u8, suffix: &[u8])
-where
-    S: Tagged,
-    S::Value: PartialEq + Debug,
-{
-    round_trip(syntax, value, suffix);
-    prefix_free(syntax, value);
-    let bytes = encode(syntax, value);
-    canonical(syntax, &bytes);
-    let i = at % bytes.len();
-    let mut changed = bytes.clone();
-    changed[i] ^= xor;
-    canonical(syntax, &changed);
-    let mut dropped = bytes.clone();
-    dropped.remove(i);
-    canonical(syntax, &dropped);
-}
-
-fn bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
-    prop::collection::vec(any::<u8>(), 0..max)
-}
-
-/// Object identifiers: two first arcs as X.690 8.19.4 allows, then more.
+/// Object identifiers, from the shared dotted generator.
 fn oid() -> impl Strategy<Value = ObjectId> {
-    (
-        0u64..=2,
-        0u64..40,
-        prop::collection::vec(any::<u32>(), 0..6),
-    )
-        .prop_map(|(a, b, rest)| {
-            let mut dotted = format!("{a}.{b}");
-            for arc in rest {
-                write!(dotted, ".{arc}").unwrap();
-            }
-            ObjectId::from_dotted_opt(&dotted).expect("a valid identifier")
-        })
+    dotted_oid().prop_map(|dotted| {
+        ObjectId::from_dotted_opt(&dotted).expect("a valid identifier")
+    })
 }
 
 /// `SEQUENCE { INTEGER, OCTET STRING, BOOLEAN OPTIONAL, [0] EXPLICIT
@@ -261,7 +187,7 @@ proptest! {
         flag in prop::option::of(any::<bool>()),
         b in any::<bool>(),
         raw in prop::option::of(bytes(20)),
-        suffix in bytes(8).prop_filter("not BOOLEAN's tag", |s| s.first() != Some(&0x01)),
+        suffix in bytes_not_starting_with(0x01, 8),
     ) {
         round_trip(&Optional(Boolean), &flag, &suffix);
         round_trip(&WithDefault::new(Boolean, false), &b, &suffix);

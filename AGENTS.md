@@ -31,6 +31,8 @@ practices" says what the project does; this file says how to work in it.
 - Export only what a caller needs; everything else is `pub(crate)` or private.
 - No `unwrap`, `expect`, `panic!` or slice indexing in library code; return an
   error.
+- An `allow` silences one lint and says why: one attribute per lint, each with
+  its own `reason = "..."`, specific to that lint at that place.
 
 ## Documentation
 

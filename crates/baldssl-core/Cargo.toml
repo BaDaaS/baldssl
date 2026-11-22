@@ -7,7 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The laws of the DER syntax descriptions as checks, for other crates'
+# tests (`der::syntax::laws`).
+laws = []
+
 [dev-dependencies]
+baldssl-test-utils = { workspace = true, features = ["proptest"] }
 proptest.workspace = true
 
 [lints]
