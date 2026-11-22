@@ -81,9 +81,9 @@
     {
       "id": "key-parsing",
       "name": "Reading keys",
-      "purpose": "PKCS#8, SEC 1 and SubjectPublicKeyInfo in PEM and DER, for every command that takes a key.",
-      "status": "planned",
-      "link": ""
+      "purpose": "PKCS#8, SEC 1 and SubjectPublicKeyInfo in PEM and DER, compressed points included, for every command that takes a key.",
+      "status": "implemented",
+      "link": "https://github.com/BaDaaS/baldssl/pull/49"
     },
     {
       "id": "rsa-verify",
