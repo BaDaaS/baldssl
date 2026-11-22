@@ -64,6 +64,16 @@ practices" says what the project does; this file says how to work in it.
   OpenSSL (`OPENSSL=/path/to/openssl`): macOS's `/usr/bin/openssl` is LibreSSL,
   which differs.
 
+## Bugs in OpenSSL
+
+- When OpenSSL does something its documentation, its own code's evident intent
+  or the standard it implements says it should not (a bug, not a choice), warn
+  the maintainers at once, and open an issue for it: what OpenSSL does, a
+  reproducer with the releases it was run against, the source that causes it,
+  and what baldssl does about it.
+- Until the maintainers decide otherwise, baldssl reproduces the bug, as the
+  byte-for-byte rule asks, and its code says where and why.
+
 ## Before pushing
 
 - `make ci` and `make check-urls` pass.
