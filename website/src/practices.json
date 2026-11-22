@@ -47,8 +47,8 @@
     },
     {
       "title": "Conventions checked, not remembered",
-      "what": "Trait bounds are written in where clauses, imports sit at the top of their module and never inside a function or block, and the code mentions no issue or pull request: it describes itself.",
-      "check": "make check-where-clauses and make check-use-at-top, in CI."
+      "what": "Trait bounds are written in where clauses, imports sit at the top of their module and never inside a function or block, a function returning an Option carries the `_opt` suffix (one that can fail returns a Result with the reason), and the code mentions no issue or pull request: it describes itself.",
+      "check": "make check-where-clauses, make check-use-at-top and make check-opt-suffix, in CI."
     },
     {
       "title": "Every citation linked",
