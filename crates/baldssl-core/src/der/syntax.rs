@@ -41,7 +41,7 @@
 //! | any one TLV | [`Any`] | [`RawTlv`] |
 //! | SEQUENCE | [`Sequence`] over [`Fields`] | a tuple list |
 //! | SEQUENCE OF, SET OF | [`SequenceOf`], [`SetOf`] | `Vec` |
-//! | `[n] EXPLICIT`, `[n] IMPLICIT` | [`Explicit`], [`Implicit`] | the inner value |
+//! | `[n] EXPLICIT`, `[n] IMPLICIT` | [`Explicit`], [`Implicit`] (`n` in the type) | the inner value |
 //! | OPTIONAL, DEFAULT | [`Optional`], [`WithDefault`] | `Option`, the inner value |
 //! | ANY OPTIONAL, last | [`OptionalLast`] | `Option` |
 //! | CHOICE of two | [`Choice`] | [`Either`] |
@@ -515,6 +515,16 @@ impl RawTlv {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// The encoding of `value` by a tagged description, kept raw. Total:
+    /// the encodings of a tagged description are single TLVs, by its law.
+    #[must_use]
+    pub fn encode<S>(syntax: &S, value: &S::Value) -> Self
+    where
+        S: Tagged,
+    {
+        RawTlv(encode(syntax, value))
+    }
 }
 
 /// Any one TLV, for parts the description leaves uninterpreted. Not
@@ -749,94 +759,88 @@ where
 
 // --- Tags -------------------------------------------------------------------
 
-/// `[n] EXPLICIT`: a context-specific constructed TLV around one encoding.
-/// `n` is below 31 (one identifier octet).
+/// `[N] EXPLICIT`: a context-specific constructed TLV around one encoding.
+/// The tag number is part of the type, and `N` below 31 (one identifier
+/// octet) is checked at compile time: `Explicit::<31, _>` does not build.
 #[derive(Debug, Clone, Copy)]
-pub struct Explicit<P>
+pub struct Explicit<const N: u8, P>(pub P)
+where
+    P: Syntax;
+
+impl<const N: u8, P> Explicit<N, P>
 where
     P: Syntax,
 {
-    octet: u8,
-    inner: P,
+    /// The identifier octet, `[N]` context-specific constructed.
+    const OCTET: u8 = {
+        assert!(N < 31, "a tag number below 31");
+        tag::context_constructed(N)
+    };
 }
 
-impl<P> Explicit<P>
-where
-    P: Syntax,
-{
-    /// `[n] EXPLICIT inner`, or `None` when `n` is not below 31.
-    #[must_use]
-    pub fn new(n: u8, inner: P) -> Option<Self> {
-        (n < 31).then(|| Explicit {
-            octet: tag::context_constructed(n),
-            inner,
-        })
-    }
-}
-
-impl<P> Syntax for Explicit<P>
+impl<const N: u8, P> Syntax for Explicit<N, P>
 where
     P: Syntax,
 {
     type Value = P::Value;
 
     fn write(&self, value: &P::Value, out: &mut Vec<u8>) {
-        put(out, self.octet, &encode(&self.inner, value));
+        put(out, Self::OCTET, &encode(&self.0, value));
     }
 
     fn read<'a>(
         &self,
         input: &'a [u8],
     ) -> Result<(P::Value, &'a [u8]), DerError> {
-        let (contents, rest) = expect(input, self.octet)?;
-        Ok((decode(&self.inner, contents)?, rest))
+        let (contents, rest) = expect(input, Self::OCTET)?;
+        Ok((decode(&self.0, contents)?, rest))
     }
 }
 
-impl<P> Tagged for Explicit<P>
+impl<const N: u8, P> Tagged for Explicit<N, P>
 where
     P: Syntax,
 {
     fn tag(&self) -> u8 {
-        self.octet
+        Self::OCTET
     }
 }
 
-/// `[n] IMPLICIT`: the inner encoding with its identifier octet replaced by
-/// the context-specific one, keeping the primitive or constructed bit.
+/// `[N] IMPLICIT`: the inner encoding with its identifier octet replaced by
+/// the context-specific one, keeping the primitive or constructed bit. `N`
+/// below 31 is checked at compile time.
 #[derive(Debug, Clone, Copy)]
-pub struct Implicit<P>
+pub struct Implicit<const N: u8, P>(pub P)
 where
-    P: Tagged,
-{
-    octet: u8,
-    inner: P,
-}
+    P: Tagged;
 
-impl<P> Implicit<P>
+impl<const N: u8, P> Implicit<N, P>
 where
     P: Tagged,
 {
-    /// `[n] IMPLICIT inner`, or `None` when `n` is not below 31.
-    #[must_use]
-    pub fn new(n: u8, inner: P) -> Option<Self> {
-        (n < 31).then(|| Implicit {
-            octet: tag::context(n) | (inner.tag() & 0x20),
-            inner,
-        })
+    /// The identifier octet `[N]` context-specific, without the constructed
+    /// bit.
+    const NUMBER: u8 = {
+        assert!(N < 31, "a tag number below 31");
+        tag::context(N)
+    };
+
+    /// The identifier octet: `[N]`, constructed when the inner encoding is.
+    fn octet(&self) -> u8 {
+        Self::NUMBER | (self.0.tag() & 0x20)
     }
 }
 
-impl<P> Syntax for Implicit<P>
+impl<const N: u8, P> Syntax for Implicit<N, P>
 where
     P: Tagged,
 {
     type Value = P::Value;
 
     fn write(&self, value: &P::Value, out: &mut Vec<u8>) {
-        let mut encoding = encode(&self.inner, value);
+        let mut encoding = encode(&self.0, value);
         if let Some(first) = encoding.first_mut() {
-            *first = self.octet;
+            *first = self.octet();
         }
         out.extend(encoding);
     }
@@ -846,28 +850,28 @@ where
         input: &'a [u8],
     ) -> Result<(P::Value, &'a [u8]), DerError> {
         let (tlv, used) = parse_tlv(input)?;
-        if tlv.octet() != self.octet {
+        if tlv.octet() != self.octet() {
             return Err(DerError::UnexpectedTag {
-                expected: self.octet,
+                expected: self.octet(),
                 found: tlv.octet(),
             });
         }
         let mut retagged = tlv.encoded.to_vec();
         if let Some(first) = retagged.first_mut() {
-            *first = self.inner.tag();
+            *first = self.0.tag();
         }
-        let value = decode(&self.inner, &retagged)?;
+        let value = decode(&self.0, &retagged)?;
         let rest = input.get(used..).ok_or(DerError::UnexpectedEnd)?;
         Ok((value, rest))
     }
 }
 
-impl<P> Tagged for Implicit<P>
+impl<const N: u8, P> Tagged for Implicit<N, P>
 where
     P: Tagged,
 {
     fn tag(&self) -> u8 {
-        self.octet
+        self.octet()
     }
 }
 

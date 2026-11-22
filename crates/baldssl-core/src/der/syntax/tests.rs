@@ -107,7 +107,7 @@ type Record = Sequence<(
     Small,
     (
         OctetString,
-        (Optional<Boolean>, (WithDefault<Explicit<Small>>, ())),
+        (Optional<Boolean>, (WithDefault<Explicit<0, Small>>, ())),
     ),
 )>;
 
@@ -118,7 +118,7 @@ fn record() -> Record {
             OctetString,
             (
                 Optional(Boolean),
-                (WithDefault::new(Explicit::new(0, Small).unwrap(), 0), ()),
+                (WithDefault::new(Explicit::<0, _>(Small), 0), ()),
             ),
         ),
     ))
@@ -235,9 +235,9 @@ proptest! {
 
     #[test]
     fn tags(k in any::<u64>(), s in bytes(100), at in any::<usize>(), xor in 1u8..) {
-        laws(&Explicit::new(3, Small).unwrap(), &k, at, xor);
-        laws(&Implicit::new(1, OctetString).unwrap(), &s, at, xor);
-        laws(&Implicit::new(2, Sequence((Small, ()))).unwrap(), &(k, ()), at, xor);
+        laws(&Explicit::<3, _>(Small), &k, at, xor);
+        laws(&Implicit::<1, _>(OctetString), &s, at, xor);
+        laws(&Implicit::<2, _>(Sequence((Small, ()))), &(k, ()), at, xor);
     }
 
     #[test]
@@ -267,8 +267,8 @@ proptest! {
         canonical(&record(), &data);
         canonical(&SequenceOf(Small), &data);
         canonical(&SetOf(OctetString), &data);
-        canonical(&Explicit::new(0, Small).unwrap(), &data);
-        canonical(&Implicit::new(0, OctetString).unwrap(), &data);
+        canonical(&Explicit::<0, _>(Small), &data);
+        canonical(&Implicit::<0, _>(OctetString), &data);
         canonical(&Optional(Boolean), &data);
         canonical(&WithDefault::new(Boolean, false), &data);
         canonical(&Choice::new(Small, OctetString).unwrap(), &data);
@@ -299,19 +299,16 @@ fn golden() {
     assert_eq!(rsa.to_dotted().unwrap(), "1.2.840.113549");
     // The X.509 version field, v3: [0] EXPLICIT INTEGER 2.
     assert_eq!(
-        encode(&Explicit::new(0, Small).unwrap(), &2),
+        encode(&Explicit::<0, _>(Small), &2),
         [0xa0, 0x03, 0x02, 0x01, 0x02]
     );
     // [0] IMPLICIT OCTET STRING keeps the primitive form, [1] IMPLICIT
     // SEQUENCE the constructed one.
     assert_eq!(
-        encode(&Implicit::new(0, OctetString).unwrap(), &b"hi".to_vec()),
+        encode(&Implicit::<0, _>(OctetString), &b"hi".to_vec()),
         [0x80, 0x02, 0x68, 0x69]
     );
-    assert_eq!(
-        encode(&Implicit::new(1, Sequence(())).unwrap(), &()),
-        [0xa1, 0x00]
-    );
+    assert_eq!(encode(&Implicit::<1, _>(Sequence(())), &()), [0xa1, 0x00]);
     // The example of the DER module documentation.
     let pair = Sequence((Small, (OctetString, ())));
     assert_eq!(
@@ -409,6 +406,4 @@ fn rejections() {
         Choice::new(Small, Unsigned).is_none(),
         "two INTEGER alternatives"
     );
-    assert!(Explicit::new(31, Small).is_none());
-    assert!(Implicit::new(31, Small).is_none());
 }
