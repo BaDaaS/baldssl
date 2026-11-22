@@ -144,30 +144,39 @@ jobs:
         shell: bash
         run: make test
 
-  # os_rng on every libc and OS version it claims to support (#39). The
-  # minimum versions are documented, with their sources, in
-  # crates/baldssl-crypto/src/os_rng.rs. No sccache here: the builds are small
-  # and some run inside containers.
-  #
+  # os_rng on every libc and OS version it supports. The versions come from
+  # website/src/platforms.json, which the website's Platforms table also
+  # reads: to test a new version, add it there. The minimum versions are
+  # documented, with their sources, in crates/baldssl-crypto/src/os_rng.rs.
+  # No sccache here: the builds are small and some run inside containers.
+  platforms:
+    runs-on: ubuntu-26.04
+    outputs:
+      glibc: ${{ steps.matrix.outputs.glibc }}
+      musl: ${{ steps.matrix.outputs.musl }}
+      android: ${{ steps.matrix.outputs.android }}
+      runners: ${{ steps.matrix.outputs.runners }}
+      bsd: ${{ steps.matrix.outputs.bsd }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: matrix
+        run: make -s platform-matrix >> "$GITHUB_OUTPUT"
+
   # glibc: built and run inside each distribution with its own C toolchain.
-  # Debian stretch (glibc 2.24) is below the minimum, 2.25, where getrandom
-  # appeared, so linking must fail there: this pins the documented minimum.
+  # The version below the minimum (glibc 2.24, before getrandom appeared in
+  # 2.25) must fail to link: this pins the documented minimum.
   os-rng-glibc:
-    name: os-rng (glibc, ${{ matrix.image }})
+    name: os-rng (${{ matrix.name }}, ${{ matrix.libc }})
+    needs: platforms
     runs-on: ubuntu-26.04
     env:
       RUSTC_WRAPPER: ''
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { image: 'buildpack-deps:stretch', expect: link-fail } # 2.24
-          - { image: 'buildpack-deps:bionic', expect: pass } # 2.27
-          - { image: 'buildpack-deps:buster', expect: pass } # 2.28
-          - { image: 'buildpack-deps:focal', expect: pass } # 2.31
-          - { image: 'buildpack-deps:jammy', expect: pass } # 2.35
-          - { image: 'buildpack-deps:bookworm', expect: pass } # 2.36
-          - { image: 'buildpack-deps:trixie', expect: pass } # 2.41
+        include: ${{ fromJSON(needs.platforms.outputs.glibc) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -182,16 +191,15 @@ jobs:
 
   # musl, statically linked against the musl that Rust bundles.
   os-rng-musl:
-    name: os-rng (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+    name: os-rng (musl, ${{ matrix.target }})
+    needs: platforms
+    runs-on: ${{ matrix.runner }}
     env:
       RUSTC_WRAPPER: ''
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-26.04 }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+        include: ${{ fromJSON(needs.platforms.outputs.musl) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -203,12 +211,12 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: make test-os-rng-musl MUSL_TARGET="$TARGET"
 
-  # Android: bionic has getrandom from API 28. Linking against API 27 must
-  # fail; a build for API 28 runs on the minimum and on a recent API level.
+  # Android: its libc, bionic, has getrandom from API level 28 (Android 9).
+  # Linking against API level 27 (Android 8.1) must fail; a build for API
+  # level 28 runs on the minimum and on a recent level.
   os-rng-android:
-    name:
-      os-rng (Android ${{ matrix.mode }}, API ${{ matrix.api }}${{
-      matrix.run_api && format(' on {0}', matrix.run_api) || '' }})
+    name: os-rng (${{ matrix.name }}, ${{ matrix.mode }})
+    needs: platforms
     runs-on: ubuntu-26.04
     # A hung emulator must not hold a runner for the 6-hour default.
     timeout-minutes: 30
@@ -217,10 +225,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { mode: link-fail, api: 27 }
-          - { mode: run, api: 28, run_api: 28 }
-          - { mode: run, api: 28, run_api: 35 }
+        include: ${{ fromJSON(needs.platforms.outputs.android) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -245,21 +250,15 @@ jobs:
 
   # Every macOS and Windows runner version, both architectures.
   os-rng-platforms:
-    name: os-rng (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: os-rng (${{ matrix.name }})
+    needs: platforms
+    runs-on: ${{ matrix.runner }}
     env:
       RUSTC_WRAPPER: ''
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - macos-15 # macOS 15 arm64
-          - macos-15-intel # macOS 15 x86_64
-          - macos-26 # macOS 26 arm64
-          - macos-26-intel # macOS 26 x86_64
-          - windows-2022 # Windows Server 2022 x86_64
-          - windows-2025 # Windows Server 2025 x86_64
-          - windows-11-arm # Windows 11 arm64
+        include: ${{ fromJSON(needs.platforms.outputs.runners) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -279,20 +278,14 @@ jobs:
   # and NetBSD are tier-2 targets; OpenBSD and DragonFly are tier 3, built
   # by their own packaged compilers.
   os-rng-bsd:
-    name: os-rng (${{ matrix.os }} ${{ matrix.release }})
+    name: os-rng (${{ matrix.name }})
+    needs: platforms
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: freebsd, release: '15.1' }
-          - { os: freebsd, release: '14.5' }
-          - { os: netbsd, release: '11.1' }
-          - { os: netbsd, release: '10.2' }
-          - { os: openbsd, release: '8.0' }
-          - { os: openbsd, release: '7.9' }
-          - { os: dragonflybsd, release: '6.4' }
+        include: ${{ fromJSON(needs.platforms.outputs.bsd) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

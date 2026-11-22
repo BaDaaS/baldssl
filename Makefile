@@ -116,14 +116,20 @@ test: ## Run all tests (unit, property, golden)
 test-release: ## Run all tests in release mode
 	cargo test --workspace --release
 
-# os_rng on every libc and OS version it supports (#39). The minimum versions
-# are documented in crates/baldssl-crypto/src/os_rng.rs.
+# os_rng on every libc and OS version it supports. The versions CI tests are
+# in website/src/platforms.json; the minimum versions are documented in
+# crates/baldssl-crypto/src/os_rng.rs.
+# Ubuntu 24.04 (noble), glibc 2.39.
 IMAGE ?= buildpack-deps:noble
 EXPECT ?= pass
 MUSL_TARGET ?= x86_64-unknown-linux-musl
 ANDROID_MODE ?= run
 ANDROID_API ?= 28
 ANDROID_RUN_API ?= 28
+
+.PHONY: platform-matrix
+platform-matrix: ## The os-rng CI matrices, from website/src/platforms.json
+	python3 scripts/platform-matrix.py
 
 .PHONY: test-os-rng
 test-os-rng: ## Run the os_rng tests on this machine

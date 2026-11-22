@@ -17,6 +17,9 @@ const primitivesPath = fileURLToPath(
 const examplesPath = fileURLToPath(
   new URL('./src/examples.json', import.meta.url),
 );
+const platformsPath = fileURLToPath(
+  new URL('./src/platforms.json', import.meta.url),
+);
 const trackingPath = fileURLToPath(
   new URL('./src/tracking.json', import.meta.url),
 );
@@ -245,6 +248,36 @@ function primitives() {
   };
 }
 
+// The "Platforms" table, from src/platforms.json, the file CI also builds the
+// os-rng matrices from (scripts/platform-matrix.py).
+function platforms() {
+  return {
+    name: 'baldssl-platforms',
+    configureServer(server) {
+      server.watcher.add(platformsPath);
+    },
+    transformIndexHtml(html) {
+      const list = JSON.parse(readFileSync(platformsPath, 'utf8')).platforms;
+      const rows = list
+        .map(p => {
+          const versions = p.versions
+            .map(v =>
+              v.expect === 'link-fail'
+                ? `<li class="text-muted">${escapeHtml(v.name)}${v.libc ? `, ${escapeHtml(v.libc)}` : ''}: below the minimum, must fail to link</li>`
+                : `<li>${escapeHtml(v.name)}${v.libc ? `, ${escapeHtml(v.libc)}` : ''}</li>`,
+            )
+            .join('');
+          return `<tr class="border-t border-border align-top">
+  <td class="py-3 pr-3 text-sm"><span class="font-medium text-foreground">${escapeHtml(p.name)}</span>${p.minimum ? `<span class="mt-1 block text-muted">From ${escapeHtml(p.minimum)}</span>` : ''}<span class="mt-1 block text-xs text-muted">${escapeHtml(p.how)}</span></td>
+  <td class="py-3 text-sm"><ul class="space-y-1 text-foreground">${versions}</ul></td>
+</tr>`;
+        })
+        .join('\n');
+      return html.replace('<!-- platforms -->', rows);
+    },
+  };
+}
+
 function commandTables() {
   return {
     name: 'baldssl-command-tables',
@@ -280,5 +313,11 @@ function commandTables() {
 export default defineConfig({
   // Relative URLs: the site is served from /baldssl/ on GitHub Pages.
   base: './',
-  plugins: [tailwindcss(), commandTables(), examples(), primitives()],
+  plugins: [
+    tailwindcss(),
+    commandTables(),
+    examples(),
+    primitives(),
+    platforms(),
+  ],
 });

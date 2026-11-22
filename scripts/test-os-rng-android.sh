@@ -6,7 +6,8 @@
 #        test-os-rng-android.sh run <build-api> <run-api>
 #
 #   link-fail  linking must fail on an undefined getrandom (an API level
-#              below 28, where bionic introduced it)
+#              below 28, Android 9, where bionic, Android's libc,
+#              introduced it)
 #   run        build against <build-api>, then run the tests on an emulator
 #              with <run-api>: the minimum (28) and a recent level
 #

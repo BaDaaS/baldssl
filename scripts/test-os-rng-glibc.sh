@@ -5,6 +5,7 @@
 #
 # Usage: test-os-rng-glibc.sh <image> <expect>
 #   image   a Docker image with a C toolchain, e.g. buildpack-deps:bionic
+#           (Ubuntu 18.04, glibc 2.27)
 #   expect  "pass": the tests build, run and pass, and the binary imports
 #                   getrandom at symbol version GLIBC_2.25;
 #           "link-fail": linking fails on an undefined getrandom (an image
