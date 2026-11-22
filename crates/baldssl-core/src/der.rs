@@ -69,6 +69,7 @@
 //! [x690]: https://www.itu.int/rec/T-REC-X.690
 //! [x680]: https://www.itu.int/rec/T-REC-X.680
 
+pub mod syntax;
 pub mod write;
 
 use core::fmt::Write as _;
@@ -109,6 +110,16 @@ pub enum DerError {
     InvalidOid,
     /// A malformed UTCTime or GeneralizedTime.
     InvalidTime,
+    /// SET OF components not in ascending order of their encodings (X.690
+    /// 11.6).
+    UnsortedSet,
+    /// A component encoded with its DEFAULT value, which DER omits (X.690
+    /// 11.5).
+    ExplicitDefault,
+    /// A well-formed encoding of a value outside the type described: a
+    /// negative INTEGER where a natural number is expected, another constant,
+    /// a value a mapping rejects.
+    UnexpectedValue,
 }
 
 /// The tag class (bits 8-7 of the identifier octet).
