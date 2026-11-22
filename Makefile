@@ -1,3 +1,5 @@
+include tests/fixtures.mk
+
 NIGHTLY_RUST_VERSION ?= nightly
 TAPLO_CLI_VERSION ?= 0.9.3
 # The OpenSSL binaries the golden files and the interop tests use.
@@ -37,7 +39,7 @@ build-wasm: ## Build the libraries (browser) and the CLI (WASI) for WebAssembly
 	cargo build --release --target wasm32-wasip1 -p baldssl
 
 .PHONY: test-wasm
-test-wasm: build-wasm ## Run the library tests and the golden suite as WebAssembly (needs wasmtime)
+test-wasm: build-wasm fixtures ## Run the library tests and the golden suite as WebAssembly (needs wasmtime)
 	CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir /" \
 		cargo test --release --target wasm32-wasip1 \
 		-p baldssl-core -p baldssl-crypto -p baldssl-x509
@@ -132,12 +134,17 @@ check-no-deps: ## Fail if any third-party crate is a normal/build dependency
 
 # --- Tests -------------------------------------------------------------------
 
+.PHONY: fixtures
+fixtures: ## Download the pinned test fixtures into tests/fixtures
+	scripts/fetch-fixtures.sh $(FIXTURES_TAG) $(FIXTURES_SHA256) \
+		tests/fixtures
+
 .PHONY: test
-test: ## Run all tests (unit, property, golden)
+test: fixtures ## Run all tests (unit, property, golden)
 	cargo test --workspace
 
 .PHONY: test-release
-test-release: ## Run all tests in release mode
+test-release: fixtures ## Run all tests in release mode
 	cargo test --workspace --release
 
 # os_rng on every libc and OS version it supports. The versions CI tests are
@@ -185,12 +192,12 @@ test-os-rng-system-rust: ## os_rng with the OS's packaged Rust (BSD VMs)
 COVERAGE_TIMEOUT = 600
 
 .PHONY: coverage
-coverage: ## Coverage report (Cobertura XML + HTML) in target/coverage
+coverage: fixtures ## Coverage report (Cobertura XML + HTML) in target/coverage
 	cargo tarpaulin --workspace --engine llvm --out Xml --out Html \
 		--timeout $(COVERAGE_TIMEOUT) --output-dir target/coverage
 
 .PHONY: mutants
-mutants: ## Mutation testing (slow); survivors are missing tests
+mutants: fixtures ## Mutation testing (slow); survivors are missing tests
 	cargo mutants --workspace
 
 .PHONY: fuzz
@@ -201,12 +208,19 @@ fuzz: ## Fuzz a target: make fuzz FUZZ_TARGET=x509 FUZZ_SECONDS=60
 		-- -max_total_time=$(FUZZ_SECONDS)
 
 .PHONY: interop
-interop: build ## Diff baldssl against $(OPENSSL), both directions
+interop: build fixtures ## Diff baldssl against $(OPENSSL), both directions
 	scripts/interop.sh $(OPENSSL) $(BALDSSL)
 
 .PHONY: golden
-golden: ## Regenerate golden files from OpenSSL 3.0, 3.5 and 4.1
+golden: fixtures ## Regenerate golden files from OpenSSL 3.0, 3.5 and 4.1
 	scripts/gen-golden.sh $(OPENSSL_30) $(OPENSSL_3) $(OPENSSL_4)
+
+.PHONY: check-golden
+check-golden: fixtures ## Fail if OpenSSL's output differs from the fixtures
+	rm -rf target/golden-pinned && mkdir -p target
+	cp -R tests/fixtures/golden target/golden-pinned
+	scripts/gen-golden.sh $(OPENSSL_30) $(OPENSSL_3) $(OPENSSL_4)
+	diff -r target/golden-pinned tests/fixtures/golden
 
 .PHONY: objects
 objects: ## Regenerate the OID name table from OPENSSL_INCLUDE/obj_mac.h

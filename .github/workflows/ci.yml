@@ -509,9 +509,8 @@ jobs:
           OPENSSL_3: ${{ steps.v3.outputs.openssl }}
           OPENSSL_4: ${{ steps.v4.outputs.openssl }}
         run: |
-          make golden OPENSSL_30="$OPENSSL_30" OPENSSL_3="$OPENSSL_3" \
+          make check-golden OPENSSL_30="$OPENSSL_30" OPENSSL_3="$OPENSSL_3" \
             OPENSSL_4="$OPENSSL_4"
-          git diff --exit-code -- tests/fixtures/golden
 
   # The Lean 4 skeleton must keep building against the pinned Aeneas.
   lean:

@@ -35,7 +35,7 @@ OpenSSL releases print `-text` differently, so the printer takes a profile,
 | `3`     | OpenSSL 3.5  | the default                                                                        |
 | `4`     | OpenSSL 4.x  | hex dump geometry, no RSA modulus sign byte, EC key header with the security level |
 
-Golden files exist per profile (`tests/fixtures/golden/v30`, `v3`, `v4`,
+Golden files exist per profile (`golden/v30`, `v3`, `v4` in the fixtures,
 recorded from OpenSSL 3.0.22, 3.5.9 and 4.1.0), and `scripts/interop.sh` picks
 the profile from the version of the OpenSSL under test. CI requires 3.0.22,
 3.5.9, 3.6.5, 4.0.3 and 4.1.0 to pass. One exception is documented in the
@@ -48,16 +48,23 @@ kept in `website/src/commands.json` (see the website section).
 
 ## testing
 
-| Layer                   | What                                                                                                             | Where                                           |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| Unit and property tests | laws of each primitive (base64 and DER canonicity, hash streaming, UTF-8 encoding, option order) with `proptest` | `cargo test`                                    |
-| Known answers           | FIPS 180-4 vectors for SHA-1/224/256/384/512, RFC 4648 vectors                                                   | `cargo test`                                    |
-| Golden files            | byte-for-byte output of OpenSSL 3.5.9 and 4.1.0 on 12 certificates x 20 argument sets                            | `crates/baldssl/tests/golden.rs`, `make golden` |
-| Interop                 | live diff against an OpenSSL binary; baldssl re-encodings must be read back and verified by OpenSSL              | `make interop OPENSSL=...`                      |
-| Robustness              | corrupted certificates never panic; truncations are rejected                                                     | `crates/baldssl-x509/tests/robustness.rs`       |
-| Fuzzing                 | `base64`, `pem`, `der`, `x509` targets (nightly, daily in CI)                                                    | `make fuzz FUZZ_TARGET=x509`                    |
-| Mutation testing        | surviving mutants are missing tests (weekly in CI)                                                               | `make mutants`                                  |
-| Coverage                | tarpaulin, uploaded as a CI artifact                                                                             | `make coverage`                                 |
+The test fixtures (certificates, keys, and OpenSSL's golden outputs) live in
+[baldssl-fixtures](https://github.com/BaDaaS/baldssl-fixtures). `make fixtures`
+downloads the release archive pinned in `tests/fixtures.mk` (a tag and its
+SHA-256), checks the hash and unpacks it into `tests/fixtures`; `make test` and
+the other targets that read fixtures do it first. A new set of fixtures is a new
+release there and a new pin here.
+
+| Layer                   | What                                                                                                             | Where                                                 |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Unit and property tests | laws of each primitive (base64 and DER canonicity, hash streaming, UTF-8 encoding, option order) with `proptest` | `cargo test`                                          |
+| Known answers           | FIPS 180-4 vectors for SHA-1/224/256/384/512, RFC 4648 vectors                                                   | `cargo test`                                          |
+| Golden files            | byte-for-byte output of OpenSSL 3.5.9 and 4.1.0 on 12 certificates x 20 argument sets                            | `crates/baldssl/tests/golden.rs`, `make check-golden` |
+| Interop                 | live diff against an OpenSSL binary; baldssl re-encodings must be read back and verified by OpenSSL              | `make interop OPENSSL=...`                            |
+| Robustness              | corrupted certificates never panic; truncations are rejected                                                     | `crates/baldssl-x509/tests/robustness.rs`             |
+| Fuzzing                 | `base64`, `pem`, `der`, `x509` targets (nightly, daily in CI)                                                    | `make fuzz FUZZ_TARGET=x509`                          |
+| Mutation testing        | surviving mutants are missing tests (weekly in CI)                                                               | `make mutants`                                        |
+| Coverage                | tarpaulin, uploaded as a CI artifact                                                                             | `make coverage`                                       |
 
 ## platforms
 

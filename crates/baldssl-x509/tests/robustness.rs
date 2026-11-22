@@ -13,7 +13,9 @@ fn fixture_ders() -> Vec<Vec<u8>> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/certs");
     let mut out = Vec::new();
-    for entry in fs::read_dir(dir).unwrap() {
+    for entry in
+        fs::read_dir(dir).expect("tests/fixtures/certs (run `make fixtures`)")
+    {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "crt") {
             out.push(certificate_der(&fs::read(path).unwrap(), None).unwrap());
