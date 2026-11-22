@@ -11,7 +11,7 @@ use super::{affine::Affine as AffineOf, d, extended::Extended as ExtendedOf};
 use crate::{
     algebra::{
         curve::Curve,
-        encoding::Encodable,
+        encoding::{Decodable, Encodable},
         field::{Field, PrimeField, Sqrt},
         group::Group,
         laws,
@@ -312,7 +312,6 @@ fn square_roots() {
 /// [rfc8032-5.1.3]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.3
 #[test]
 fn decoding() {
-    use crate::algebra::encoding::Decodable;
     let mut base = vec![0x66u8; 32];
     base[0] = 0x58;
     assert_eq!(Affine::decode(&base), Some(Affine::generator()));
@@ -361,8 +360,7 @@ proptest! {
     /// whatever decodes re-encodes to the same bytes, and is on the curve.
     #[test]
     fn decoding_is_canonical(bytes in prop::collection::vec(any::<u8>(), 32)) {
-        use crate::algebra::encoding::Decodable;
-        laws::canonical::<Affine>(&bytes);
+            laws::canonical::<Affine>(&bytes);
         if let Some(p) = Affine::decode(&bytes) {
             prop_assert!(p.is_on_curve().to_bool_vartime());
         }

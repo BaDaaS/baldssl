@@ -4,7 +4,16 @@
 use baldssl_test_utils::{array, fixture, hex};
 
 use super::Ed25519;
-use crate::signature::DigitalSignature;
+use crate::{
+    algebra::{
+        curve::Curve,
+        encoding::Encodable,
+        model::{CurveModel, ProjectiveModel},
+    },
+    instances::Edwards25519,
+    models::edwards::extended::Extended,
+    signature::DigitalSignature,
+};
 
 /// [RFC 8032, section 7.1][rfc8032-7.1], TEST 1 to 3: secret key to public key.
 ///
@@ -72,15 +81,6 @@ fn clamping() {
 /// cofactor, so the public key lies in the prime-order subgroup.
 #[test]
 fn public_key_is_the_exponential_of_the_secret_scalar() {
-    use crate::{
-        algebra::{
-            curve::Curve,
-            encoding::Encodable,
-            model::{CurveModel, ProjectiveModel},
-        },
-        instances::Edwards25519,
-        models::edwards::extended::Extended,
-    };
     for byte in [0u8, 1, 0x55, 0xff] {
         let seed = [byte; 32];
         let s = Ed25519::secret_scalar(&seed);
