@@ -16,7 +16,9 @@
 //!   OpenSSL's default configuration says, readable by its owner only;
 //! - reading one: `-in <file>` (standard input without it), `-inform`;
 //! - `-verify` (the message on standard error, exit 1 on failure, as
-//!   OpenSSL), `-out`, `-outform PEM|DER`, `-noout`;
+//!   OpenSSL), `-text` (the request, or the `-x509` certificate, as OpenSSL
+//!   prints it, before the PEM or DER), `-out`, `-outform PEM|DER`,
+//!   `-noout`;
 //! - a self-signed certificate instead of a request: `-x509`, which
 //!   implies `-new` as in OpenSSL 3, with `-days` (30 by default),
 //!   `-set_serial` (decimal, or hexadecimal after `0x`; 159 random bits by
@@ -30,7 +32,7 @@
 //!
 //! As in OpenSSL, `-key` does not imply `-new`: without `-new`, `-newkey`
 //! or `-x509`, a request is read. Not supported, and reported as such:
-//! `-text`, `-config`, `-addext`, RSA and other key algorithms, encrypting
+//! `-config`, `-addext`, RSA and other key algorithms, encrypting
 //! the generated key (`-newkey` without `-noenc`), `-x509` with `-in`
 //! (signing an existing request), `-x509` with `-verify`, negative or zero
 //! serials, the interactive prompts (a request is created only with
@@ -46,8 +48,9 @@ use baldssl_core::{
 use baldssl_crypto::Algorithm as Digest;
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
-    CertificateTemplate, CertificationRequest, DistinguishedName, Format,
-    InputEncoding, SubjWarning, UTF8_ONLY,
+    Certificate, CertificateTemplate, CertificationRequest, DistinguishedName,
+    Format, InputEncoding, SubjWarning, UTF8_ONLY, print_request_text,
+    print_text,
 };
 
 use crate::{
@@ -129,7 +132,7 @@ pub(crate) const SPECS: &[Spec] = &[
     Spec {
         name: "text",
         kind: Kind::Flag,
-        help: "Print the request in text form (not supported yet)",
+        help: "Print the request (or the -x509 certificate) in text form",
     },
     Spec {
         name: "newkey",
@@ -258,6 +261,7 @@ struct Options {
     output_path: Option<OsString>,
     output: Output,
     verify: bool,
+    text: bool,
     digest: Option<Digest>,
 }
 
@@ -277,6 +281,7 @@ impl Default for Options {
             output_path: None,
             output: Output::default(),
             verify: false,
+            text: false,
             digest: None,
         }
     }
@@ -429,7 +434,8 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
                 o.lifetime.not_after =
                     Some(parse_time("req", "not_after", &value)?);
             }
-            "text" | "config" | "addext" => {
+            "text" => o.text = true,
+            "config" | "addext" => {
                 return Err(Error::unsupported(format!("req -{}", opt.name)));
             }
             name => {
@@ -483,13 +489,20 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     let Some(o) = parse_options(raw)? else {
         return Ok((args::usage("req", SPECS).into_bytes(), None));
     };
+    let compat = crate::x509::compat()?;
     if o.product == Product::Certificate {
         let der = self_sign(&o)?;
-        let bytes = match o.output {
-            Output::Nothing => Vec::new(),
-            Output::Der => der,
-            Output::Pem => pem::encode("CERTIFICATE", &der).into_bytes(),
+        let mut bytes = if o.text {
+            print_text(&Certificate::from_der(&der)?, compat)?
+        } else {
+            Vec::new()
         };
+        match o.output {
+            Output::Nothing => {}
+            Output::Der => bytes.extend_from_slice(&der),
+            Output::Pem => bytes
+                .extend_from_slice(pem::encode("CERTIFICATE", &der).as_bytes()),
+        }
         return Ok((bytes, o.output_path));
     }
     let request = match o.mode {
@@ -506,11 +519,16 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
             ));
         }
     }
-    let bytes = match o.output {
-        Output::Nothing => Vec::new(),
-        Output::Der => request.encode(),
-        Output::Pem => request.to_pem().into_bytes(),
+    let mut bytes = if o.text {
+        print_request_text(&request, compat)?
+    } else {
+        Vec::new()
     };
+    match o.output {
+        Output::Nothing => {}
+        Output::Der => bytes.extend_from_slice(&request.encode()),
+        Output::Pem => bytes.extend_from_slice(request.to_pem().as_bytes()),
+    }
     Ok((bytes, o.output_path))
 }
 
