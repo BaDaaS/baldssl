@@ -353,9 +353,23 @@ pub(crate) fn print_extensions(
         return Ok(());
     }
     out.extend_from_slice(b"        X509v3 extensions:\n");
+    print_extension_list(out, exts, 12)
+}
+
+/// Each extension as `X509V3_extensions_print` writes it: its name at
+/// `indent` spaces, its value four further in. Certificates list them at
+/// 12 spaces, requests (under `Requested Extensions:`) at 16.
+pub(crate) fn print_extension_list(
+    out: &mut Vec<u8>,
+    exts: &[Extension<'_>],
+    indent: usize,
+) -> Result<()> {
+    let name_pad = " ".repeat(indent);
+    let value_indent = indent.saturating_add(4);
+    let value_pad = " ".repeat(value_indent);
     for ext in exts {
         let dotted = ext.oid.to_dotted()?;
-        out.extend_from_slice(b"            ");
+        out.extend_from_slice(name_pad.as_bytes());
         out.extend_from_slice(objects::long_name(&ext.oid)?.as_bytes());
         out.extend_from_slice(b": ");
         if ext.critical {
@@ -364,14 +378,14 @@ pub(crate) fn print_extensions(
         out.push(b'\n');
         match decode(ext, &dotted)? {
             Printed::Line(s) => {
-                out.extend_from_slice(b"                ");
+                out.extend_from_slice(value_pad.as_bytes());
                 out.extend_from_slice(s.as_bytes());
             }
             Printed::Values { values, multiline } => {
-                val_prn(out, &values, 16, multiline);
+                val_prn(out, &values, value_indent, multiline);
             }
             Printed::Raw => {
-                out.extend_from_slice(b"                ");
+                out.extend_from_slice(value_pad.as_bytes());
                 asn1_string_print(out, ext.value);
             }
         }

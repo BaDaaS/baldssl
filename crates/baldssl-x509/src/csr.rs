@@ -31,10 +31,10 @@
 use baldssl_core::{
     Error, Result,
     der::{
-        Reader,
+        Oid, Reader,
         syntax::{
-            Any, BitString, Implicit, RawTlv, Sequence, SetOf, Small, decode,
-            encode,
+            Any, BitString, Implicit, ObjectId, RawTlv, Sequence, SetOf, Small,
+            decode, encode,
         },
         tag,
     },
@@ -49,8 +49,17 @@ use crate::{
     algorithm::{
         ALGORITHM_IDENTIFIER, AlgorithmIdentifier, from_identifier, identifier,
     },
+    cert::{Extension, read_extensions},
     dn::DistinguishedName,
 };
+
+/// `extensionRequest`, 1.2.840.113549.1.9.14 ([RFC 2985 section
+/// 5.4.2]).
+///
+/// [RFC 2985 section 5.4.2]: https://www.rfc-editor.org/rfc/rfc2985#page-17
+pub(crate) const EXTENSION_REQUEST: ObjectId = ObjectId::from_static(&[
+    0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x0e,
+]);
 
 /// `CertificationRequestInfo`, with the subject and the key kept as TLVs.
 type InfoSyntax =
@@ -155,6 +164,38 @@ impl CertificationRequest {
     #[must_use]
     pub fn attributes(&self) -> &[RawTlv] {
         &self.attributes
+    }
+
+    /// The extensions the request asks for: the `Extensions` of its
+    /// `extensionRequest` attribute (PKCS#9, [RFC 2985 section 5.4.2]), or
+    /// none without attributes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unsupported`] for any other attribute, and on malformed
+    /// DER.
+    ///
+    /// [RFC 2985 section 5.4.2]: https://www.rfc-editor.org/rfc/rfc2985#page-17
+    pub(crate) fn requested_extensions(&self) -> Result<Vec<Extension<'_>>> {
+        let mut out = Vec::new();
+        for attribute in &self.attributes {
+            let mut top = Reader::new(attribute.as_bytes());
+            let mut seq = top.sequence()?;
+            top.finish()?;
+            let oid = Oid::parse(seq.expect(tag::OID)?.value)?;
+            if oid.as_bytes() != EXTENSION_REQUEST.as_oid().as_bytes() {
+                return Err(Error::unsupported(format!(
+                    "request attribute {}",
+                    oid.to_dotted()?
+                )));
+            }
+            let mut values = Reader::new(seq.expect(tag::SET)?.value);
+            seq.finish()?;
+            let extensions = values.read()?;
+            values.finish()?;
+            out.extend(read_extensions(extensions.encoded)?);
+        }
+        Ok(out)
     }
 
     /// How the request is signed.

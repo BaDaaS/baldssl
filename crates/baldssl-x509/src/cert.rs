@@ -154,7 +154,9 @@ fn read_time(r: &mut Reader<'_>) -> Result<Time> {
     Ok(Time::parse(kind, tlv.value)?)
 }
 
-fn read_extensions(value: &[u8]) -> Result<Vec<Extension<'_>>> {
+/// The extensions of a DER `Extensions` (`SEQUENCE OF Extension`), in
+/// order: a certificate's, or a request's `extensionRequest` attribute.
+pub(crate) fn read_extensions(value: &[u8]) -> Result<Vec<Extension<'_>>> {
     let mut outer = Reader::new(value);
     let mut seq = outer.sequence()?;
     outer.finish()?;
