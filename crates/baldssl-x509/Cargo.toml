@@ -12,6 +12,8 @@ baldssl-core.workspace = true
 baldssl-crypto.workspace = true
 
 [dev-dependencies]
+baldssl-core = { workspace = true, features = ["laws"] }
+baldssl-test-utils = { workspace = true, features = ["proptest"] }
 proptest.workspace = true
 
 [lints]

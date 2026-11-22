@@ -11,6 +11,7 @@ pub mod name;
 pub mod objects;
 mod objects_table;
 pub mod text;
+pub mod version;
 
 pub use cert::Certificate;
 

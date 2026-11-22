@@ -11,7 +11,10 @@ use baldssl_core::{
     der::{BitString, Integer, Oid, Reader, Time, TimeKind, Tlv, tag},
 };
 
-use crate::name::Name;
+use crate::{
+    name::Name,
+    version::{Version, version_field},
+};
 
 /// `AlgorithmIdentifier ::= SEQUENCE { algorithm OID, parameters ANY OPTIONAL }`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,8 +78,8 @@ pub struct Validity {
 pub struct Certificate<'a> {
     /// The complete DER encoding.
     pub der: &'a [u8],
-    /// `version` as stored (0 = v1, 1 = v2, 2 = v3).
-    pub version: u8,
+    /// `version`, v1 when the field is absent.
+    pub version: Version,
     /// `serialNumber`.
     pub serial: Integer,
     /// `signature` inside the TBSCertificate.
@@ -149,22 +152,7 @@ impl<'a> Certificate<'a> {
         top.finish()?;
 
         let mut tbs = cert.sequence()?;
-        let version = match tbs.optional(tag::context_constructed(0))? {
-            None => 0,
-            Some(v) => {
-                let mut r = Reader::new(v.value);
-                let int = Integer::parse(r.expect(tag::INTEGER)?.value)?;
-                r.finish()?;
-                match int.to_u64_opt() {
-                    Some(n @ 0..=2) => u8::try_from(n).unwrap_or(0),
-                    _ => {
-                        return Err(Error::unsupported(
-                            "certificate version other than v1, v2, v3",
-                        ));
-                    }
-                }
-            }
-        };
+        let version = tbs.syntax(&version_field())?.unwrap_or_else(Version::v1);
         let serial = Integer::parse(tbs.expect(tag::INTEGER)?.value)?;
         let tbs_signature = AlgorithmIdentifier::read(&mut tbs)?;
         let issuer = Name::read(&mut tbs)?;
