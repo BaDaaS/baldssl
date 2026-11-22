@@ -90,7 +90,9 @@ where
         self.z.is_zero()
     }
 
-    /// $P + Q$ (Algorithm 4); complete.
+    /// $P + Q$ ([Algorithm 4][rcb]); complete.
+    ///
+    /// [rcb]: https://eprint.iacr.org/2015/1060
     #[must_use]
     pub fn add(&self, rhs: &Self) -> Self {
         let b = b::<C>();
@@ -118,9 +120,11 @@ where
         )
     }
 
-    /// $P + Q$ with $Q$ affine (Algorithm 5): complete for every projective
+    /// $P + Q$ with $Q$ affine ([Algorithm 5][rcb]): complete for every projective
     /// $P$; the formula assumes $Z_Q = 1$, so the identity $Q$ is handled by
     /// a constant-time selection.
+    ///
+    /// [rcb]: https://eprint.iacr.org/2015/1060
     #[must_use]
     pub fn add_affine(&self, rhs: &Affine<C>) -> Self {
         let b = b::<C>();
@@ -148,7 +152,9 @@ where
         Self::select(&sum, self, rhs.infinity)
     }
 
-    /// $2P$ (Algorithm 6); complete.
+    /// $2P$ ([Algorithm 6][rcb]); complete.
+    ///
+    /// [rcb]: https://eprint.iacr.org/2015/1060
     #[must_use]
     pub fn double(&self) -> Self {
         let b = b::<C>();

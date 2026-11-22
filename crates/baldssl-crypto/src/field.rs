@@ -8,7 +8,7 @@
 //! $a \mapsto \tilde a$ is a ring isomorphism onto $\mathbb{F}_p$ for the
 //! product $\tilde a \star \tilde b = \tilde a \tilde b R^{-1} \bmod p$, which
 //! the Montgomery reduction computes without dividing by $p$ (Montgomery,
-//! *Modular multiplication without trial division*, Math. Comp. 44 (1985)).
+//! [*Modular multiplication without trial division*][montgomery], Math. Comp. 44 (1985)).
 //! Addition is unchanged, since the map is additive.
 //!
 //! Everything a modulus needs is derived at compile time from its value,
@@ -29,6 +29,8 @@
 //! arithmetic is on `u128` products of two `u64`s and explicit wrapping
 //! operations, which cannot overflow: hence the first two allowed lints. The
 //! one-letter names are the notation of the papers cited.
+//!
+//! [montgomery]: https://doi.org/10.1090/S0025-5718-1985-0777282-X
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
@@ -248,9 +250,11 @@ where
 
     /// Montgomery multiplication $a b R^{-1} \bmod p$, by coarsely integrated
     /// operand scanning (Koc, Acar and Kaliski, *Analyzing and comparing
-    /// Montgomery multiplication algorithms*, IEEE Micro 16 (1996)). The
+    /// [Montgomery multiplication algorithms*][kak], IEEE Micro 16 (1996)). The
     /// running value stays below $2p < 2R$, so one conditional subtraction
     /// finishes.
+    ///
+    /// [kak]: https://doi.org/10.1109/40.502403
     fn mont_mul(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
         let p = &Consts::<M, N>::P;
         let mut t = [0u64; N];

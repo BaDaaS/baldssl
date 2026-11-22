@@ -3,8 +3,10 @@
 //! The chart misses the identity $O$, the point at infinity, so a point
 //! carries a flag for it; the coordinates of the identity are stored as
 //! $(0, 0)$, which is not on the curve since $b \neq 0$. Affine points are
-//! what is encoded and decoded (SEC 1, section 2.3.3); the group law lives
+//! what is encoded and decoded ([SEC 1, section 2.3.3][sec1]); the group law lives
 //! in the projective and Jacobian models.
+//!
+//! [sec1]: https://www.secg.org/sec1-v2.pdf
 
 use core::marker::PhantomData;
 
@@ -143,8 +145,10 @@ where
         }
     }
 
-    /// The SEC 1 uncompressed encoding: `04 || x || y`, or the single byte
+    /// The [SEC 1][sec1] uncompressed encoding: `04 || x || y`, or the single byte
     /// `00` for the identity (section 2.3.3).
+    ///
+    /// [sec1]: https://www.secg.org/sec1-v2.pdf
     #[must_use]
     pub fn to_uncompressed(&self) -> Vec<u8> {
         if self.infinity.to_bool_vartime() {
@@ -157,9 +161,11 @@ where
         out
     }
 
-    /// Decodes the SEC 1 uncompressed encoding of a point other than the
+    /// Decodes the [SEC 1][sec1] uncompressed encoding of a point other than the
     /// identity. Rejects a wrong length or prefix, a non-canonical
     /// coordinate, and a point not on the curve.
+    ///
+    /// [sec1]: https://www.secg.org/sec1-v2.pdf
     #[must_use]
     pub fn from_uncompressed(bytes: &[u8]) -> Option<Self> {
         let len = C::Base::BYTES;

@@ -1,10 +1,12 @@
-//! PEM framing (RFC 7468): `-----BEGIN LABEL-----`, base64, `-----END
+//! PEM framing ([RFC 7468][rfc7468]): `-----BEGIN LABEL-----`, base64, `-----END
 //! LABEL-----`.
 //!
 //! Like OpenSSL, text outside the boundaries is ignored and blocks whose label
 //! is not wanted are skipped, so a file holding `openssl x509 -text` output or
 //! a key followed by a certificate still yields the certificate. Line endings
 //! may be LF or CRLF (files written on Windows).
+//!
+//! [rfc7468]: https://www.rfc-editor.org/rfc/rfc7468
 
 use crate::base64::{self, Base64Error};
 
@@ -15,8 +17,10 @@ pub enum PemError {
     NoBlock,
     /// A `BEGIN` line has no matching `END` line.
     Unterminated,
-    /// The block carries RFC 1421 headers (`Proc-Type:`), which are only used
+    /// The block carries [RFC 1421][rfc1421] headers (`Proc-Type:`), which are only used
     /// by legacy encrypted keys.
+    ///
+    /// [rfc1421]: https://www.rfc-editor.org/rfc/rfc1421
     HeadersUnsupported,
     /// The body is not valid base64.
     Base64(Base64Error),

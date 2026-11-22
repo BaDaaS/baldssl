@@ -16,8 +16,11 @@
 //! points (signature verification, decoding); secret scalars go through the
 //! projective model. Formulas from the Explicit-Formulas Database
 //! (Bernstein and Lange, <https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html>):
-//! `dbl-2001-b` (Bernstein) for doubling with $a = -3$, and `add-2007-bl`
+//! [`dbl-2001-b`][dbl-2001-b] (Bernstein) for doubling with $a = -3$, and [`add-2007-bl`][add-2007-bl]
 //! for addition.
+//!
+//! [dbl-2001-b]: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#doubling-dbl-2001-b
+//! [add-2007-bl]: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#addition-add-2007-bl
 
 use core::marker::PhantomData;
 
@@ -80,12 +83,14 @@ where
         self.z.is_zero()
     }
 
-    /// $2P$ by `dbl-2001-b` ($a = -3$): $\delta = Z^2$, $\gamma = Y^2$,
+    /// $2P$ by [`dbl-2001-b`][dbl-2001-b] ($a = -3$): $\delta = Z^2$, $\gamma = Y^2$,
     /// $\beta = X \gamma$, $\alpha = 3 (X - \delta)(X + \delta)$,
     /// $X_3 = \alpha^2 - 8 \beta$, $Z_3 = (Y + Z)^2 - \gamma - \delta$,
     /// $Y_3 = \alpha (4 \beta - X_3) - 8 \gamma^2$. The identity maps to
     /// $Z_3 = 0$, and there is no point of order two on a curve of odd
     /// order, so no other case.
+    ///
+    /// [dbl-2001-b]: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#doubling-dbl-2001-b
     #[must_use]
     pub fn double(&self) -> Self {
         let delta = self.z.square();
@@ -101,9 +106,11 @@ where
         Self::new(x3, y3, z3)
     }
 
-    /// $P + Q$ by `add-2007-bl`, with the cases it does not cover handled
+    /// $P + Q$ by [`add-2007-bl`][add-2007-bl], with the cases it does not cover handled
     /// first: either input the identity, $P = Q$ (doubling) and $P = -Q$.
     /// Variable time.
+    ///
+    /// [add-2007-bl]: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#addition-add-2007-bl
     #[must_use]
     pub fn add_vartime(&self, rhs: &Self) -> Self {
         if self.is_identity().to_bool_vartime() {

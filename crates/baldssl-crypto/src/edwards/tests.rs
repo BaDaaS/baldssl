@@ -15,11 +15,13 @@ fn f(v: u64) -> Field25519 {
     Field25519::from_u64(v)
 }
 
-/// The affine twisted Edwards law for $a = -1$ (Bernstein, Birkner, Joye,
+/// The affine twisted Edwards law for $a = -1$ ([Bernstein, Birkner, Joye,][bbjlp]
 /// Lange and Peters, *Twisted Edwards curves*, AFRICACRYPT 2008):
 /// $x_3 = (x_1 y_2 + y_1 x_2) / (1 + d x_1 x_2 y_1 y_2)$,
 /// $y_3 = (y_1 y_2 + x_1 x_2) / (1 - d x_1 x_2 y_1 y_2)$. It is complete, so
 /// it covers doubling and the identity as well.
+///
+/// [bbjlp]: https://eprint.iacr.org/2008/013
 fn reference_add(p: &Affine, q: &Affine) -> Affine {
     let (x1, y1) = p.coordinates();
     let (x2, y2) = q.coordinates();
@@ -127,7 +129,9 @@ fn seed(s: &str) -> [u8; 32] {
     hex(s).try_into().unwrap()
 }
 
-/// RFC 8032, section 7.1, TEST 1 to 3: secret key to public key.
+/// [RFC 8032, section 7.1][rfc8032-7.1], TEST 1 to 3: secret key to public key.
+///
+/// [rfc8032-7.1]: https://www.rfc-editor.org/rfc/rfc8032#section-7.1
 #[test]
 fn rfc8032_vectors() {
     let cases = [

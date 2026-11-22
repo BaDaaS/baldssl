@@ -1,8 +1,10 @@
-//! SHA-384 and SHA-512, FIPS 180-4 sections 5.3.4, 5.3.5 and 6.4.
+//! SHA-384 and SHA-512, [FIPS 180-4][fips180] sections 5.3.4, 5.3.5 and 6.4.
 //!
 //! Same discipline as `sha256`: fixed-size arrays indexed by loop counters
 //! below their length, and `wrapping_*` for addition modulo 2^64.
 //! Single-letter names (`a` to `h`, `w`, `t`) are the specification's.
+//!
+//! [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,

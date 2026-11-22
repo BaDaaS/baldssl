@@ -4,10 +4,13 @@
 //!
 //! The formulas are from the Explicit-Formulas Database for $a = -1$
 //! (<https://hyperelliptic.org/EFD/g1p/auto-twisted-extended-1.html>):
-//! `add-2008-hwcd-3` for addition, complete since $d$ is not a square, and
-//! `dbl-2008-hwcd` for doubling. The scalar multiplication is a
+//! [`add-2008-hwcd-3`][add-2008-hwcd-3] for addition, complete since $d$ is not a square, and
+//! [`dbl-2008-hwcd`][dbl-2008-hwcd] for doubling. The scalar multiplication is a
 //! double-and-add-always ladder with constant-time selection, as for the
 //! Weierstrass curves.
+//!
+//! [add-2008-hwcd-3]: https://hyperelliptic.org/EFD/g1p/auto-twisted-extended-1.html#addition-add-2008-hwcd-3
+//! [dbl-2008-hwcd]: https://hyperelliptic.org/EFD/g1p/auto-twisted-extended-1.html#doubling-dbl-2008-hwcd
 
 use super::{affine::Affine, d};
 use crate::{ct::Choice, fields::Field25519};
@@ -34,10 +37,12 @@ impl Extended {
         Self::from(Affine::base())
     }
 
-    /// $P + Q$ by `add-2008-hwcd-3` ($a = -1$, $k = 2d$): $A = (Y_1 - X_1)(Y_2 - X_2)$,
+    /// $P + Q$ by [`add-2008-hwcd-3`][add-2008-hwcd-3] ($a = -1$, $k = 2d$): $A = (Y_1 - X_1)(Y_2 - X_2)$,
     /// $B = (Y_1 + X_1)(Y_2 + X_2)$, $C = k T_1 T_2$, $D = 2 Z_1 Z_2$,
     /// $E = B - A$, $F = D - C$, $G = D + C$, $H = B + A$,
     /// $X_3 = E F$, $Y_3 = G H$, $T_3 = E H$, $Z_3 = F G$.
+    ///
+    /// [add-2008-hwcd-3]: https://hyperelliptic.org/EFD/g1p/auto-twisted-extended-1.html#addition-add-2008-hwcd-3
     #[must_use]
     pub fn add(&self, rhs: &Self) -> Self {
         let k = d().double();
@@ -57,10 +62,12 @@ impl Extended {
         }
     }
 
-    /// $2P$ by `dbl-2008-hwcd` ($a = -1$): $A = X^2$, $B = Y^2$,
+    /// $2P$ by [`dbl-2008-hwcd`][dbl-2008-hwcd] ($a = -1$): $A = X^2$, $B = Y^2$,
     /// $C = 2 Z^2$, $D = -A$, $E = (X + Y)^2 - A - B$, $G = D + B$,
     /// $F = G - C$, $H = D - B$, $X_3 = E F$, $Y_3 = G H$, $T_3 = E H$,
     /// $Z_3 = F G$.
+    ///
+    /// [dbl-2008-hwcd]: https://hyperelliptic.org/EFD/g1p/auto-twisted-extended-1.html#doubling-dbl-2008-hwcd
     #[must_use]
     pub fn double(&self) -> Self {
         let a = self.x.square();

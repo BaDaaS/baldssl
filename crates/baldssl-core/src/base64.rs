@@ -1,9 +1,9 @@
-//! Base64, RFC 4648 section 4 (standard alphabet, `=` padding).
+//! Base64, [RFC 4648 section 4][rfc4648-4] (standard alphabet, `=` padding).
 //!
 //! # Canonicity
 //!
 //! [`decode`] accepts exactly the image of [`encode`]: it rejects missing
-//! padding, misplaced padding and non-zero pad bits (RFC 4648 section 3.5).
+//! padding, misplaced padding and non-zero pad bits ([RFC 4648 section 3.5][rfc4648-3.5]).
 //! So `decode` is injective on the strings it accepts and
 //! `encode(decode(s)?) == s` holds, the same "one value, one encoding"
 //! discipline that DER imposes on ASN.1.
@@ -22,6 +22,9 @@
 //! The explicit `c >= x && c <= y` comparisons (instead of
 //! `RangeInclusive::contains`) are deliberate too: they translate to plain
 //! Lean conditionals, where `contains` would pull in a trait method.
+//!
+//! [rfc4648-4]: https://www.rfc-editor.org/rfc/rfc4648#section-4
+//! [rfc4648-3.5]: https://www.rfc-editor.org/rfc/rfc4648#section-3.5
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
@@ -154,7 +157,9 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// RFC 4648 section 10 test vectors.
+    /// [RFC 4648 section 10][rfc4648-10] test vectors.
+    ///
+    /// [rfc4648-10]: https://www.rfc-editor.org/rfc/rfc4648#section-10
     #[test]
     fn rfc4648_vectors() {
         let cases: [(&[u8], &str); 7] = [

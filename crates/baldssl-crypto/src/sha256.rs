@@ -1,9 +1,11 @@
-//! SHA-224 and SHA-256, FIPS 180-4 sections 5.3.2, 5.3.3 and 6.2.
+//! SHA-224 and SHA-256, [FIPS 180-4][fips180] sections 5.3.2, 5.3.3 and 6.2.
 //!
 //! Indexing is into fixed-size arrays with loop bounds equal to their length,
 //! so it cannot fail; the arithmetic is explicitly `wrapping_*` (addition
 //! modulo 2^32 is the specification, not an overflow).
 //! Single-letter names (`a` to `h`, `w`, `t`) are the specification's.
+//!
+//! [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,

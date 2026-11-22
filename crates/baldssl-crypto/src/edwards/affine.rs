@@ -1,6 +1,8 @@
 //! The affine model: points $(x, y)$ with $-x^2 + y^2 = 1 + d x^2 y^2$,
 //! the identity being $(0, 1)$. Affine points are what is encoded and
-//! decoded (RFC 8032, section 5.1.2).
+//! decoded ([RFC 8032, section 5.1.2][rfc8032-5.1.2]).
+//!
+//! [rfc8032-5.1.2]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
 
 use super::{BX, BY, constant, d};
 use crate::{ct::Choice, fields::Field25519};
@@ -60,9 +62,11 @@ impl Affine {
         }
     }
 
-    /// The 32-byte encoding of RFC 8032, section 5.1.2: $y$ in
+    /// The 32-byte encoding of [RFC 8032, section 5.1.2][rfc8032-5.1.2]: $y$ in
     /// little-endian, with the least significant bit of $x$ in the most
     /// significant bit of the last byte (free, since $y < 2^{255}$).
+    ///
+    /// [rfc8032-5.1.2]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
     #[must_use]
     pub fn encode(&self) -> [u8; 32] {
         let mut out = [0u8; 32];

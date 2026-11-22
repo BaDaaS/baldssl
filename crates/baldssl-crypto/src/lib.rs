@@ -1,13 +1,13 @@
 //! Cryptographic primitives for baldssl, implemented from their
 //! specifications with no third-party code.
 //!
-//! Implemented: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (FIPS 180-4),
+//! Implemented: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 ([FIPS 180-4][fips180]),
 //! constant-time prime-field arithmetic for P-256, P-384, P-521 and
 //! Curve25519 / Ed25519 ([`field`], [`fields`]), and
 //! randomness from the operating system ([`os_rng`], the only module allowed
 //! to use `unsafe`).
 //! Planned: P-256, P-384, P-521 field and group arithmetic,
-//! ECDSA (FIPS 186-5), Ed25519 (RFC 8032), HMAC, a DRBG, and the RSA
+//! ECDSA ([FIPS 186-5][fips186]), Ed25519 ([RFC 8032][rfc8032]), HMAC, a DRBG, and the RSA
 //! verification needed to read RSA-signed chains.
 //!
 //! # Structure
@@ -17,6 +17,10 @@
 //! therefore a right action of the free monoid of byte strings on the
 //! buffered state, `(s . a) . b = s . (a ++ b)`, which is the law the
 //! streaming property tests check.
+//!
+//! [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+//! [fips186]: https://csrc.nist.gov/pubs/fips/186-5/final
+//! [rfc8032]: https://www.rfc-editor.org/rfc/rfc8032
 
 #![deny(clippy::arithmetic_side_effects)]
 #![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
@@ -128,9 +132,11 @@ mod tests {
             .collect()
     }
 
-    /// Known answers from the FIPS 180-4 example documents (NIST CSRC,
+    /// Known answers from the [FIPS 180-4 example documents][examples] (NIST CSRC,
     /// "Examples with Intermediate Values"): "abc", the empty string, the
     /// two-block message, and one million 'a'.
+    ///
+    /// [examples]: https://csrc.nist.gov/projects/cryptographic-standards-and-guidelines/example-values
     #[test]
     fn known_answers() {
         let abc = b"abc";
