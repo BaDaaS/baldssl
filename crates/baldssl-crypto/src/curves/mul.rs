@@ -9,7 +9,7 @@
 //! used as an index.
 
 use super::{params::CurveParams, projective::Projective};
-use crate::{ct::Choice, field::PrimeField};
+use crate::{algebra::field::PrimeField, ct::Choice};
 
 /// $k P$, constant time in $k$ and $P$.
 #[must_use]

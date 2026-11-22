@@ -13,7 +13,7 @@
 //! [dbl-2008-hwcd]: https://hyperelliptic.org/EFD/g1p/auto-twisted-extended-1.html#doubling-dbl-2008-hwcd
 
 use super::{affine::Affine, d};
-use crate::{ct::Choice, fields::Field25519};
+use crate::{algebra::field::Field, ct::Choice, fields::Field25519};
 
 /// A point of the Ed25519 curve in extended coordinates.
 #[derive(Clone, Copy, Debug)]

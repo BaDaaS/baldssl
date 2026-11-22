@@ -3,7 +3,7 @@
 //!
 //! Implemented: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 ([FIPS 180-4][fips180]),
 //! constant-time prime-field arithmetic for P-256, P-384, P-521 and
-//! Curve25519 / Ed25519 ([`field`], [`fields`]), and
+//! Curve25519 / Ed25519 ([`algebra::fp`], [`fields`]), and
 //! randomness from the operating system ([`os_rng`], the only module allowed
 //! to use `unsafe`).
 //! Planned: P-256, P-384, P-521 field and group arithmetic,
@@ -25,11 +25,11 @@
 #![deny(clippy::arithmetic_side_effects)]
 #![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
 
+pub mod algebra;
 pub mod ct;
 pub mod curves;
 pub mod ed25519;
 pub mod edwards;
-pub mod field;
 pub mod fields;
 pub mod os_rng;
 mod sha1;

@@ -21,7 +21,7 @@ use super::{
     affine::Affine, jacobian::Jacobian, params::CurveParams,
     projective::Projective,
 };
-use crate::field::PrimeField;
+use crate::algebra::field::Field;
 
 impl<C> From<Affine<C>> for Projective<C>
 where

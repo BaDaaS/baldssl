@@ -11,7 +11,10 @@
 use core::marker::PhantomData;
 
 use super::params::{self, CurveParams};
-use crate::{ct::Choice, field::PrimeField};
+use crate::{
+    algebra::field::{Field, PrimeField},
+    ct::Choice,
+};
 
 /// A point of the curve `C` in affine coordinates, or the identity.
 pub struct Affine<C>

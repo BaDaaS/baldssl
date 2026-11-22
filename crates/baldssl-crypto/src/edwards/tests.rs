@@ -9,7 +9,11 @@ use std::{fs, path::Path};
 use proptest::prelude::*;
 
 use super::{affine::Affine, d, extended::Extended};
-use crate::{ed25519, fields::Field25519};
+use crate::{
+    algebra::field::{Field, PrimeField},
+    ed25519,
+    fields::Field25519,
+};
 
 fn f(v: u64) -> Field25519 {
     Field25519::from_u64(v)

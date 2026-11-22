@@ -8,7 +8,7 @@
 //! [RFC 7748]: https://www.rfc-editor.org/rfc/rfc7748
 //! [RFC 8032]: https://www.rfc-editor.org/rfc/rfc8032
 
-use crate::field::{Fp, Modulus};
+use crate::algebra::fp::{Fp, Modulus};
 
 /// The base field of Curve25519 and Ed25519, $p = 2^{255} - 19$.
 pub enum Curve25519Base {}

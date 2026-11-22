@@ -44,7 +44,7 @@
 pub mod affine;
 pub mod extended;
 
-use crate::fields::Field25519;
+use crate::{algebra::field::Field, fields::Field25519};
 
 /// $d = -121665 / 121666$, big-endian hexadecimal ([RFC 8032, section 5.1][rfc8032-5.1];
 /// the tests recompute it).

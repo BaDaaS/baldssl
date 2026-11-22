@@ -26,7 +26,7 @@ use super::{
     affine::{Affine, b},
     params::CurveParams,
 };
-use crate::{ct::Choice, field::PrimeField};
+use crate::{algebra::field::Field, ct::Choice};
 
 /// A point $(X : Y : Z)$ of the curve `C`; see the module documentation.
 pub struct Projective<C>

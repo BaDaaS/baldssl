@@ -11,7 +11,7 @@
 //! [SEC 2]: https://www.secg.org/sec2-v2.pdf
 
 use super::params::CurveParams;
-use crate::field::{Fp, Modulus};
+use crate::algebra::fp::{Fp, Modulus};
 
 /// The base field of P-256, $p = 2^{256} - 2^{224} + 2^{192} + 2^{96} - 1$.
 pub enum P256Base {}

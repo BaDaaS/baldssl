@@ -19,7 +19,7 @@ use super::{
     params,
     projective::Projective,
 };
-use crate::field::PrimeField;
+use crate::algebra::field::{Field, PrimeField};
 
 /// The affine group law: $\lambda = (y_2 - y_1) / (x_2 - x_1)$, or
 /// $(3 x_1^2 - 3) / (2 y_1)$ when doubling; $x_3 = \lambda^2 - x_1 - x_2$,

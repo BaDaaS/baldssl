@@ -11,7 +11,7 @@
 //! [SEC 2]: https://www.secg.org/sec2-v2.pdf
 
 use super::params::CurveParams;
-use crate::field::{Fp, Modulus};
+use crate::algebra::fp::{Fp, Modulus};
 
 /// The base field of P-521, the Mersenne prime $p = 2^{521} - 1$.
 pub enum P521Base {}

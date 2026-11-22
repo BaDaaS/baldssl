@@ -2,7 +2,7 @@
 //! every model reads. Each curve, with its fields, is defined in its own
 //! module: [`super::p256`], [`super::p384`], [`super::p521`].
 
-use crate::field::PrimeField;
+use crate::algebra::field::PrimeField;
 
 /// A short Weierstrass curve $y^2 = x^3 - 3x + b$ over `Self::Base` (the
 /// NIST curves all have $a = -3$), of prime order `Self::Scalar`'s modulus,

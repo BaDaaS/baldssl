@@ -5,7 +5,11 @@
 //! [rfc8032-5.1.2]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
 
 use super::{BX, BY, constant, d};
-use crate::{ct::Choice, fields::Field25519};
+use crate::{
+    algebra::field::{Field, PrimeField},
+    ct::Choice,
+    fields::Field25519,
+};
 
 /// A point of the Ed25519 curve in affine coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

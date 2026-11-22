@@ -16,6 +16,7 @@ use proptest::prelude::*;
 
 use super::{Fp, Modulus};
 use crate::{
+    algebra::field::{Field, PrimeField},
     curves::{
         p256::{P256Base, P256Scalar},
         p384::{P384Base, P384Scalar},
