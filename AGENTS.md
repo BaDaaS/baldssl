@@ -39,6 +39,9 @@ practices" says what the project does; this file says how to work in it.
   (`make check-urls`).
 - Every encoding says its byte order (big-endian or little-endian) and its
   length.
+- Say what every acronym stands for where a document first uses it (PEM,
+  Privacy-Enhanced Mail; DER, Distinguished Encoding Rules), and once per
+  crate in its top-level documentation, with a link to the defining standard.
 - ASCII only.
 
 ## Tests
