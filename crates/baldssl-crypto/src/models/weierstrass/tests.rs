@@ -312,12 +312,17 @@ where
     laws::round_trip(&ap);
     laws::round_trip(&Affine::<C>::identity());
     let enc = ap.encode();
-    assert_eq!(Affine::<C>::decode(&enc), Some(ap));
+    assert_eq!(Affine::<C>::decode(&enc).ok(), Some(ap));
     let mut off = enc.clone();
     if let Some(last) = off.last_mut() {
         *last ^= 1;
     }
-    assert_eq!(Affine::<C>::decode(&off), None, "{} off-curve", C::NAME);
+    assert_eq!(
+        Affine::<C>::decode(&off).ok(),
+        None,
+        "{} off-curve",
+        C::NAME
+    );
     let (off_point, on_curve) = Affine::<C>::from_coordinates(
         ap.coordinates().unwrap().0,
         ap.coordinates().unwrap().1 + C::Base::ONE,
@@ -360,7 +365,7 @@ where
     };
     let mut alias = enc.clone();
     alias[1..=len].copy_from_slice(&x);
-    assert_eq!(Affine::<C>::decode(&alias), None, "{} x + p", C::NAME);
+    assert_eq!(Affine::<C>::decode(&alias).ok(), None, "{} x + p", C::NAME);
     true
 }
 
@@ -384,7 +389,7 @@ fn golden_encoding() {
     );
     let g = hex(g);
     assert_eq!(Affine::<P256>::generator().encode(), g);
-    assert_eq!(Affine::<P256>::decode(&g), Some(Affine::generator()));
+    assert_eq!(Affine::<P256>::decode(&g).ok(), Some(Affine::generator()));
     assert_eq!(Affine::<P256>::identity().encode(), vec![0x00]);
 }
 
@@ -435,18 +440,18 @@ where
     C: ShortWeierstrass,
 {
     let enc = Affine::<C>::generator().encode();
-    assert_eq!(Affine::<C>::decode(&enc[..enc.len() - 1]), None);
+    assert_eq!(Affine::<C>::decode(&enc[..enc.len() - 1]).ok(), None);
     let mut prefix = enc.clone();
     prefix[0] = 0x02;
-    assert_eq!(Affine::<C>::decode(&prefix), None);
+    assert_eq!(Affine::<C>::decode(&prefix).ok(), None);
     let mut big = enc.clone();
     for byte in &mut big[1..=C::Base::BYTES] {
         *byte = 0xff;
     }
-    assert_eq!(Affine::<C>::decode(&big), None);
+    assert_eq!(Affine::<C>::decode(&big).ok(), None);
     assert_eq!(Affine::<C>::identity().encode(), vec![0x00]);
     // SEC 1 section 2.3.4: 00 is the identity, so encoding round-trips at O.
-    assert_eq!(Affine::<C>::decode(&[0x00]), Some(Affine::identity()));
+    assert_eq!(Affine::<C>::decode(&[0x00]).ok(), Some(Affine::identity()));
 }
 
 #[test]

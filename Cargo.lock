@@ -29,6 +29,7 @@ dependencies = [
 name = "baldssl-crypto"
 version = "0.1.0"
 dependencies = [
+ "baldssl-core",
  "baldssl-test-utils",
  "proptest",
 ]

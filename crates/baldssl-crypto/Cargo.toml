@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+baldssl-core.workspace = true
+
 [dev-dependencies]
 baldssl-test-utils.workspace = true
 proptest.workspace = true

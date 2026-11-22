@@ -8,9 +8,9 @@ use proptest::prelude::*;
 
 use super::{
     Any, BitString, Boolean, Choice, Constant, Either, Explicit, Implicit, Map,
-    Natural, Null, ObjectId, ObjectIdentifier, OctetString, Optional,
-    OptionalLast, RawTlv, Sequence, SequenceOf, SetOf, Small, Syntax, Tagged,
-    Unsigned, WithDefault, decode, encode,
+    Natural, Null, ObjectId, ObjectIdentifier, OctetString, OctetStringOf,
+    Optional, OptionalLast, RawTlv, Sequence, SequenceOf, SetOf, Small, Syntax,
+    Tagged, Unsigned, WithDefault, decode, encode,
 };
 use crate::der::DerError;
 
@@ -194,6 +194,8 @@ proptest! {
         laws(&record(), &(k, (s.clone(), (flag, (d, ())))), at, xor);
         laws(&SequenceOf(Small), &items, at, xor);
         laws(&Sequence(()), &(), at, xor);
+        // An encoding inside an OCTET STRING, as PKCS#8's privateKey.
+        laws(&OctetStringOf(Sequence((Small, ()))), &(k, ()), at, xor);
     }
 
     /// SET OF writes the canonical representative of the multiset: any
@@ -271,6 +273,7 @@ proptest! {
         canonical(&WithDefault::new(Boolean, false), &data);
         canonical(&Choice::new(Small, OctetString).unwrap(), &data);
         canonical(&version(), &data);
+        canonical(&OctetStringOf(Small), &data);
         canonical(&Sequence((ObjectIdentifier, (OptionalLast(Any), ()))), &data);
     }
 }
@@ -314,6 +317,18 @@ fn golden() {
     assert_eq!(
         encode(&pair, &(5, (b"hi".to_vec(), ()))),
         [0x30, 0x07, 0x02, 0x01, 0x05, 0x04, 0x02, 0x68, 0x69]
+    );
+}
+
+/// A constant identifier is the one its dotted form names.
+#[test]
+fn static_identifiers() {
+    const EC: ObjectId =
+        ObjectId::from_static(&[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]);
+    assert_eq!(Some(EC), ObjectId::from_dotted("1.2.840.10045.2.1"));
+    assert_eq!(
+        decode(&ObjectIdentifier, &encode(&ObjectIdentifier, &EC)),
+        Ok(EC)
     );
 }
 

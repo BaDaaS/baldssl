@@ -35,6 +35,7 @@
 //! | NULL | [`Null`] | `()` |
 //! | INTEGER, non-negative | [`Unsigned`], [`Small`] | [`Natural`], `u64` |
 //! | OCTET STRING | [`OctetString`] | `Vec<u8>` |
+//! | OCTET STRING around an encoding | [`OctetStringOf`] | the inner value |
 //! | BIT STRING, whole bytes | [`BitString`] | `Vec<u8>` |
 //! | OBJECT IDENTIFIER | [`ObjectIdentifier`] | [`ObjectId`] |
 //! | any one TLV | [`Any`] | [`RawTlv`] |
@@ -66,6 +67,8 @@
 //!
 //! [iso]: https://www.informatik.uni-marburg.de/~rendel/unparse
 //! [x690]: https://www.itu.int/rec/T-REC-X.690
+
+use std::borrow::Cow;
 
 use super::{
     BitString as BitStringContents, DerError, Integer, Oid, parse_bool,
@@ -322,6 +325,41 @@ impl Tagged for OctetString {
     }
 }
 
+/// OCTET STRING whose contents are exactly one encoding of `P`, as the
+/// `privateKey` of PKCS#8 and the `extnValue` of an X.509 extension.
+#[derive(Debug, Clone, Copy)]
+pub struct OctetStringOf<P>(pub P)
+where
+    P: Syntax;
+
+impl<P> Syntax for OctetStringOf<P>
+where
+    P: Syntax,
+{
+    type Value = P::Value;
+
+    fn write(&self, value: &P::Value, out: &mut Vec<u8>) {
+        put(out, tag::OCTET_STRING, &encode(&self.0, value));
+    }
+
+    fn read<'a>(
+        &self,
+        input: &'a [u8],
+    ) -> Result<(P::Value, &'a [u8]), DerError> {
+        let (contents, rest) = expect(input, tag::OCTET_STRING)?;
+        Ok((decode(&self.0, contents)?, rest))
+    }
+}
+
+impl<P> Tagged for OctetStringOf<P>
+where
+    P: Syntax,
+{
+    fn tag(&self) -> u8 {
+        tag::OCTET_STRING
+    }
+}
+
 /// BIT STRING of whole bytes (keys, signatures): the unused-bits octet is 0.
 /// A BIT STRING with unused bits is valid DER but outside this type, and is
 /// rejected as [`DerError::UnexpectedValue`].
@@ -357,16 +395,63 @@ impl Tagged for BitString {
 /// An object identifier, as its DER contents octets (base-128 arcs, minimal,
 /// X.690 8.19), checked when built.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ObjectId(Vec<u8>);
+pub struct ObjectId(Cow<'static, [u8]>);
+
+/// Whether `contents` are the contents of an OBJECT IDENTIFIER: not empty,
+/// the last octet ends a sub-identifier, and no sub-identifier starts with
+/// `0x80` (X.690 8.19.2). The same rule as [`Oid::parse`], as a `const fn`.
+const fn valid_oid_contents(contents: &[u8]) -> bool {
+    let Some(last) = contents.last() else {
+        return false;
+    };
+    if *last & 0x80 != 0 {
+        return false;
+    }
+    let mut start = true;
+    let mut rest = contents;
+    while let [b, tail @ ..] = rest {
+        if start && *b == 0x80 {
+            return false;
+        }
+        start = *b & 0x80 == 0;
+        rest = tail;
+    }
+    true
+}
 
 impl ObjectId {
+    /// An identifier given as its contents octets, for constants. The check
+    /// runs at compile time when the result is a `const`, so an invalid
+    /// constant does not compile:
+    ///
+    /// ```
+    /// use baldssl_core::der::syntax::ObjectId;
+    /// // 1.2.840.10045.2.1, id-ecPublicKey.
+    /// const ID: ObjectId =
+    ///     ObjectId::from_static(&[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]);
+    /// assert_eq!(ID.to_dotted().unwrap(), "1.2.840.10045.2.1");
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// On contents that are not an OBJECT IDENTIFIER's: at compile time for
+    /// a constant, which is the intended use.
+    #[must_use]
+    pub const fn from_static(contents: &'static [u8]) -> Self {
+        assert!(
+            valid_oid_contents(contents),
+            "not the contents of an OBJECT IDENTIFIER"
+        );
+        ObjectId(Cow::Borrowed(contents))
+    }
+
     /// The identifier written in dotted form (`1.2.840.10045.2.1`), or `None`
     /// when it is not a valid object identifier.
     #[must_use]
     pub fn from_dotted(dotted: &str) -> Option<Self> {
         let encoded = write::oid(dotted)?;
         let (tlv, _) = parse_tlv(&encoded).ok()?;
-        Some(ObjectId(tlv.value.to_vec()))
+        Some(ObjectId(Cow::Owned(tlv.value.to_vec())))
     }
 
     /// The dotted form.
@@ -396,7 +481,7 @@ impl Syntax for ObjectIdentifier {
     ) -> Result<(ObjectId, &'a [u8]), DerError> {
         let (contents, rest) = expect(input, tag::OID)?;
         Oid::parse(contents)?;
-        Ok((ObjectId(contents.to_vec()), rest))
+        Ok((ObjectId(Cow::Owned(contents.to_vec())), rest))
     }
 }
 
