@@ -7,6 +7,7 @@ use core::fmt::Debug;
 use crate::algebra::{
     curve::Curve,
     encoding::{Decodable, Encodable},
+    field::Field,
     group::{Group, GroupVartime},
     model::{AffineModel, CurveModel, JacobianModel, ProjectiveModel},
 };
@@ -127,7 +128,6 @@ pub(crate) fn module<P>(
 ) where
     P: ProjectiveModel + PartialEq + Debug,
 {
-    use crate::algebra::field::Field;
     type S<P> = <<P as CurveModel>::Curve as Curve>::Scalar;
     let mul = |k: &S<P>, x: &P| <P::Curve as Curve>::scalar_mul(x, k);
     assert_eq!(mul(&(*a + *b), p), mul(a, p) + mul(b, p), "additive");
