@@ -161,6 +161,28 @@ const fn pow2_mod<const N: usize>(k: usize, p: &[u64; N]) -> [u64; N] {
 /// $-p_0^{-1} \bmod 2^{64}$ by Newton's iteration, which doubles the number
 /// of correct low bits each step: $x \equiv p_0^{-1}$ holds modulo 2 from
 /// $x = 1$ (as $p_0$ is odd), then modulo $2^{2^k}$ after $k$ steps.
+/// `a >> k` for `0 < k < 64`, little-endian limbs.
+fn shr<const N: usize>(a: &[u64; N], k: u32) -> [u64; N] {
+    let mut out = [0u64; N];
+    for i in 0..N {
+        let high = if i + 1 < N { a[i + 1] << (64 - k) } else { 0 };
+        out[i] = (a[i] >> k) | high;
+    }
+    out
+}
+
+/// `a + 1`, little-endian limbs; the callers' values are far below the top.
+fn add_one<const N: usize>(a: &[u64; N]) -> [u64; N] {
+    let mut out = *a;
+    let mut carry = 1;
+    for limb in &mut out {
+        let (s, c) = adc(*limb, 0, carry);
+        *limb = s;
+        carry = c;
+    }
+    out
+}
+
 const fn neg_inv(p0: u64) -> u64 {
     let mut x: u64 = 1;
     let mut i = 0;
@@ -287,6 +309,30 @@ where
         let mut one = [0u64; N];
         one[0] = 1;
         Self::mont_mul(&self.mont, &one)
+    }
+
+    /// A square root for $p \equiv 5 \pmod 8$ (Atkin's case, as in
+    /// [RFC 8032, section 5.1.3][rfc8032-5.1.3]): with $q = (p - 5) / 8$,
+    /// $r = a^{q + 1}$ satisfies $r^2 = \pm a$ when $a$ is a square, since
+    /// $a^{(p - 1)/4} = \pm 1$; when $r^2 = -a$, $r \sqrt{-1}$ is the root,
+    /// with $\sqrt{-1} = 2^{(p - 1)/4}$ because 2 is not a square modulo such
+    /// a $p$. Constant time in $a$: two exponentiations by public exponents,
+    /// and selections.
+    ///
+    /// The caller guarantees $p \equiv 5 \pmod 8$; the instance tests check
+    /// it.
+    ///
+    /// [rfc8032-5.1.3]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.3
+    pub(crate) fn sqrt_5_mod_8(&self) -> (Self, Choice) {
+        let p = Self::modulus();
+        // (p - 5) / 8 + 1 = (p >> 3) + 1, and (p - 1) / 4 = p >> 2, as p = 5
+        // modulo 8.
+        let root_exp = add_one(&shr(&p, 3));
+        let sqrt_minus_one = Self::from_u64(2).pow_vartime(&shr(&p, 2));
+        let r = self.pow_vartime(&root_exp);
+        let direct = r.square().ct_eq(self);
+        let r = Self::select(&(r * sqrt_minus_one), &r, direct);
+        (r, r.square().ct_eq(self))
     }
 
     /// $a^e$ for a public exponent, little-endian limbs. Constant time in

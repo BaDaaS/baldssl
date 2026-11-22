@@ -8,7 +8,9 @@
 //!
 //! [sec1]: https://www.secg.org/sec1-v2.pdf
 
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ops::Neg};
+
+use super::projective::Projective;
 
 use crate::{
     algebra::{
@@ -129,12 +131,45 @@ where
 
 impl<C> Eq for Affine<C> where C: ShortWeierstrass {}
 
+/// $(x, -y)$; the identity is its own opposite.
+impl<C> Neg for Affine<C>
+where
+    C: ShortWeierstrass,
+{
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        Affine {
+            y: C::Base::select(&-self.y, &self.y, self.infinity),
+            ..self
+        }
+    }
+}
+
 impl<C> CurveModel for Affine<C>
 where
     C: ShortWeierstrass,
 {
     type Curve = C;
 
+    fn generator() -> Self {
+        point(constant(C::GX), constant(C::GY))
+    }
+
+    /// $y^2 = x^3 - 3x + b$, or the identity.
+    fn is_on_curve(&self) -> Choice {
+        self.y.square().ct_eq(&rhs::<C>(self.x)) | self.infinity
+    }
+
+    fn is_in_prime_subgroup(&self) -> Choice {
+        C::is_in_prime_subgroup(&Projective::<C>::from(*self))
+    }
+}
+
+impl<C> AffineModel for Affine<C>
+where
+    C: ShortWeierstrass,
+{
     /// The point at infinity.
     fn identity() -> Self {
         Affine {
@@ -145,42 +180,10 @@ where
         }
     }
 
-    fn generator() -> Self {
-        point(constant(C::GX), constant(C::GY))
-    }
-
     fn is_identity(&self) -> Choice {
         self.infinity
     }
 
-    /// $(x, -y)$; the identity is its own opposite.
-    fn neg(&self) -> Self {
-        Affine {
-            y: C::Base::select(&-self.y, &self.y, self.infinity),
-            ..*self
-        }
-    }
-
-    /// $y^2 = x^3 - 3x + b$, or the identity.
-    fn is_on_curve(&self) -> Choice {
-        self.y.square().ct_eq(&rhs::<C>(self.x)) | self.infinity
-    }
-
-    /// The NIST curves have cofactor 1, so this is [`Self::is_on_curve`];
-    /// a curve of this family with a cofactor above one goes through the
-    /// projective model's $[\ell] P = O$ test.
-    fn is_in_prime_subgroup(&self) -> Choice {
-        if C::COFACTOR == 1 {
-            return self.is_on_curve();
-        }
-        super::projective::Projective::<C>::from(*self).is_in_prime_subgroup()
-    }
-}
-
-impl<C> AffineModel for Affine<C>
-where
-    C: ShortWeierstrass,
-{
     /// The point $(x, y)$, and whether it is on the curve. When it is not,
     /// the identity is returned with a false [`Choice`].
     fn from_coordinates(x: Base<Self>, y: Base<Self>) -> (Self, Choice) {
@@ -198,7 +201,9 @@ where
 }
 
 /// The [SEC 1][sec1] uncompressed encoding (section 2.3.3): `04 || x || y`,
-/// and the single byte `00` for the identity.
+/// with $x$ and $y$ **big-endian**, each on the field's byte length (32
+/// bytes for P-256, 48 for P-384, 66 for P-521), and the single byte `00`
+/// for the identity.
 ///
 /// [sec1]: https://www.secg.org/sec1-v2.pdf
 impl<C> Encodable for Affine<C>
@@ -220,8 +225,8 @@ where
 }
 
 /// Decodes the uncompressed encoding ([SEC 1][sec1], section 2.3.4): `00`
-/// is the identity, and `04 || x || y` a point on the curve with canonical
-/// coordinates. Anything else is rejected, including the compressed forms
+/// is the identity, and `04 || x || y` (each coordinate **big-endian**) a
+/// point on the curve with canonical coordinates. Anything else is rejected, including the compressed forms
 /// (`02`, `03`) and the hybrid ones (`06`, `07`), which are other encodings.
 ///
 /// [sec1]: https://www.secg.org/sec1-v2.pdf

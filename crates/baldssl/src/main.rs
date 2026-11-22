@@ -2,8 +2,7 @@
 //!
 //! The first goal is compatibility: the same arguments, the same output
 //! bytes. The OpenSSL-compatible commands are a thin layer over the library
-//! crates, so a friendlier native interface can later be added beside them
-//! without touching the primitives.
+//! crates, which hold the primitives.
 //!
 //! Exit codes: 0 on success, 1 on any error, 2 when an input file is missing.
 

@@ -20,13 +20,7 @@
 //! the operating system, the only module allowed to use `unsafe`) support
 //! all of them.
 //!
-//! Planned: ECDSA ([FIPS 186-5][fips186]), EdDSA signing and verification
-//! ([RFC 8032][rfc8032]), HMAC, a DRBG, and the RSA verification needed to
-//! read RSA-signed chains.
-//!
 //! [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
-//! [fips186]: https://csrc.nist.gov/pubs/fips/186-5/final
-//! [rfc8032]: https://www.rfc-editor.org/rfc/rfc8032
 
 #![deny(clippy::arithmetic_side_effects)]
 #![cfg_attr(test, allow(clippy::arithmetic_side_effects))]

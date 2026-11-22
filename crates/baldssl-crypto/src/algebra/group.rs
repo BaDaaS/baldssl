@@ -1,51 +1,73 @@
-//! The group law of a curve, as traits, and the one scalar multiplication
-//! every group shares.
+//! The group law, as traits, independent of any curve.
 //!
-//! [`Group`] is the signature of an abelian group $(G, O, +, -)$ on the
-//! points of a model, with constant-time operations; its laws are the
-//! abelian group axioms (associativity, commutativity, $O$ neutral,
-//! $P + (-P) = O$) and `double(P) = P + P`. [`GroupVartime`] is the same
-//! group with variable-time operations, for public points only.
+//! [`Group`] is the signature of an abelian group $(G, O, +, -)$ with
+//! constant-time operations, written with the operators of [`core::ops`].
+//! Its laws are the abelian group axioms (associativity, commutativity, $O$
+//! neutral, $P + (-P) = O$), `double(P) = P + P` and $P - Q = P + (-Q)$.
+//! [`GroupVartime`] is the same signature with variable-time operations, for
+//! public points only.
 //!
 //! Constant time is a property of the algorithm, not of the abstract group:
 //! the same group can be implemented both ways. That is why it is in the
-//! *type* of the implementation, as two traits, rather than a comment: code
-//! that handles secrets takes a [`Group`], so a variable-time implementation
-//! cannot reach a secret.
+//! *type* of the implementation, as two traits: code that handles secrets
+//! takes a [`Group`], so a variable-time implementation cannot reach a
+//! secret.
 //!
 //! # Scalar multiplication
 //!
 //! An abelian group is a $\mathbb{Z}$-module in exactly one way, since
-//! $\mathbb{Z}$ is the initial ring: $k P = P + \dots + P$. So
-//! [`scalar_mul`] is defined once, for every [`Group`]. For a group of prime
-//! order $\ell$ the action factors through $\mathbb{F}_\ell$, and
-//! $k \mapsto k G$ is a group isomorphism $\mathbb{F}_\ell \to G$ whose inverse
-//! is the discrete logarithm: its hardness is the security assumption.
+//! $\mathbb{Z}$ is the initial ring: $k P = P + \dots + P$. [`ladder`]
+//! computes that action for every [`Group`]; the curves expose it as
+//! [`crate::algebra::curve::Curve::scalar_mul`], which an instance may
+//! replace with a faster algorithm computing the same map. For a group of
+//! prime order $\ell$ the action factors through $\mathbb{F}_\ell$, and
+//! $k \mapsto k G$ is a group isomorphism $\mathbb{F}_\ell \to G$ whose
+//! inverse is the discrete logarithm: its hardness is the security
+//! assumption.
 
-use crate::{algebra::model::CurveModel, ct::Choice};
+// `+` and `-` here are group operations, which cannot overflow.
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "group operations, not integer arithmetic"
+)]
 
-/// An abelian group on the points of a model, with constant-time
-/// operations. See the module documentation for the laws.
-pub trait Group: CurveModel {
-    /// $P + Q$, constant time.
+use core::ops::{Add, Neg, Sub};
+
+use crate::ct::{Choice, CtEq, CtSelect};
+
+/// An abelian group with constant-time operations. See the module
+/// documentation for the laws.
+pub trait Group:
+    Copy
+    + CtEq
+    + CtSelect
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Neg<Output = Self>
+{
+    /// The neutral element $O$.
     #[must_use]
-    fn add(&self, rhs: &Self) -> Self;
+    fn identity() -> Self;
+
+    /// Whether this is $O$, constant time.
+    fn is_identity(&self) -> Choice;
 
     /// $2P$, constant time.
     #[must_use]
     fn double(&self) -> Self;
-
-    /// $P - Q$.
-    #[must_use]
-    fn sub(&self, rhs: &Self) -> Self {
-        self.add(&rhs.neg())
-    }
 }
 
-/// The group law with variable-time operations: correct for every input,
-/// but its running time depends on the points, so only for public ones
+/// An abelian group with variable-time operations: correct for every input,
+/// but the running time depends on the points, so only for public ones
 /// (signature verification, decoding).
-pub trait GroupVartime: CurveModel {
+pub trait GroupVartime: Copy + CtEq + Neg<Output = Self> {
+    /// The neutral element $O$.
+    #[must_use]
+    fn identity() -> Self;
+
+    /// Whether this is $O$.
+    fn is_identity(&self) -> Choice;
+
     /// $P + Q$, variable time.
     #[must_use]
     fn add_vartime(&self, rhs: &Self) -> Self;
@@ -53,6 +75,12 @@ pub trait GroupVartime: CurveModel {
     /// $2P$, variable time.
     #[must_use]
     fn double_vartime(&self) -> Self;
+
+    /// $P - Q$, variable time.
+    #[must_use]
+    fn sub_vartime(&self, rhs: &Self) -> Self {
+        self.add_vartime(&-*rhs)
+    }
 }
 
 /// $k P$, for the integer $k$ given big-endian, constant time in $k$ and $P$:
@@ -61,7 +89,7 @@ pub trait GroupVartime: CurveModel {
 /// constant-time selection. The bytes of $k$ are read in a fixed order, never
 /// used as an index.
 #[must_use]
-pub fn scalar_mul<G>(point: &G, k_be: &[u8]) -> G
+pub fn ladder<G>(point: &G, k_be: &[u8]) -> G
 where
     G: Group,
 {
@@ -69,7 +97,7 @@ where
     for &byte in k_be {
         for bit in (0..8).rev() {
             acc = acc.double();
-            let sum = acc.add(point);
+            let sum = acc + *point;
             acc =
                 G::select(&acc, &sum, Choice::from_bit(u64::from(byte >> bit)));
         }

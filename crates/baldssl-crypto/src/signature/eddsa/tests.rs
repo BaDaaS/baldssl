@@ -73,15 +73,22 @@ fn clamping() {
 #[test]
 fn public_key_is_the_exponential_of_the_secret_scalar() {
     use crate::{
-        algebra::{encoding::Encodable, group::scalar_mul, model::CurveModel},
+        algebra::{
+            curve::Curve,
+            encoding::Encodable,
+            model::{CurveModel, ProjectiveModel},
+        },
         instances::Edwards25519,
         models::edwards::extended::Extended,
     };
     for byte in [0u8, 1, 0x55, 0xff] {
         let seed = [byte; 32];
         let s = Ed25519::secret_scalar(&seed);
-        let a = scalar_mul(&Extended::<Edwards25519>::generator(), &s);
+        let a = Edwards25519::scalar_mul_bytes(
+            &Extended::<Edwards25519>::generator(),
+            &s,
+        );
         assert!(a.is_in_prime_subgroup().to_bool_vartime());
-        assert_eq!(Ed25519::public_key(&seed), a.encode());
+        assert_eq!(Ed25519::public_key(&seed), a.to_affine().encode());
     }
 }

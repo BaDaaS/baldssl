@@ -23,7 +23,12 @@ use core::marker::PhantomData;
 
 use super::{affine::Affine, jacobian::Jacobian, projective::Projective};
 use crate::{
-    algebra::{curve::ShortWeierstrass, field::Field, model::CurveModel},
+    algebra::{
+        curve::ShortWeierstrass,
+        field::Field,
+        group::{Group, GroupVartime},
+        model::AffineModel,
+    },
     ct::CtSelect,
 };
 

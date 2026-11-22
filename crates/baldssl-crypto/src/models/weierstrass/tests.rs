@@ -16,7 +16,7 @@ use crate::{
         curve::{ShortWeierstrass, element},
         encoding::{Decodable, Encodable},
         field::{Field, PrimeField},
-        group::{Group, GroupVartime, scalar_mul},
+        group::{Group, GroupVartime},
         laws,
         model::{AffineModel, CurveModel},
     },
@@ -28,7 +28,7 @@ fn mul<C>(p: &Projective<C>, k: &C::Scalar) -> Projective<C>
 where
     C: ShortWeierstrass,
 {
-    scalar_mul(p, &k.to_bytes_be())
+    C::scalar_mul(p, k)
 }
 
 /// $k G$.
@@ -109,7 +109,7 @@ where
     // gives the identity.
     let minus_one = -C::Scalar::ONE;
     let p = mul_generator::<C>(&minus_one);
-    assert_eq!(affine(&p), g.neg(), "{} (n - 1) G", C::NAME);
+    assert_eq!(affine(&p), (-g), "{} (n - 1) G", C::NAME);
     assert!(
         p.add_affine(&g).is_identity().to_bool_vartime(),
         "{} n G",
@@ -136,10 +136,10 @@ where
 {
     let g = Projective::<C>::generator();
     let o = Projective::<C>::identity();
-    assert_eq!(g.add(&o), g);
-    assert_eq!(o.add(&g), g);
+    assert_eq!((g + o), g);
+    assert_eq!((o + g), g);
     assert!(o.double().is_identity().to_bool_vartime());
-    assert!(g.add(&g.neg()).is_identity().to_bool_vartime());
+    assert!((g + (-g)).is_identity().to_bool_vartime());
     assert_eq!(g.add_affine(&Affine::identity()), g);
     assert_eq!(o.add_affine(&Affine::generator()), g);
     assert_eq!(Affine::from(o), Affine::<C>::identity());
@@ -151,7 +151,7 @@ where
     );
     assert_eq!(Affine::from(Jacobian::<C>::identity()), Affine::identity());
     let jg = Jacobian::from(Affine::<C>::generator());
-    assert_eq!(Affine::from(jg.add_vartime(&jg.neg())), Affine::identity());
+    assert_eq!(Affine::from(jg.add_vartime(&(-jg))), Affine::identity());
     assert_eq!(
         Affine::from(jg.add_vartime(&Jacobian::identity())),
         Affine::generator()
@@ -242,7 +242,7 @@ where
     // (k1 + k2) G = k1 G + k2 G, and k1 (k2 G) = (k1 k2) G.
     assert_eq!(
         mul_generator::<C>(&(k1 + k2)),
-        p.add(&q),
+        (p + q),
         "{} additivity",
         C::NAME
     );
@@ -255,7 +255,7 @@ where
 
     // Every addition and doubling formula against the reference.
     let sum = reference_add(&ap, &aq);
-    assert_eq!(affine(&p.add(&q)), sum, "{} projective add", C::NAME);
+    assert_eq!(affine(&(p + q)), sum, "{} projective add", C::NAME);
     assert_eq!(affine(&p.add_affine(&aq)), sum, "{} mixed add", C::NAME);
     let (jp, jq) = (Jacobian::from(ap), Jacobian::from(aq));
     assert_eq!(
@@ -284,12 +284,26 @@ where
     // The axioms of each group law, and of each model's isomorphism with the
     // affine chart, on random points.
     let r = mul(&p, &k2);
-    laws::group(&p, &q, &r);
+    laws::group(p, q, r);
     let jr = Jacobian::from(r);
     laws::group_vartime(&jp, &jq, &jr);
     laws::projective_model(&p);
-    laws::projective_model(&p.add(&q));
+    laws::projective_model(&(p + q));
     laws::jacobian_model(&js);
+    laws::closed(p, q);
+    laws::module(&p, &k1, &k2);
+    laws::encodings(&ap);
+    laws::encodings(&Affine::<C>::identity());
+    laws::encodings(&p);
+    laws::encodings(&(p + q));
+    laws::encodings(&jp);
+    laws::encodings(&js);
+    // The projective and Jacobian encodings are of the representation: a
+    // rescaled representative of the same point encodes differently.
+    let scaled = Projective::<C>::new(p.x.double(), p.y.double(), p.z.double());
+    assert_eq!(scaled, p);
+    assert_ne!(scaled.encode(), p.encode());
+    assert_eq!(p.encode().len(), 3 * C::Base::BYTES);
     // Cofactor 1: every point on the curve is in the subgroup.
     assert!(p.is_in_prime_subgroup().to_bool_vartime());
     assert!(ap.is_in_prime_subgroup().to_bool_vartime());

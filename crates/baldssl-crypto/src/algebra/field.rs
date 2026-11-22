@@ -11,9 +11,14 @@
 //!
 //! [`PrimeField`] refines it for $\mathbb{F}_p$: a prime field has a
 //! canonical representative in $[0, p)$ for each element, hence a canonical
-//! encoding, which a general field does not. Keeping the two apart is what
-//! lets extension fields ($\mathbb{F}_{p^k}$, for pairings or for curves
-//! over extensions) implement [`Field`] later without inventing an encoding.
+//! encoding, which a general field does not. Keeping the two apart lets an
+//! extension field ($\mathbb{F}_{p^k}$) implement [`Field`] without an
+//! encoding.
+//!
+//! [`Sqrt`] is a field with square roots computed in constant time; decoding
+//! a compressed point (RFC 8032, SEC 1) solves the curve equation for one
+//! coordinate with it. The algorithm depends on the modulus, so each field
+//! that needs it implements it.
 //!
 //! Every operation here is constant time in the values: [`Choice`] carries
 //! the result of every predicate, never a `bool`.
@@ -95,4 +100,14 @@ pub trait PrimeField: Field {
     /// is not an element (it is zero in the field); scalar multiplication by
     /// the order of a group uses it.
     fn modulus_be() -> Vec<u8>;
+}
+
+/// Square roots: half of the nonzero elements of $\mathbb{F}_p$ are squares
+/// ($p$ odd), each with two roots $\pm r$.
+pub trait Sqrt: Field {
+    /// A root $r$ with $r^2 = a$, and whether $a$ is a square; when it is not,
+    /// the element returned is unspecified. Which of $\pm r$ is returned is
+    /// unspecified too: callers choose by a sign or parity bit. Constant
+    /// time.
+    fn sqrt(&self) -> (Self, Choice);
 }

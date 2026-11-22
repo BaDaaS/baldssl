@@ -12,9 +12,14 @@
 //! [rfc8032-5.1]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1
 //! [rfc7748-4.1]: https://www.rfc-editor.org/rfc/rfc7748#section-4.1
 
-use crate::algebra::{
-    curve::{Curve, TwistedEdwards},
-    fp::{Fp, Modulus},
+use crate::{
+    algebra::{
+        curve::{Curve, TwistedEdwards},
+        field::{PrimeField, Sqrt},
+        fp::{Fp, Modulus},
+        model::ProjectiveModel,
+    },
+    ct::Choice,
 };
 
 /// The base field of Curve25519 and Ed25519, $p = 2^{255} - 19$.
@@ -54,6 +59,25 @@ impl Curve for Edwards25519 {
     /// The base point's $y = 4/5$.
     const GY: &'static str =
         "6666666666666666666666666666666666666666666666666666666666666658";
+
+    /// On the curve, and $[\ell] P = O$: the cofactor is 8, so
+    /// $E(\mathbb{F}_p) = G \oplus T$ with $T$ of order 8, and the points
+    /// with a component in $T$ satisfy the equation without being in $G$.
+    fn is_in_prime_subgroup<P>(point: &P) -> Choice
+    where
+        P: ProjectiveModel<Curve = Self>,
+    {
+        let order = ScalarEd25519::modulus_be();
+        point.is_on_curve()
+            & Self::scalar_mul_bytes(point, &order).is_identity()
+    }
+}
+
+/// $p = 2^{255} - 19 \equiv 5 \pmod 8$: Atkin's square root.
+impl Sqrt for Field25519 {
+    fn sqrt(&self) -> (Self, Choice) {
+        self.sqrt_5_mod_8()
+    }
 }
 
 impl TwistedEdwards for Edwards25519 {

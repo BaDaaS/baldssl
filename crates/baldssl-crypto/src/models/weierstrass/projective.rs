@@ -16,19 +16,23 @@
 //! Batina, *Complete addition formulas for prime order elliptic curves*,
 //! <https://eprint.iacr.org/2015/1060>, Algorithms 4, 5 and 6 for $a = -3$),
 //! and the NIST curves have prime order. Completeness is what makes the
-//! scalar multiplication ([`crate::algebra::group::scalar_mul`]) constant time: the same
+//! scalar multiplication ([`crate::algebra::curve::Curve::scalar_mul`]) constant time: the same
 //! operations run whatever the inputs. The step numbers of the paper are in
 //! the comments; the arrangement follows RustCrypto's `primeorder`.
 
-use core::marker::PhantomData;
+use core::{
+    marker::PhantomData,
+    ops::{Add, Neg, Sub},
+};
 
 use super::affine::{Affine, b};
 use crate::{
     algebra::{
         curve::ShortWeierstrass,
-        field::Field,
+        encoding::{Decodable, Encodable},
+        field::{Field, PrimeField},
         group::Group,
-        model::{CurveModel, ProjectiveModel, prime_subgroup},
+        model::{CurveModel, ProjectiveModel},
     },
     ct::{Choice, CtEq, CtSelect},
 };
@@ -149,29 +153,26 @@ where
 
 impl<C> Eq for Projective<C> where C: ShortWeierstrass {}
 
+/// $(X : -Y : Z)$; it fixes the identity as a class.
+impl<C> Neg for Projective<C>
+where
+    C: ShortWeierstrass,
+{
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        Self::new(self.x, -self.y, self.z)
+    }
+}
+
 impl<C> CurveModel for Projective<C>
 where
     C: ShortWeierstrass,
 {
     type Curve = C;
 
-    /// $(0 : 1 : 0)$.
-    fn identity() -> Self {
-        Self::new(C::Base::ZERO, C::Base::ONE, C::Base::ZERO)
-    }
-
     fn generator() -> Self {
         Self::from(Affine::<C>::generator())
-    }
-
-    /// $Z = 0$.
-    fn is_identity(&self) -> Choice {
-        self.z.is_zero()
-    }
-
-    /// $(X : -Y : Z)$; it fixes the identity as a class.
-    fn neg(&self) -> Self {
-        Self::new(self.x, -self.y, self.z)
     }
 
     /// $Y^2 Z = X^3 - 3 X Z^2 + b Z^3$, with $(X, Y, Z) \neq (0, 0, 0)$ (the
@@ -187,20 +188,20 @@ where
     }
 
     fn is_in_prime_subgroup(&self) -> Choice {
-        prime_subgroup(self)
+        C::is_in_prime_subgroup(self)
     }
 }
 
-/// The complete formulas of Renes, Costello and Batina: a constant-time
-/// group.
-impl<C> Group for Projective<C>
+/// $P + Q$ ([Algorithm 4][rcb]); complete.
+///
+/// [rcb]: https://eprint.iacr.org/2015/1060
+impl<C> Add for Projective<C>
 where
     C: ShortWeierstrass,
 {
-    /// $P + Q$ ([Algorithm 4][rcb]); complete.
-    ///
-    /// [rcb]: https://eprint.iacr.org/2015/1060
-    fn add(&self, rhs: &Self) -> Self {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
         let b = b::<C>();
         let xx = self.x * rhs.x; // 1
         let yy = self.y * rhs.y; // 2
@@ -224,6 +225,35 @@ where
             (yy_p_bzz3 * yy_m_bzz3) + (xx3_m_zz3 * bxz3_part), // 36, 37, 38
             (yy_m_bzz3 * yz_pairs) + (xy_pairs * xx3_m_zz3), // 41, 42, 43
         )
+    }
+}
+
+/// $P - Q = P + (-Q)$.
+impl<C> Sub for Projective<C>
+where
+    C: ShortWeierstrass,
+{
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self {
+        self + -rhs
+    }
+}
+
+/// The complete formulas of Renes, Costello and Batina: a constant-time
+/// group.
+impl<C> Group for Projective<C>
+where
+    C: ShortWeierstrass,
+{
+    /// $(0 : 1 : 0)$.
+    fn identity() -> Self {
+        Self::new(C::Base::ZERO, C::Base::ONE, C::Base::ZERO)
+    }
+
+    /// $Z = 0$.
+    fn is_identity(&self) -> Choice {
+        self.z.is_zero()
     }
 
     /// $2P$ ([Algorithm 6][rcb]); complete.
@@ -269,5 +299,46 @@ where
 
     fn to_affine(&self) -> Affine<C> {
         Affine::from(*self)
+    }
+}
+
+/// The representation itself, not the point it denotes: the 3 coordinates
+/// $X, Y, Z$ as canonical **big-endian** field elements, each on the field's byte
+/// length, concatenated in that order. Two
+/// representatives of one point have different encodings; the affine chart
+/// carries the standard encoding of points.
+impl<C> Encodable for Projective<C>
+where
+    C: ShortWeierstrass,
+{
+    type Bytes = Vec<u8>;
+
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(3 * C::Base::BYTES);
+        out.extend(self.x.to_bytes_be());
+        out.extend(self.y.to_bytes_be());
+        out.extend(self.z.to_bytes_be());
+        out
+    }
+}
+
+/// The inverse of the encoding: 3 canonical field elements (each below
+/// $p$) that satisfy the model's equations; anything else is rejected.
+impl<C> Decodable for Projective<C>
+where
+    C: ShortWeierstrass,
+{
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 3 * C::Base::BYTES {
+            return None;
+        }
+        let mut chunks = bytes.chunks(C::Base::BYTES);
+        let (x, x_ok) = C::Base::from_bytes_be(chunks.next()?);
+        let (y, y_ok) = C::Base::from_bytes_be(chunks.next()?);
+        let (z, z_ok) = C::Base::from_bytes_be(chunks.next()?);
+        let candidate = Self::new(x, y, z);
+        (x_ok & y_ok & z_ok & candidate.is_on_curve())
+            .to_bool_vartime()
+            .then_some(candidate)
     }
 }

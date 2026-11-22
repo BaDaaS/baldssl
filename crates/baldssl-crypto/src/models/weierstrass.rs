@@ -28,7 +28,7 @@
 //!
 //! The affine model is for encoding and decoding. The projective model has
 //! complete formulas, which the constant-time scalar multiplication
-//! ([`crate::algebra::group::scalar_mul`]) uses for secrets. The Jacobian model has faster but incomplete
+//! ([`crate::algebra::curve::Curve::scalar_mul`]) uses for secrets. The Jacobian model has faster but incomplete
 //! formulas, variable time, for public points.
 //!
 //! # Why the weights are $(2, 3, 1)$

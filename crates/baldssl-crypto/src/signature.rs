@@ -12,9 +12,7 @@
 //!
 //! [`DigitalSignature`] is that structure: the group, the secret key, the
 //! expansion ([`DigitalSignature::secret_scalar`]), and the public key it
-//! determines. Signing and verification are separate traits, to come with
-//! the signing algorithms, so that a scheme states only what it implements;
-//! their correctness law will be their test.
+//! determines.
 //!
 //! The group must be a [`ProjectiveModel`], a constant-time group: the
 //! exponential map is computed on the secret scalar.
@@ -22,15 +20,15 @@
 pub mod eddsa;
 
 use crate::algebra::{
+    curve::Curve,
     encoding::Encodable,
-    group::scalar_mul,
     model::{CurveModel, ProjectiveModel},
 };
 
 /// A discrete-logarithm signature scheme over a group of prime order.
 pub trait DigitalSignature {
     /// The group of the public keys, in a model with complete formulas.
-    type Group: ProjectiveModel + Encodable;
+    type Group: ProjectiveModel;
     /// A secret key.
     type SecretKey;
     /// The secret scalar, as a big-endian integer.
@@ -40,11 +38,18 @@ pub trait DigitalSignature {
     /// public key. Secret.
     fn secret_scalar(secret_key: &Self::SecretKey) -> Self::Scalar;
 
-    /// The public key, the encoding of $s G$.
+    /// The public key: $s G$ in the standard encoding of points, the affine
+    /// chart's (not the projective coordinates). Its byte order is the
+    /// scheme's: little-endian for EdDSA (RFC 8032), big-endian for SEC 1.
     fn public_key(
         secret_key: &Self::SecretKey,
-    ) -> <Self::Group as Encodable>::Bytes {
+    ) -> <<Self::Group as ProjectiveModel>::Affine as Encodable>::Bytes {
         let s = Self::secret_scalar(secret_key);
-        scalar_mul(&Self::Group::generator(), s.as_ref()).encode()
+        <<Self::Group as CurveModel>::Curve as Curve>::scalar_mul_bytes(
+            &Self::Group::generator(),
+            s.as_ref(),
+        )
+        .to_affine()
+        .encode()
     }
 }

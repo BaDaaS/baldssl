@@ -22,7 +22,7 @@
 //! [dbl-2001-b]: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#doubling-dbl-2001-b
 //! [add-2007-bl]: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#addition-add-2007-bl
 
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ops::Neg};
 
 use super::{
     affine::{Affine, b},
@@ -31,7 +31,8 @@ use super::{
 use crate::{
     algebra::{
         curve::ShortWeierstrass,
-        field::Field,
+        encoding::{Decodable, Encodable},
+        field::{Field, PrimeField},
         group::GroupVartime,
         model::{CurveModel, JacobianModel},
     },
@@ -127,29 +128,26 @@ where
 
 impl<C> Eq for Jacobian<C> where C: ShortWeierstrass {}
 
+/// $(X, -Y, Z)$.
+impl<C> Neg for Jacobian<C>
+where
+    C: ShortWeierstrass,
+{
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        Self::new(self.x, -self.y, self.z)
+    }
+}
+
 impl<C> CurveModel for Jacobian<C>
 where
     C: ShortWeierstrass,
 {
     type Curve = C;
 
-    /// Stored as $(0, 0, 0)$.
-    fn identity() -> Self {
-        Self::new(C::Base::ZERO, C::Base::ZERO, C::Base::ZERO)
-    }
-
     fn generator() -> Self {
         Self::from(Affine::<C>::generator())
-    }
-
-    /// $Z = 0$.
-    fn is_identity(&self) -> Choice {
-        self.z.is_zero()
-    }
-
-    /// $(X, -Y, Z)$.
-    fn neg(&self) -> Self {
-        Self::new(self.x, -self.y, self.z)
     }
 
     /// $Y^2 = X^3 - 3 X Z^4 + b Z^6$; the stored identity satisfies it.
@@ -174,6 +172,16 @@ impl<C> GroupVartime for Jacobian<C>
 where
     C: ShortWeierstrass,
 {
+    /// Stored as $(0, 0, 0)$.
+    fn identity() -> Self {
+        Self::new(C::Base::ZERO, C::Base::ZERO, C::Base::ZERO)
+    }
+
+    /// $Z = 0$.
+    fn is_identity(&self) -> Choice {
+        self.z.is_zero()
+    }
+
     /// $P + Q$ by [`add-2007-bl`][add-2007-bl], with the cases it does not cover handled
     /// first: either input the identity, $P = Q$ (doubling) and $P = -Q$.
     /// Variable time.
@@ -245,5 +253,46 @@ where
 
     fn to_affine(&self) -> Affine<C> {
         Affine::from(*self)
+    }
+}
+
+/// The representation itself, not the point it denotes: the 3 coordinates
+/// $X, Y, Z$ as canonical **big-endian** field elements, each on the field's byte
+/// length, concatenated in that order. Two
+/// representatives of one point have different encodings; the affine chart
+/// carries the standard encoding of points.
+impl<C> Encodable for Jacobian<C>
+where
+    C: ShortWeierstrass,
+{
+    type Bytes = Vec<u8>;
+
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(3 * C::Base::BYTES);
+        out.extend(self.x.to_bytes_be());
+        out.extend(self.y.to_bytes_be());
+        out.extend(self.z.to_bytes_be());
+        out
+    }
+}
+
+/// The inverse of the encoding: 3 canonical field elements (each below
+/// $p$) that satisfy the model's equations; anything else is rejected.
+impl<C> Decodable for Jacobian<C>
+where
+    C: ShortWeierstrass,
+{
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 3 * C::Base::BYTES {
+            return None;
+        }
+        let mut chunks = bytes.chunks(C::Base::BYTES);
+        let (x, x_ok) = C::Base::from_bytes_be(chunks.next()?);
+        let (y, y_ok) = C::Base::from_bytes_be(chunks.next()?);
+        let (z, z_ok) = C::Base::from_bytes_be(chunks.next()?);
+        let candidate = Self::new(x, y, z);
+        (x_ok & y_ok & z_ok & candidate.is_on_curve())
+            .to_bool_vartime()
+            .then_some(candidate)
     }
 }
