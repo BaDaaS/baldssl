@@ -75,8 +75,8 @@
       "id": "ed25519-sign",
       "name": "Ed25519 signatures",
       "purpose": "Signing and verification (RFC 8032), for Ed25519 requests, certificates and chains.",
-      "status": "planned",
-      "link": ""
+      "status": "implemented",
+      "link": "https://github.com/BaDaaS/baldssl/pull/97"
     },
     {
       "id": "key-parsing",
