@@ -16,6 +16,8 @@ pub use sha1::Sha1;
 pub use sha256::{Sha224, Sha256};
 pub use sha512::{Sha384, Sha512};
 
+use crate::drbg::DrbgHash;
+
 /// A hash function with incremental input.
 pub trait Digest: Sized {
     /// Digest length in bytes.
@@ -100,17 +102,59 @@ impl Algorithm {
             .find(|a| a.name().eq_ignore_ascii_case(name))
     }
 
+    /// Runs `computation` on the hash this name names: the only place a
+    /// run-time hash name becomes a type. [`Algorithm`] is the run-time
+    /// representation of the finite set of hash types; `with` is its
+    /// eliminator, the Church encoding of the existential
+    /// `exists H: DrbgHash` as `forall R. (forall H: DrbgHash. R) -> R`
+    /// ([TAPL] section 24.3), with the inner polymorphic function made a
+    /// trait so Rust can quantify over `H`.
+    ///
+    /// [TAPL]: https://www.cis.upenn.edu/~bcpierce/tapl/
+    pub fn with<W>(self, computation: W) -> W::Output
+    where
+        W: WithHash,
+    {
+        match self {
+            Algorithm::Sha1 => computation.run::<Sha1>(),
+            Algorithm::Sha224 => computation.run::<Sha224>(),
+            Algorithm::Sha256 => computation.run::<Sha256>(),
+            Algorithm::Sha384 => computation.run::<Sha384>(),
+            Algorithm::Sha512 => computation.run::<Sha512>(),
+        }
+    }
+
     /// Hashes `data`.
     #[must_use]
     pub fn digest(self, data: &[u8]) -> Vec<u8> {
-        match self {
-            Algorithm::Sha1 => Sha1::digest(data),
-            Algorithm::Sha224 => Sha224::digest(data),
-            Algorithm::Sha256 => Sha256::digest(data),
-            Algorithm::Sha384 => Sha384::digest(data),
-            Algorithm::Sha512 => Sha512::digest(data),
-        }
+        self.with(Hashing(data))
     }
+}
+
+/// Hashing bytes, with any hash.
+struct Hashing<'a>(&'a [u8]);
+
+impl WithHash for Hashing<'_> {
+    type Output = Vec<u8>;
+
+    fn run<H>(self) -> Vec<u8>
+    where
+        H: DrbgHash,
+    {
+        H::digest(self.0)
+    }
+}
+
+/// A computation generic over the hash, which [`Algorithm::with`] runs on
+/// the hash a run-time name names.
+pub trait WithHash {
+    /// What the computation gives.
+    type Output;
+
+    /// The computation with the hash `H`.
+    fn run<H>(self) -> Self::Output
+    where
+        H: DrbgHash;
 }
 
 #[cfg(test)]

@@ -49,10 +49,13 @@ use crate::{
         AdditionalInput, Drbg, DrbgError, DrbgHash, Entropy, HmacDrbg, Nonce,
         Personalization,
     },
+    hash::{Algorithm, WithHash},
     keys::EcKeyPair,
     models::weierstrass::{affine::Affine, projective::Projective},
     secret::SecretBytes,
-    signature::{SignatureScheme, Signer, Verifier},
+    signature::{
+        SignEncoded, SignatureScheme, Signer, Verifier, VerifyEncoded,
+    },
 };
 
 /// ECDSA over the curve `C` with the hash `H`.
@@ -401,6 +404,89 @@ where
         .to_affine();
         x_mod_n_opt::<C>(&point).is_some_and(|v| v == signature.r)
     }
+}
+
+/// Signing with the hash `H` a run-time name gives.
+struct SignWith<'a, C>
+where
+    C: ShortWeierstrass,
+{
+    pair: &'a EcKeyPair<C>,
+    message: &'a [u8],
+}
+
+impl<C> WithHash for SignWith<'_, C>
+where
+    C: ShortWeierstrass,
+{
+    type Output = Result<Vec<u8>, SigningError>;
+
+    fn run<H>(self) -> Self::Output
+    where
+        H: DrbgHash,
+    {
+        Ecdsa::<C, H>::sign_encoded(self.pair, self.message)
+    }
+}
+
+/// Verifying with the hash `H` a run-time name gives.
+struct VerifyWith<'a, C>
+where
+    C: ShortWeierstrass,
+{
+    key: &'a Affine<C>,
+    message: &'a [u8],
+    signature: &'a [u8],
+}
+
+impl<C> WithHash for VerifyWith<'_, C>
+where
+    C: ShortWeierstrass,
+{
+    type Output = bool;
+
+    fn run<H>(self) -> bool
+    where
+        H: DrbgHash,
+    {
+        Ecdsa::<C, H>::verify_encoded(self.key, self.message, self.signature)
+    }
+}
+
+/// The DER signature of `message` with ECDSA on `C` and the hash `hash`
+/// names: [`Ecdsa::<C, H>`](Ecdsa) for the `H` of [`Algorithm::with`].
+///
+/// # Errors
+///
+/// [`SigningError`] as [`Ecdsa`] signs.
+pub fn sign_with_hash<C>(
+    hash: Algorithm,
+    pair: &EcKeyPair<C>,
+    message: &[u8],
+) -> Result<Vec<u8>, SigningError>
+where
+    C: ShortWeierstrass,
+{
+    hash.with(SignWith { pair, message })
+}
+
+/// Whether the DER `signature` of `message` verifies under `key` with
+/// ECDSA on `C` and the hash `hash` names.
+#[must_use]
+pub fn verify_with_hash<C>(
+    hash: Algorithm,
+    key: &Affine<C>,
+    message: &[u8],
+    signature: &[u8],
+) -> bool
+where
+    C: ShortWeierstrass,
+{
+    hash.with(VerifyWith {
+        key,
+        message,
+        signature,
+    })
 }
 
 #[cfg(test)]
