@@ -12,7 +12,9 @@
 #   out of the comparison);
 # - -CAcreateserial and -CAserial leave the serial file as OpenSSL does;
 # - a changed request, and a CA key that is not the CA's, are refused by
-#   both.
+#   both;
+# - extension files (-extfile, -extensions, @sections, repeated names) and
+#   -copy_extensions give the same certificates and the same errors.
 #
 # Usage:
 #   scripts/x509-req-interop.sh <path/to/openssl> <path/to/baldssl>
@@ -43,6 +45,12 @@ ko() {
     fail=$((fail + 1))
 }
 same() { if cmp -s "$2" "$3"; then ok; else ko "$1: outputs differ"; fi; }
+refuse() {
+    # refuse <label> <command...>: the command must fail.
+    local label=$1
+    shift
+    if "$@" >/dev/null 2>&1; then ko "$label: accepted"; else ok; fi
+}
 unhex() { perl -e 'print pack("H*", shift)' "$1"; }
 
 if [[ "$OPENSSL_VERSION" == 3.0.* ]]; then
@@ -140,6 +148,62 @@ while read -r ca_curve _ _ ca_pkcs8; do
         fi
     done
 done <<<"$keys"
+
+# Extension files and copied extensions: one Ed25519 CA, one request with
+# extensions, and a set of configuration files. The certificates are
+# identical (OpenSSL 3.0's x509 has no -not_before, so there only the
+# extensions are compared), and standard error is the same.
+ed_key=$(grep '^ED25519' "$ROOT/tests/fixtures/keys/keypairs.txt" | head -1 |
+    awk '{print $4}')
+unhex "$ed_key" >"$WORK/edca.der"
+"$OPENSSL" req -x509 -new -key "$WORK/edca.der" -keyform DER \
+    -subj "/CN=Example CA" -days 3650 -out "$WORK/edca.crt" 2>/dev/null
+"$OPENSSL" req -new -key "$WORK/leaf.der" -keyform DER -subj /CN=leaf \
+    -addext "subjectAltName=DNS:leaf.example" \
+    -addext "keyUsage=digitalSignature" -out "$WORK/ext.csr" 2>/dev/null
+cat >"$WORK/a.cnf" <<'CNF'
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature # a comment
+[ server ]
+subjectAltName = @alt
+extendedKeyUsage = serverAuth
+[alt]
+DNS.1 = s.example
+IP.1 = 10.0.0.1
+CNF
+printf 'extensions = named\nkeyUsage = cRLSign\n[ named ]\nbasicConstraints = CA:TRUE,pathlen:0\n' \
+    >"$WORK/b.cnf"
+printf 'subjectAltName = DNS:one.example\nkeyUsage = digitalSignature\nsubjectAltName = DNS:two.example\n' \
+    >"$WORK/c.cnf"
+cases=("-extfile $WORK/a.cnf" "-extfile $WORK/a.cnf -extensions server"
+    "-extfile $WORK/b.cnf" "-extfile $WORK/c.cnf" "-copy_extensions copy"
+    "-copy_extensions copy -extfile $WORK/a.cnf -extensions server"
+    "-copy_extensions copyall -extfile $WORK/a.cnf")
+for args in "${cases[@]}"; do
+    read -r -a extra <<<"$args"
+    label="extensions ${args//$WORK\//}"
+    common=(-req -in "$WORK/ext.csr" -CA "$WORK/edca.crt" -CAkey "$WORK/edca.der"
+        -CAkeyform DER -set_serial 9 "${validity[@]}" "${extra[@]}")
+    "$OPENSSL" x509 "${common[@]}" -out "$WORK/o.pem" 2>"$WORK/o.err"
+    "$BALDSSL" x509 "${common[@]}" -out "$WORK/b.pem" 2>"$WORK/b.err"
+    same "$label: standard error" "$WORK/o.err" "$WORK/b.err"
+    if [[ "$OPENSSL_VERSION" == 3.0.* ]]; then
+        for who in o b; do
+            "$OPENSSL" x509 -in "$WORK/$who.pem" -noout -text |
+                sed -n '/X509v3 extensions/,/Signature Algorithm/p' \
+                    >"$WORK/$who.txt"
+        done
+        same "$label: extensions" "$WORK/o.txt" "$WORK/b.txt"
+    else
+        same "$label: identical" "$WORK/o.pem" "$WORK/b.pem"
+    fi
+done
+for who in OPENSSL BALDSSL; do
+    refuse "$who refuses a missing section" "${!who}" x509 -req \
+        -in "$WORK/ext.csr" -CA "$WORK/edca.crt" -CAkey "$WORK/edca.der" \
+        -CAkeyform DER -extfile "$WORK/a.cnf" -extensions nope \
+        -out "$WORK/x.pem"
+done
 
 echo "x509-req-interop: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
