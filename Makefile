@@ -39,7 +39,7 @@ build-wasm: ## Build the libraries (browser) and the CLI (WASI) for WebAssembly
 .PHONY: test-wasm
 test-wasm: build-wasm ## Run the library tests and the golden suite as WebAssembly (needs wasmtime)
 	CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir /" \
-		cargo test --target wasm32-wasip1 \
+		cargo test --release --target wasm32-wasip1 \
 		-p baldssl-core -p baldssl-crypto -p baldssl-x509
 	BALDSSL_BIN=$(CURDIR)/scripts/wasmtime-baldssl.sh \
 		cargo test -p baldssl --test golden --test commands
@@ -84,6 +84,11 @@ lint-beta: ## Run clippy with the beta toolchain
 .PHONY: lint-shell
 lint-shell: ## Lint shell scripts with shellcheck
 	shellcheck $(SHELL_SCRIPTS)
+
+.PHONY: check-where-clauses
+check-where-clauses: ## Fail on trait bounds written inline, not in where
+	find crates fuzz/fuzz_targets -name '*.rs' -not -path '*/target/*' \
+		-print0 | xargs -0 python3 scripts/where_clauses.py
 
 .PHONY: check-unsafe
 check-unsafe: ## Fail if unsafe code appears outside baldssl-crypto's os_rng
@@ -180,6 +185,7 @@ lean: ## Build the Lean 4 skeleton in proofs/ (Aeneas library, Mathlib cache)
 
 .PHONY: ci
 ci: check-format lint test doc check-no-deps check-unsafe check-aeneas \
+	check-where-clauses \
 	lint-shell ## Run the CI checks locally
 
 .PHONY: clean

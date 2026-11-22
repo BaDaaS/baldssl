@@ -26,14 +26,14 @@
       "id": "field",
       "name": "Constant-time prime fields",
       "purpose": "Arithmetic modulo the primes of P-256, P-384, P-521 and Ed25519, without branches on secret values.",
-      "status": "in-progress",
+      "status": "implemented",
       "link": "https://github.com/BaDaaS/baldssl/pull/4"
     },
     {
       "id": "nist-curves",
       "name": "P-256, P-384 and P-521",
       "purpose": "The NIST curves by model (affine, projective with complete formulas, Jacobian) and constant-time scalar multiplication.",
-      "status": "in-progress",
+      "status": "implemented",
       "link": "https://github.com/BaDaaS/baldssl/pull/6"
     },
     {

@@ -1,0 +1,578 @@
+//! Prime fields $\mathbb{F}_p$ in Montgomery form, generic over the number of
+//! 64-bit limbs.
+//!
+//! # Representation
+//!
+//! With $R = 2^{64N}$, an element $a$ is stored as $\tilde a = a R \bmod p$,
+//! the Montgomery form, as $N$ little-endian 64-bit limbs. The map
+//! $a \mapsto \tilde a$ is a ring isomorphism onto $\mathbb{F}_p$ for the
+//! product $\tilde a \star \tilde b = \tilde a \tilde b R^{-1} \bmod p$, which
+//! the Montgomery reduction computes without dividing by $p$ (Montgomery,
+//! *Modular multiplication without trial division*, Math. Comp. 44 (1985)).
+//! Addition is unchanged, since the map is additive.
+//!
+//! Everything a modulus needs is derived at compile time from its value,
+//! written as the hexadecimal string OpenSSL prints for it: the limbs, $R$,
+//! $R^2$ (to enter Montgomery form), $-p^{-1} \bmod 2^{64}$ (the reduction
+//! constant) and $p - 2$ (the inversion exponent, by Fermat).
+//!
+//! # Constant time
+//!
+//! No operation branches on, or indexes memory by, the value of an element:
+//! conditional subtractions are mask blends ([`crate::ct`]). The exponent of
+//! [`Fp::invert`] is the public $p - 2$. Validity checks when decoding return
+//! a [`Choice`] next to the value.
+//!
+//! The moduli baldssl uses are in [`crate::fields`].
+//!
+//! Indexing is into arrays of length `N` by loop counters below `N`, and the
+//! arithmetic is on `u128` products of two `u64`s and explicit wrapping
+//! operations, which cannot overflow: hence the first two allowed lints. The
+//! one-letter names are the notation of the papers cited.
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::many_single_char_names
+)]
+
+use core::{
+    fmt,
+    marker::PhantomData,
+    ops::{Add, Mul, Neg, Sub},
+};
+
+use crate::ct::{self, Choice};
+
+/// A prime modulus with `N` limbs.
+pub trait Modulus<const N: usize>: 'static {
+    /// The prime in big-endian hexadecimal, as `openssl ecparam -text`
+    /// prints it (leading zero digits allowed).
+    const HEX: &'static str;
+    /// A name for messages and tests.
+    const NAME: &'static str;
+}
+
+/// `a + b + carry`, the sum and the carry out (0 or 1).
+#[allow(clippy::cast_possible_truncation)]
+const fn adc(a: u64, b: u64, carry: u64) -> (u64, u64) {
+    let t = (a as u128) + (b as u128) + (carry as u128);
+    (t as u64, (t >> 64) as u64)
+}
+
+/// `a - b - borrow`, the difference and the borrow out (0 or 1).
+#[allow(clippy::cast_possible_truncation)]
+const fn sbb(a: u64, b: u64, borrow: u64) -> (u64, u64) {
+    let t = (a as u128).wrapping_sub((b as u128) + (borrow as u128));
+    (t as u64, (t >> 127) as u64)
+}
+
+/// `a + b * c + carry`, the low word and the high word.
+#[allow(clippy::cast_possible_truncation)]
+const fn mac(a: u64, b: u64, c: u64, carry: u64) -> (u64, u64) {
+    let t = (a as u128) + (b as u128) * (c as u128) + (carry as u128);
+    (t as u64, (t >> 64) as u64)
+}
+
+/// `a + b` over `N` limbs, and the carry out.
+const fn add_limbs<const N: usize>(
+    a: &[u64; N],
+    b: &[u64; N],
+) -> ([u64; N], u64) {
+    let mut out = [0u64; N];
+    let mut carry = 0;
+    let mut i = 0;
+    while i < N {
+        let (s, c) = adc(a[i], b[i], carry);
+        out[i] = s;
+        carry = c;
+        i += 1;
+    }
+    (out, carry)
+}
+
+/// `a - b` over `N` limbs, and the borrow out.
+const fn sub_limbs<const N: usize>(
+    a: &[u64; N],
+    b: &[u64; N],
+) -> ([u64; N], u64) {
+    let mut out = [0u64; N];
+    let mut borrow = 0;
+    let mut i = 0;
+    while i < N {
+        let (d, b2) = sbb(a[i], b[i], borrow);
+        out[i] = d;
+        borrow = b2;
+        i += 1;
+    }
+    (out, borrow)
+}
+
+/// Parses big-endian hexadecimal into little-endian limbs, at compile time.
+/// Panics (a compile error, for constants) on a non-hex digit or a value
+/// that does not fit.
+#[allow(clippy::panic, clippy::cast_lossless)]
+const fn limbs_from_hex<const N: usize>(hex: &str) -> [u64; N] {
+    let bytes = hex.as_bytes();
+    let mut out = [0u64; N];
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[bytes.len() - 1 - i];
+        let v = match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => panic!("modulus: not a hexadecimal digit"),
+        };
+        if i / 16 < N {
+            out[i / 16] |= (v as u64) << ((i % 16) * 4);
+        } else if v != 0 {
+            panic!("modulus: does not fit in N limbs");
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `a >= b`, at compile time.
+const fn geq<const N: usize>(a: &[u64; N], b: &[u64; N]) -> bool {
+    sub_limbs(a, b).1 == 0
+}
+
+/// `2^k mod p` by `k` doublings, at compile time.
+const fn pow2_mod<const N: usize>(k: usize, p: &[u64; N]) -> [u64; N] {
+    let mut x = [0u64; N];
+    x[0] = 1;
+    let mut i = 0;
+    while i < k {
+        let (d, carry) = add_limbs(&x, &x);
+        x = if carry == 1 || geq(&d, p) {
+            sub_limbs(&d, p).0
+        } else {
+            d
+        };
+        i += 1;
+    }
+    x
+}
+
+/// $-p_0^{-1} \bmod 2^{64}$ by Newton's iteration, which doubles the number
+/// of correct low bits each step: $x \equiv p_0^{-1}$ holds modulo 2 from
+/// $x = 1$ (as $p_0$ is odd), then modulo $2^{2^k}$ after $k$ steps.
+const fn neg_inv(p0: u64) -> u64 {
+    let mut x: u64 = 1;
+    let mut i = 0;
+    while i < 6 {
+        x = x.wrapping_mul(2u64.wrapping_sub(p0.wrapping_mul(x)));
+        i += 1;
+    }
+    x.wrapping_neg()
+}
+
+/// The number of significant bits.
+#[allow(clippy::cast_possible_truncation)]
+const fn bit_length<const N: usize>(a: &[u64; N]) -> u32 {
+    let mut i = N;
+    while i > 0 {
+        i -= 1;
+        if a[i] != 0 {
+            return (i as u32) * 64 + (64 - a[i].leading_zeros());
+        }
+    }
+    0
+}
+
+/// The constants derived from a modulus.
+struct Consts<M, const N: usize>(PhantomData<M>);
+
+impl<M, const N: usize> Consts<M, N>
+where
+    M: Modulus<N>,
+{
+    const P: [u64; N] = {
+        let p = limbs_from_hex::<N>(M::HEX);
+        assert!(p[0] & 1 == 1, "Montgomery form needs an odd modulus");
+        assert!(p[N - 1] != 0, "the modulus must use all N limbs");
+        p
+    };
+    const INV: u64 = neg_inv(Self::P[0]);
+    const R: [u64; N] = pow2_mod(64 * N, &Self::P);
+    const R2: [u64; N] = pow2_mod(128 * N, &Self::P);
+    const P_MINUS_2: [u64; N] = sub_limbs(&Self::P, &{
+        let mut two = [0u64; N];
+        two[0] = 2;
+        two
+    })
+    .0;
+    const BITS: u32 = bit_length(&Self::P);
+}
+
+/// An element of $\mathbb{F}_p$ for the modulus `M`, in Montgomery form.
+pub struct Fp<M, const N: usize> {
+    mont: [u64; N],
+    _modulus: PhantomData<M>,
+}
+
+impl<M, const N: usize> Clone for Fp<M, N> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M, const N: usize> Copy for Fp<M, N> {}
+
+impl<M, const N: usize> Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    /// Zero.
+    pub const ZERO: Self = Self::from_mont([0; N]);
+    /// One, which is $R \bmod p$ in Montgomery form.
+    pub const ONE: Self = Self::from_mont(Consts::<M, N>::R);
+    /// The number of bits of $p$.
+    pub const BITS: u32 = Consts::<M, N>::BITS;
+    /// The length of the canonical big-endian encoding, $\lceil b / 8 \rceil$.
+    pub const BYTES: usize = (Consts::<M, N>::BITS as usize).div_ceil(8);
+
+    const fn from_mont(mont: [u64; N]) -> Self {
+        Fp {
+            mont,
+            _modulus: PhantomData,
+        }
+    }
+
+    /// The modulus, little-endian limbs.
+    #[must_use]
+    pub fn modulus() -> [u64; N] {
+        Consts::<M, N>::P
+    }
+
+    /// Montgomery multiplication $a b R^{-1} \bmod p$, by coarsely integrated
+    /// operand scanning (Koc, Acar and Kaliski, *Analyzing and comparing
+    /// Montgomery multiplication algorithms*, IEEE Micro 16 (1996)). The
+    /// running value stays below $2p < 2R$, so one conditional subtraction
+    /// finishes.
+    fn mont_mul(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
+        let p = &Consts::<M, N>::P;
+        let mut t = [0u64; N];
+        let mut t_n: u64 = 0;
+        for &b_i in b {
+            let mut carry = 0;
+            for j in 0..N {
+                let (lo, hi) = mac(t[j], a[j], b_i, carry);
+                t[j] = lo;
+                carry = hi;
+            }
+            let (s, t_n1) = adc(t_n, carry, 0);
+            t_n = s;
+
+            let m = t[0].wrapping_mul(Consts::<M, N>::INV);
+            let (_, mut carry) = mac(t[0], m, p[0], 0);
+            for j in 1..N {
+                let (lo, hi) = mac(t[j], m, p[j], carry);
+                t[j - 1] = lo;
+                carry = hi;
+            }
+            let (s, c) = adc(t_n, carry, 0);
+            t[N - 1] = s;
+            t_n = t_n1 + c;
+        }
+        let (d, borrow) = sub_limbs(&t, p);
+        // Keep t only when t < p, that is, a borrow and no extra word.
+        let keep = Choice::from_bit(borrow & (t_n ^ 1));
+        let mut out = [0u64; N];
+        for i in 0..N {
+            out[i] = ct::select(d[i], t[i], keep);
+        }
+        out
+    }
+
+    /// The element $v \bmod p$.
+    #[must_use]
+    pub fn from_u64(v: u64) -> Self {
+        let mut x = [0u64; N];
+        x[0] = v;
+        // A value below 2^64 may still exceed a one-limb p; the product with
+        // R^2 reduces it fully either way.
+        Self::from_mont(Self::mont_mul(&x, &Consts::<M, N>::R2))
+    }
+
+    /// Decodes the canonical big-endian encoding of [`Self::BYTES`] bytes.
+    /// The [`Choice`] is false, and the element zero, when the length is
+    /// wrong or the value is not below $p$; the check does not branch on the
+    /// value.
+    #[must_use]
+    pub fn from_bytes_be(bytes: &[u8]) -> (Self, Choice) {
+        if bytes.len() != Self::BYTES {
+            return (Self::ZERO, Choice::FALSE);
+        }
+        let mut x = [0u64; N];
+        for (i, &byte) in bytes.iter().rev().enumerate() {
+            x[i / 8] |= u64::from(byte) << ((i % 8) * 8);
+        }
+        let (_, borrow) = sub_limbs(&x, &Consts::<M, N>::P);
+        let valid = Choice::from_bit(borrow);
+        let mont = Self::mont_mul(&x, &Consts::<M, N>::R2);
+        let mut out = [0u64; N];
+        for i in 0..N {
+            out[i] = ct::select(0, mont[i], valid);
+        }
+        (Self::from_mont(out), valid)
+    }
+
+    /// The canonical value, little-endian limbs.
+    fn canonical(&self) -> [u64; N] {
+        let mut one = [0u64; N];
+        one[0] = 1;
+        Self::mont_mul(&self.mont, &one)
+    }
+
+    /// The canonical big-endian encoding, [`Self::BYTES`] bytes.
+    #[must_use]
+    pub fn to_bytes_be(&self) -> Vec<u8> {
+        let limbs = self.canonical();
+        let mut out = vec![0u8; Self::BYTES];
+        for (i, byte) in out.iter_mut().rev().enumerate() {
+            *byte = limbs[i / 8].to_le_bytes()[i % 8];
+        }
+        out
+    }
+
+    /// $2a$.
+    #[must_use]
+    pub fn double(&self) -> Self {
+        *self + *self
+    }
+
+    /// $a^2$.
+    #[must_use]
+    pub fn square(&self) -> Self {
+        *self * *self
+    }
+
+    /// $a^e$ for a public exponent, little-endian limbs. Constant time in
+    /// $a$; the running time depends on $e$ only.
+    #[must_use]
+    pub fn pow_vartime(&self, exponent: &[u64; N]) -> Self {
+        let mut acc = Self::ONE;
+        for &limb in exponent.iter().rev() {
+            for bit in (0..64).rev() {
+                acc = acc.square();
+                if (limb >> bit) & 1 == 1 {
+                    acc = acc * *self;
+                }
+            }
+        }
+        acc
+    }
+
+    /// $a^{-1} = a^{p-2}$ (Fermat's little theorem), and $0$ for $a = 0$.
+    #[must_use]
+    pub fn invert(&self) -> Self {
+        self.pow_vartime(&Consts::<M, N>::P_MINUS_2)
+    }
+
+    /// Whether $a = 0$.
+    #[must_use]
+    pub fn is_zero(&self) -> Choice {
+        let mut acc = 0;
+        for &limb in &self.mont {
+            acc |= limb;
+        }
+        ct::is_zero(acc)
+    }
+
+    /// Whether $a = b$, without branching on the values.
+    #[must_use]
+    pub fn ct_eq(&self, other: &Self) -> Choice {
+        let mut acc = 0;
+        for i in 0..N {
+            acc |= self.mont[i] ^ other.mont[i];
+        }
+        ct::is_zero(acc)
+    }
+
+    /// `a` if `choice` is false, `b` if it is true.
+    #[must_use]
+    pub fn select(a: &Self, b: &Self, choice: Choice) -> Self {
+        let mut out = [0u64; N];
+        for i in 0..N {
+            out[i] = ct::select(a.mont[i], b.mont[i], choice);
+        }
+        Self::from_mont(out)
+    }
+}
+
+impl<M, const N: usize> Add for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        let p = &Consts::<M, N>::P;
+        let (s, carry) = add_limbs(&self.mont, &rhs.mont);
+        let (d, borrow) = sub_limbs(&s, p);
+        // s < p exactly when the subtraction borrows and the sum did not
+        // carry; then keep s, otherwise s - p.
+        let keep = Choice::from_bit(borrow & (carry ^ 1));
+        let mut out = [0u64; N];
+        for i in 0..N {
+            out[i] = ct::select(d[i], s[i], keep);
+        }
+        Self::from_mont(out)
+    }
+}
+
+// The `&` masks the add-back of p, the point of the operation.
+#[allow(clippy::suspicious_arithmetic_impl)]
+impl<M, const N: usize> Sub for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self {
+        let p = &Consts::<M, N>::P;
+        let (d, borrow) = sub_limbs(&self.mont, &rhs.mont);
+        let mask = Choice::from_bit(borrow).mask();
+        let mut add_back = [0u64; N];
+        for i in 0..N {
+            add_back[i] = p[i] & mask;
+        }
+        Self::from_mont(add_limbs(&d, &add_back).0)
+    }
+}
+
+impl<M, const N: usize> Neg for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        Self::ZERO - self
+    }
+}
+
+impl<M, const N: usize> Mul for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self {
+        Self::from_mont(Self::mont_mul(&self.mont, &rhs.mont))
+    }
+}
+
+/// Equality for tests and public values; secret comparisons use
+/// [`Fp::ct_eq`].
+impl<M, const N: usize> PartialEq for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.ct_eq(other).to_bool_vartime()
+    }
+}
+
+impl<M, const N: usize> Eq for Fp<M, N> where M: Modulus<N> {}
+
+/// Prints the canonical value in hexadecimal. Elements may be secret; do
+/// not format secret values outside tests.
+impl<M, const N: usize> fmt::Debug for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}(0x", M::NAME)?;
+        for byte in self.to_bytes_be() {
+            write!(f, "{byte:02x}")?;
+        }
+        write!(f, ")")
+    }
+}
+
+/// The operations the curve code uses, implemented by every [`Fp`]; lets a
+/// curve be generic over its fields whatever their limb count.
+pub trait PrimeField:
+    Copy
+    + Eq
+    + fmt::Debug
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Neg<Output = Self>
+{
+    /// Zero.
+    const ZERO: Self;
+    /// One.
+    const ONE: Self;
+    /// The number of bits of the modulus.
+    const BITS: u32;
+    /// The length of the canonical big-endian encoding.
+    const BYTES: usize;
+    /// See [`Fp::from_u64`].
+    fn from_u64(v: u64) -> Self;
+    /// See [`Fp::from_bytes_be`].
+    fn from_bytes_be(bytes: &[u8]) -> (Self, Choice);
+    /// See [`Fp::to_bytes_be`].
+    fn to_bytes_be(&self) -> Vec<u8>;
+    /// See [`Fp::double`].
+    #[must_use]
+    fn double(&self) -> Self;
+    /// See [`Fp::square`].
+    #[must_use]
+    fn square(&self) -> Self;
+    /// See [`Fp::invert`].
+    #[must_use]
+    fn invert(&self) -> Self;
+    /// See [`Fp::is_zero`].
+    fn is_zero(&self) -> Choice;
+    /// See [`Fp::ct_eq`].
+    fn ct_eq(&self, other: &Self) -> Choice;
+    /// See [`Fp::select`].
+    #[must_use]
+    fn select(a: &Self, b: &Self, choice: Choice) -> Self;
+}
+
+impl<M, const N: usize> PrimeField for Fp<M, N>
+where
+    M: Modulus<N>,
+{
+    const ZERO: Self = Fp::<M, N>::ZERO;
+    const ONE: Self = Fp::<M, N>::ONE;
+    const BITS: u32 = Fp::<M, N>::BITS;
+    const BYTES: usize = Fp::<M, N>::BYTES;
+
+    fn from_u64(v: u64) -> Self {
+        Fp::from_u64(v)
+    }
+    fn from_bytes_be(bytes: &[u8]) -> (Self, Choice) {
+        Fp::from_bytes_be(bytes)
+    }
+    fn to_bytes_be(&self) -> Vec<u8> {
+        Fp::to_bytes_be(self)
+    }
+    fn double(&self) -> Self {
+        Fp::double(self)
+    }
+    fn square(&self) -> Self {
+        Fp::square(self)
+    }
+    fn invert(&self) -> Self {
+        Fp::invert(self)
+    }
+    fn is_zero(&self) -> Choice {
+        Fp::is_zero(self)
+    }
+    fn ct_eq(&self, other: &Self) -> Choice {
+        Fp::ct_eq(self, other)
+    }
+    fn select(a: &Self, b: &Self, choice: Choice) -> Self {
+        Fp::select(a, b, choice)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests;
