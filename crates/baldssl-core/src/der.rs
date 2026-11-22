@@ -418,6 +418,21 @@ impl<'a> Reader<'a> {
             Err(DerError::TrailingData)
         }
     }
+
+    /// Reads one value of the syntax description `syntax` at the reader's
+    /// position, and moves past its encoding.
+    ///
+    /// # Errors
+    ///
+    /// What `syntax` rejects.
+    pub fn syntax<S>(&mut self, syntax: &S) -> Result<S::Value, DerError>
+    where
+        S: syntax::Syntax,
+    {
+        let (value, rest) = syntax.read(self.data)?;
+        self.data = rest;
+        Ok(value)
+    }
 }
 
 /// A decoded INTEGER: a sign and the big-endian magnitude without leading
@@ -499,6 +514,24 @@ impl Integer {
         )
     }
 
+    /// The value as `i64` when it fits, either sign.
+    #[must_use]
+    pub fn to_i64_opt(&self) -> Option<i64> {
+        if self.magnitude.len() > 8 {
+            return None;
+        }
+        let m = self
+            .magnitude
+            .iter()
+            .fold(0u64, |acc, &b| (acc << 8) | u64::from(b));
+        if self.negative {
+            // -2^63 is the one value whose magnitude is not an i64.
+            0i64.checked_sub_unsigned(m)
+        } else {
+            i64::try_from(m).ok()
+        }
+    }
+
     /// The magnitude as `u128` when it fits.
     #[must_use]
     pub fn magnitude_u128_opt(&self) -> Option<u128> {
@@ -510,6 +543,19 @@ impl Integer {
                 .iter()
                 .fold(0u128, |acc, &b| (acc << 8) | u128::from(b)),
         )
+    }
+}
+
+impl From<i64> for Integer {
+    /// The INTEGER with value `v`: its sign, and its magnitude without
+    /// leading zeros. [`Integer::to_i64_opt`] is the inverse.
+    fn from(v: i64) -> Self {
+        let m = v.unsigned_abs().to_be_bytes();
+        let first = m.iter().position(|&b| b != 0).unwrap_or(m.len());
+        Integer {
+            negative: v < 0,
+            magnitude: m.get(first..).unwrap_or_default().to_vec(),
+        }
     }
 }
 

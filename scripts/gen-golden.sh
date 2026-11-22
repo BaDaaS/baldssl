@@ -10,7 +10,8 @@
 #
 # Usage:
 #   scripts/gen-golden.sh <openssl-3.0> <openssl-3.5> <openssl-4.1>
-#   scripts/gen-golden.sh --certs <openssl>   # (re)create the certificates
+#   scripts/gen-golden.sh --certs <openssl>   # (re)create the certificates,
+#                                             # with scripts/gen-version-certs.py
 #
 
 set -euo pipefail
@@ -20,7 +21,10 @@ FIX="$ROOT/tests/fixtures"
 
 if [[ "${1:-}" == "--certs" && "$#" -eq 2 ]]; then
     rm -f "$FIX"/certs/*.crt
-    exec "$ROOT/scripts/gen-certs.sh" "$2" "$FIX/certs"
+    "$ROOT/scripts/gen-certs.sh" "$2" "$FIX/certs"
+    # Version fields DER does not produce, derived from p256-full.
+    exec python3 "$ROOT/scripts/gen-version-certs.py" \
+        "$FIX/certs/p256-full.crt" "$FIX/certs"
 fi
 if [[ "$#" -ne 3 ]]; then
     echo "usage: $0 <openssl-3.0> <openssl-3.5> <openssl-4.1>" \

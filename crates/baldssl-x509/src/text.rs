@@ -12,7 +12,9 @@ use baldssl_core::{
     hex::{self, Case},
 };
 
-use crate::{cert::Certificate, ext, name::NameStyle, objects};
+use crate::{
+    cert::Certificate, ext, name::NameStyle, objects, version::Version,
+};
 
 /// Which OpenSSL release line's `-text` layout to reproduce. The two lines
 /// differ only in hex-dump geometry and the EC key header; everything else
@@ -375,6 +377,22 @@ fn print_public_key(
     Ok(())
 }
 
+/// The version line, as OpenSSL prints it: `n+1 (0xn)` for v1 to v3,
+/// otherwise `Unknown (n)` with `n` the value as a signed 64-bit integer,
+/// or -1 when it does not fit (OpenSSL's `ASN1_INTEGER_get` result).
+fn version_line(version: &Version) -> String {
+    match version.known_opt() {
+        Some(n) => format!(
+            "        Version: {} (0x{n:x})\n",
+            u16::from(n).saturating_add(1)
+        ),
+        None => format!(
+            "        Version: Unknown ({})\n",
+            version.as_integer().to_i64_opt().unwrap_or(-1)
+        ),
+    }
+}
+
 /// The full `-text` block.
 ///
 /// # Errors
@@ -384,14 +402,7 @@ fn print_public_key(
 pub fn print_text(cert: &Certificate<'_>, compat: Compat) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(b"Certificate:\n    Data:\n");
-    out.extend_from_slice(
-        format!(
-            "        Version: {} (0x{:x})\n",
-            u16::from(cert.version) + 1,
-            cert.version
-        )
-        .as_bytes(),
-    );
+    out.extend_from_slice(version_line(&cert.version).as_bytes());
     print_serial(&mut out, &cert.serial);
     out.extend_from_slice(b"        Signature Algorithm: ");
     out.extend_from_slice(signature_name(&cert.tbs_signature)?.as_bytes());

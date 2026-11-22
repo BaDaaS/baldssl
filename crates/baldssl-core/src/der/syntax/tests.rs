@@ -4,19 +4,29 @@
 
 use core::fmt::Debug;
 
-use baldssl_test_utils::strategies::{
-    bytes, bytes_not_starting_with, dotted_oid,
+use baldssl_test_utils::{
+    minimal_twos_complement,
+    strategies::{bytes, bytes_not_starting_with, dotted_oid, sign_magnitude},
 };
 use proptest::prelude::*;
 
 use super::{
     Any, BitString, Boolean, Choice, Constant, Either, Explicit, Implicit, Map,
     Natural, Null, ObjectId, ObjectIdentifier, OctetString, OctetStringOf,
-    Optional, OptionalLast, RawTlv, Sequence, SequenceOf, SetOf, Small, Syntax,
-    Unsigned, WithDefault, decode, encode,
+    Optional, OptionalLast, RawTlv, Sequence, SequenceOf, SetOf, Signed, Small,
+    Syntax, Unsigned, WithDefault, decode, encode,
     laws::{canonical, laws, round_trip},
 };
-use crate::der::DerError;
+use crate::der::{DerError, Integer};
+
+/// An INTEGER value as [`Integer::parse`] returns it: a sign and a
+/// magnitude without leading zeros, never a negative zero.
+fn integer() -> impl Strategy<Value = Integer> {
+    sign_magnitude(12).prop_map(|(negative, magnitude)| Integer {
+        negative,
+        magnitude,
+    })
+}
 
 /// Object identifiers, from the shared dotted generator.
 fn oid() -> impl Strategy<Value = ObjectId> {
@@ -86,10 +96,12 @@ proptest! {
         at in any::<usize>(),
         xor in 1u8..,
         suffix in bytes(8),
-    ) {
+            int in integer(),
+) {
         laws(&Boolean, &b, at, xor, &suffix);
         laws(&Null, &(), at, xor, &suffix);
         laws(&Unsigned, &Natural::from_be_bytes(&n), at, xor, &suffix);
+        laws(&Signed, &int, at, xor, &suffix);
         laws(&Small, &k, at, xor, &suffix);
         laws(&OctetString, &s, at, xor, &suffix);
         laws(&BitString, &s, at, xor, &suffix);
@@ -195,6 +207,17 @@ proptest! {
         round_trip(&OptionalLast(Any), &raw, &[]);
     }
 
+    /// The signed INTEGER against the standard library's two's complement,
+    /// and back through `to_i64_opt`.
+    #[test]
+    fn signed_integers(v in any::<i64>()) {
+        let mut expected = vec![0x02, 0];
+        expected.extend(minimal_twos_complement(v));
+        expected[1] = u8::try_from(expected.len() - 2).unwrap();
+        prop_assert_eq!(encode(&Signed, &Integer::from(v)), expected);
+        prop_assert_eq!(Integer::from(v).to_i64_opt(), Some(v));
+    }
+
     /// Canonicity and totality on arbitrary bytes, for every combinator.
     #[test]
     fn arbitrary_bytes(data in bytes(64)) {
@@ -229,6 +252,34 @@ fn golden() {
     assert_eq!(encode(&Small, &127), [0x02, 0x01, 0x7f]);
     assert_eq!(encode(&Small, &128), [0x02, 0x02, 0x00, 0x80]);
     assert_eq!(encode(&Small, &256), [0x02, 0x02, 0x01, 0x00]);
+    // X.690 8.3.2's boundaries, either sign.
+    assert_eq!(encode(&Signed, &Integer::from(0)), [0x02, 0x01, 0x00]);
+    assert_eq!(encode(&Signed, &Integer::from(-1)), [0x02, 0x01, 0xff]);
+    assert_eq!(encode(&Signed, &Integer::from(-128)), [0x02, 0x01, 0x80]);
+    assert_eq!(
+        encode(&Signed, &Integer::from(-129)),
+        [0x02, 0x02, 0xff, 0x7f]
+    );
+    assert_eq!(
+        encode(&Signed, &Integer::from(128)),
+        [0x02, 0x02, 0x00, 0x80]
+    );
+    assert_eq!(
+        encode(&Signed, &Integer::from(-256)),
+        [0x02, 0x02, 0xff, 0x00]
+    );
+    assert_eq!(Integer::from(i64::MIN).to_i64_opt(), Some(i64::MIN));
+    // 2^63 and -(2^63 + 1) do not fit.
+    let big = Integer {
+        negative: false,
+        magnitude: vec![0x80, 0, 0, 0, 0, 0, 0, 0],
+    };
+    assert_eq!(big.to_i64_opt(), None);
+    let below = Integer {
+        negative: true,
+        magnitude: vec![0x80, 0, 0, 0, 0, 0, 0, 1],
+    };
+    assert_eq!(below.to_i64_opt(), None);
     assert_eq!(
         encode(&Unsigned, &Natural::from_be_bytes(&[0, 0, 0xff])),
         [0x02, 0x02, 0x00, 0xff]
