@@ -8,7 +8,7 @@ use baldssl_x509::InputEncoding;
 
 use baldssl_core::der::TimeKind;
 
-use super::{Mode, Output, Product, parse_options};
+use super::{KeySource, Mode, Output, Product, parse_options};
 use crate::issuing::SerialSource;
 
 fn os(v: &[&str]) -> Vec<OsString> {
@@ -75,9 +75,15 @@ fn refused() {
         Some(Error::unsupported("req -x509 -verify"))
     );
     assert_eq!(
-        parse_options(&os(&["-newkey", "ec"])).err(),
-        Some(Error::unsupported("req -newkey"))
+        parse_options(&os(&["-newkey", "ed25519"])).err(),
+        Some(Error::unsupported(
+            "req -newkey without -noenc (encrypting the key)"
+        ))
     );
+    assert!(matches!(
+        parse_options(&os(&["-key", "k.pem", "-newkey", "ed25519", "-noenc"])),
+        Err(Error::Usage(_))
+    ));
     assert_eq!(
         parse_options(&os(&["-sha1"])).err(),
         Some(Error::unsupported("req: digest sha1"))
@@ -145,4 +151,34 @@ fn certificate_rejections() {
             "{serial}"
         );
     }
+}
+
+/// `-newkey` implies `-new`, with `privkey.pem` as the key file unless
+/// `-keyout` names another; `-pkeyopt` may come before it.
+#[test]
+fn new_keys() {
+    let o = options(&[
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-newkey",
+        "ec",
+        "-nodes",
+    ]);
+    assert_eq!(o.mode, Mode::Create);
+    let Some(KeySource::New(new)) = o.key else {
+        panic!("a new key")
+    };
+    assert_eq!(new.keyout, OsString::from("privkey.pem"));
+    assert_eq!(
+        new.parameters.algorithm("req").unwrap(),
+        baldssl_pkey::Algorithm::P256
+    );
+    let o =
+        options(&["-x509", "-newkey", "ed25519", "-noenc", "-keyout", "k.pem"]);
+    assert_eq!((o.mode, o.product), (Mode::Create, Product::Certificate));
+    assert!(matches!(o.key, Some(KeySource::New(n)) if n.keyout == "k.pem"));
+    assert!(matches!(
+        options(&["-key", "k.pem"]).key,
+        Some(KeySource::File(f)) if f == "k.pem"
+    ));
 }
