@@ -490,7 +490,14 @@ impl ObjectId {
     ///
     /// None in practice: the contents are checked when the value is built.
     pub fn to_dotted(&self) -> crate::Result<String> {
-        Oid::parse(&self.0)?.to_dotted()
+        self.as_oid().to_dotted()
+    }
+
+    /// The borrowed view of the same identifier, which decoders give: total,
+    /// since the contents were checked when the value was built.
+    #[must_use]
+    pub fn as_oid(&self) -> Oid<'_> {
+        Oid(&self.0)
     }
 }
 
