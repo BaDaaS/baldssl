@@ -14,6 +14,7 @@ Usage: platform-matrix.py [path/to/platforms.json]
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 DEFAULT = Path(__file__).resolve().parent.parent / "website/src/platforms.json"
 
@@ -29,9 +30,12 @@ FIELDS = {
 EXPECT = {"pass", "link-fail"}
 
 
-def matrices(data):
+def matrices(
+    data: dict[str, Any],
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     """{job: [entries]} and the list of problems found."""
-    out, problems = {}, []
+    out: dict[str, list[dict[str, Any]]] = {}
+    problems: list[str] = []
     for platform in data["platforms"]:
         pid = platform.get("id")
         if pid not in FIELDS:
@@ -51,7 +55,7 @@ def matrices(data):
     return out, problems
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     path = Path(argv[0]) if argv else DEFAULT
     out, problems = matrices(json.loads(path.read_text(encoding="utf-8")))
     if problems:

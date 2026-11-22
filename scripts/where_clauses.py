@@ -21,12 +21,14 @@ Usage: where_clauses.py [--fix] FILE...
 
 import re
 import sys
+from collections.abc import Iterator
+from pathlib import Path
 
 KEYWORDS = ("fn", "struct", "enum", "union", "impl", "trait")
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def code_mask(src):
+def code_mask(src: str) -> list[bool]:
     """True for each character that is code (not comment or literal)."""
     mask = [True] * len(src)
     i, n = 0, len(src)
@@ -74,7 +76,7 @@ def code_mask(src):
     return mask
 
 
-def close_angle(src, mask, start):
+def close_angle(src: str, mask: list[bool], start: int) -> int:
     """Index of the `>` closing the `<` at `start`."""
     depth, i = 0, start
     while i < len(src):
@@ -92,15 +94,13 @@ def close_angle(src, mask, start):
     raise ValueError(f"unclosed < at {start}")
 
 
-def split_top(text):
+def split_top(text: str) -> list[str]:
     """Splits a generic list at its top-level commas."""
     parts, depth, cur = [], 0, ""
     for k, c in enumerate(text):
         if c in "<([":
             depth += 1
-        elif c == ">" and (k == 0 or text[k - 1] != "-"):
-            depth -= 1
-        elif c in ")]":
+        elif (c == ">" and (k == 0 or text[k - 1] != "-")) or c in ")]":
             depth -= 1
         if c == "," and depth == 0:
             parts.append(cur)
@@ -112,7 +112,7 @@ def split_top(text):
     return parts
 
 
-def body_start(src, mask, i):
+def body_start(src: str, mask: list[bool], i: int) -> tuple[int, bool]:
     """Where the item's signature ends: the index of its `where`, or of the
     `{` or `;` that follows it, at depth 0. Returns (index, has_where)."""
     depth = 0
@@ -129,15 +129,20 @@ def body_start(src, mask, i):
                 depth -= 1
             elif depth == 0 and c in "{;":
                 return i, False
-            elif (depth == 0 and src.startswith("where", i)
-                  and not (src[i - 1].isalnum() or src[i - 1] == "_")
-                  and not (src[i + 5:i + 6].isalnum())):
+            elif (
+                depth == 0
+                and src.startswith("where", i)
+                and not (src[i - 1].isalnum() or src[i - 1] == "_")
+                and not (src[i + 5 : i + 6].isalnum())
+            ):
                 return i, True
         i += 1
     raise ValueError("no body")
 
 
-def generic_lists(src):
+def generic_lists(
+    src: str,
+) -> Iterator[tuple[int, int, int, list[bool]]]:
     """(keyword index, '<' index, '>' index) of each item's generics."""
     mask = code_mask(src)
     for m in re.finditer(r"\b(" + "|".join(KEYWORDS) + r")\b", src):
@@ -157,11 +162,11 @@ def generic_lists(src):
             yield m.start(), i, close_angle(src, mask, i), mask
 
 
-def inline_bounds(params):
+def inline_bounds(params: str) -> list[tuple[int, str, str]]:
     """[(index, name, bounds)] of the parameters bounded inline."""
     out = []
-    for k, p in enumerate(split_top(params)):
-        p = p.strip()
+    for k, raw in enumerate(split_top(params)):
+        p = raw.strip()
         if p.startswith(("const ", "'")) or ":" not in p or "=" in p:
             continue
         name, bounds = p.split(":", 1)
@@ -169,11 +174,11 @@ def inline_bounds(params):
     return out
 
 
-def fix(src):
+def fix(src: str) -> str:
     """Moves every inline bound to a where clause; returns the new text."""
     while True:
         for _kw, lt, gt, mask in generic_lists(src):
-            params = src[lt + 1:gt]
+            params = src[lt + 1 : gt]
             bounded = inline_bounds(params)
             if not bounded:
                 continue
@@ -188,39 +193,46 @@ def fix(src):
                 after = at + len("where")
                 rest = src[after:]
                 new_tail = f" {preds},{rest}"
-                src = src[:lt + 1] + bare + src[gt:after] + new_tail
+                src = src[: lt + 1] + bare + src[gt:after] + new_tail
             else:
                 head = src[gt:at].rstrip()
-                src = (src[:lt + 1] + bare + head + f"\nwhere\n    {preds},\n"
-                       + src[at:])
+                src = (
+                    src[: lt + 1]
+                    + bare
+                    + head
+                    + f"\nwhere\n    {preds},\n"
+                    + src[at:]
+                )
             break
         else:
             return src
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     do_fix = "--fix" in argv
     files = [a for a in argv if a != "--fix"]
     found = 0
     for path in files:
-        with open(path, encoding="utf-8") as f:
-            src = f.read()
+        src = Path(path).read_text(encoding="utf-8")
         if do_fix:
             new = fix(src)
             if new != src:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(new)
+                Path(path).write_text(new, encoding="utf-8")
                 print(f"fixed {path}")
             continue
         for _kw, lt, gt, _mask in generic_lists(src):
-            for _, name, bounds in inline_bounds(src[lt + 1:gt]):
+            for _, name, bounds in inline_bounds(src[lt + 1 : gt]):
                 line = src.count("\n", 0, lt) + 1
-                print(f"{path}:{line}: bound `{name}: {bounds}` belongs in a "
-                      "where clause")
+                print(
+                    f"{path}:{line}: bound `{name}: {bounds}` belongs in a "
+                    "where clause"
+                )
                 found += 1
     if found:
-        print(f"{found} inline bound(s); fix with "
-              "`scripts/where_clauses.py --fix FILE...` then rustfmt")
+        print(
+            f"{found} inline bound(s); fix with "
+            "`scripts/where_clauses.py --fix FILE...` then rustfmt"
+        )
         return 1
     return 0
 

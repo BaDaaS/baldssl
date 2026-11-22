@@ -70,12 +70,15 @@ def bin_dir(base: Path, name: str, links: dict[str, Path]) -> Path:
     return d
 
 
-def run(command: str, cwd: Path, path_first: Path, env_extra: dict[str, str]):
+def run(
+    command: str, cwd: Path, path_first: Path, env_extra: dict[str, str]
+) -> subprocess.CompletedProcess[bytes]:
     env = dict(os.environ)
     env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
     env.update(env_extra)
-    return subprocess.run(
-        ["bash", "-o", "pipefail", "-c", command],
+    # The commands are the website's examples, from the repository.
+    return subprocess.run(  # noqa: S603
+        ["bash", "-o", "pipefail", "-c", command],  # noqa: S607
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -92,7 +95,9 @@ def snapshot(d: Path) -> dict[str, bytes]:
     }
 
 
-def changed(before: dict[str, bytes], after: dict[str, bytes]) -> dict[str, bytes]:
+def changed(
+    before: dict[str, bytes], after: dict[str, bytes]
+) -> dict[str, bytes]:
     return {k: v for k, v in after.items() if before.get(k) != v}
 
 
@@ -105,13 +110,14 @@ def main() -> int:
     openssl = args.openssl.resolve()
     baldssl = args.baldssl.resolve()
 
-    version = subprocess.run(
+    # The binary is the one named on the command line.
+    version = subprocess.run(  # noqa: S603
         [str(openssl), "version"], capture_output=True, text=True, check=True
     ).stdout.split()[1]
     # The profile is 3.0 for OpenSSL 3.0, the major version otherwise.
     line = "3.0" if version.startswith("3.0.") else version.split(".")[0]
     profile = {"BALDSSL_OPENSSL_COMPAT": line}
-    print(f"OpenSSL {version} (baldssl profile {profile['BALDSSL_OPENSSL_COMPAT']})")
+    print(f"OpenSSL {version} (baldssl profile {line})")
 
     examples = json.loads(EXAMPLES.read_text(encoding="utf-8"))["examples"]
     failures: list[str] = []
@@ -170,7 +176,9 @@ def main() -> int:
                 )
                 print(f"FAIL  {ident} (status)")
             else:
-                print(f"ok    {ident}" + (" (baldssl identical)" if same else ""))
+                print(
+                    f"ok    {ident}" + (" (baldssl identical)" if same else "")
+                )
 
     for f in failures:
         print(f"error: {f}", file=sys.stderr)

@@ -14,6 +14,7 @@ Usage: opt_suffix.py FILE...   exits 1 and lists the offending functions.
 
 import re
 import sys
+from pathlib import Path
 
 # Methods of standard-library traits, whose names are fixed by the trait.
 STD_TRAIT_METHODS = {"partial_cmp", "next", "next_back", "nth", "last"}
@@ -38,7 +39,7 @@ def returns_option(text: str, open_paren: int) -> bool:
 
 
 def check(path: str) -> list[str]:
-    text = open(path, encoding="utf-8").read()
+    text = Path(path).read_text(encoding="utf-8")
     errors = []
     for m in FN.finditer(text):
         name = m.group(1)
@@ -46,7 +47,9 @@ def check(path: str) -> list[str]:
             continue
         if returns_option(text, m.end() - 1):
             line = text.count("\n", 0, m.start()) + 1
-            errors.append(f"{path}:{line}: `{name}` returns an Option: `{name}_opt`")
+            errors.append(
+                f"{path}:{line}: `{name}` returns an Option: `{name}_opt`"
+            )
     return errors
 
 
