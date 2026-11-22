@@ -63,8 +63,8 @@ fn help() {
 #[test]
 fn refused() {
     assert_eq!(
-        parse_options(&os(&["-addext", "x=y"])).err(),
-        Some(Error::unsupported("req -addext"))
+        parse_options(&os(&["-config", "c.cnf"])).err(),
+        Some(Error::unsupported("req -config"))
     );
     assert_eq!(
         parse_options(&os(&["-x509", "-in", "r.pem"])).err(),
@@ -180,5 +180,32 @@ fn new_keys() {
     assert!(matches!(
         options(&["-key", "k.pem"]).key,
         Some(KeySource::File(f)) if f == "k.pem"
+    ));
+}
+
+/// `-addext`: one extension per name, as OpenSSL counts names.
+#[test]
+fn added_extensions() {
+    let o = options(&[
+        "-addext",
+        "subjectAltName=DNS:a.example",
+        "-addext",
+        "keyUsage=critical,digitalSignature",
+    ]);
+    assert_eq!(o.extensions.as_slice().len(), 2);
+    assert!(o.extensions.as_slice()[1].critical);
+    assert_eq!(
+        parse_options(&os(&[
+            "-addext",
+            "keyUsage=digitalSignature",
+            "-addext",
+            "keyUsage=cRLSign"
+        ]))
+        .err(),
+        Some(Error::Usage("Duplicate extension name: keyUsage".into()))
+    );
+    assert!(matches!(
+        parse_options(&os(&["-addext", "fooBar=x"])),
+        Err(Error::Usage(_))
     ));
 }
