@@ -145,6 +145,19 @@ where
     }
 }
 
+/// Whether `der` is an `ECDSA-Sig-Value` in canonical DER (minimal lengths,
+/// minimal non-negative integers, no trailing bytes), whatever the values
+/// of $r$ and $s$: the syntax [`Signature`]'s decoder checks before it
+/// checks that both are in $[1, n - 1]$. Decoding is this syntax followed
+/// by the range: what decodes is a signature value, and a signature value
+/// out of range decodes to nothing ([`Decodable::decode`] errs). OpenSSL
+/// draws the same line: it reports an error for bytes that are not a
+/// signature value, and a verification failure for one out of range.
+#[must_use]
+pub fn is_sig_value(der: &[u8]) -> bool {
+    decode(&ECDSA_SIG_VALUE, der).is_ok()
+}
+
 /// Canonical DER only (minimal lengths and integers, no trailing bytes),
 /// and $r$, $s$ in $[1, n - 1]$; anything else is [`InvalidEncoding`].
 impl<C> Decodable for Signature<C>
