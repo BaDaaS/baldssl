@@ -58,10 +58,15 @@ pub(crate) fn parse_format(
     match value.to_str().map(str::to_ascii_uppercase).as_deref() {
         Some("PEM") => Ok(Format::Pem),
         Some("DER") => Ok(Format::Der),
-        _ => Err(Error::Usage(format!(
-            "{command}: Invalid format \"{}\" for option -{option}",
-            value.to_string_lossy()
-        ))),
+        // OpenSSL's two lines; the command name in front of the first is
+        // the one every usage error gets.
+        _ => {
+            let value = value.to_string_lossy();
+            Err(Error::Usage(format!(
+                "Bad format \"{value}\"\n{command}: Invalid format \"{value}\" \
+                 for option -{option}"
+            )))
+        }
     }
 }
 
