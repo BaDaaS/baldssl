@@ -18,7 +18,8 @@
 
 use crate::{
     ct::{Choice, CtEq},
-    hash::Digest,
+    drbg::DrbgHash,
+    hash::{Algorithm, Digest, WithHash},
     secret::SecretBytes,
 };
 
@@ -161,6 +162,32 @@ where
         outer.update(self.outer_pad.expose());
         outer.update(&inner);
         Tag(outer.finalize())
+    }
+}
+
+impl Algorithm {
+    /// The HMAC tag of `message` under `key` with the hash this names:
+    /// [`Hmac::<H>`](Hmac) for the `H` of [`Algorithm::with`].
+    #[must_use]
+    pub fn hmac(self, key: &[u8], message: &[u8]) -> Tag {
+        self.with(HmacWith { key, message })
+    }
+}
+
+/// HMAC of a message, with any hash.
+struct HmacWith<'a> {
+    key: &'a [u8],
+    message: &'a [u8],
+}
+
+impl WithHash for HmacWith<'_> {
+    type Output = Tag;
+
+    fn run<H>(self) -> Tag
+    where
+        H: DrbgHash,
+    {
+        Hmac::<H>::mac(self.key, self.message)
     }
 }
 
