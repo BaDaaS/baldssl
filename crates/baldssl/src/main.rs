@@ -8,6 +8,8 @@
 
 mod args;
 mod genpkey;
+mod input;
+mod req;
 mod x509;
 
 use std::{
@@ -23,6 +25,7 @@ use baldssl_core::Error;
 const COMMANDS: &[(&str, &str)] = &[
     ("genpkey", "Generate a private key"),
     ("help", "List the commands"),
+    ("req", "Create, read and verify certificate requests"),
     ("version", "Print the baldssl version"),
     ("x509", "Display X.509 certificates"),
 ];
@@ -42,6 +45,7 @@ fn dispatch(args: &[OsString]) -> Result<(Vec<u8>, Option<OsString>), Error> {
     };
     match command.to_str() {
         Some("genpkey") => genpkey::render(rest),
+        Some("req") => req::render(rest),
         Some("x509") => x509::render(rest),
         Some("version") => Ok((
             format!("baldssl {}\n", env!("CARGO_PKG_VERSION")).into_bytes(),

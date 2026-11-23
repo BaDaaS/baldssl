@@ -16,11 +16,7 @@
 //!   `-fingerprint -<digest>`.
 //! * A missing input file exits with 2 (OpenSSL: 1).
 
-use std::{
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, Read},
-};
+use std::ffi::OsString;
 
 use baldssl_core::{Error, Result, pem};
 use baldssl_crypto::Algorithm;
@@ -29,7 +25,10 @@ use baldssl_x509::{
     serial_line, time_rfc822,
 };
 
-use crate::args::{self, Kind, Spec};
+use crate::{
+    args::{self, Kind, Spec},
+    input::{parse_format, read_input},
+};
 
 /// Every option `baldssl x509` accepts, besides `-<digest>`.
 pub(crate) const SPECS: &[Spec] = &[
@@ -130,17 +129,6 @@ struct Options {
     digest: (Algorithm, String),
 }
 
-fn parse_format(value: &OsStr, option: &str) -> Result<Format> {
-    match value.to_str().map(str::to_ascii_uppercase).as_deref() {
-        Some("PEM") => Ok(Format::Pem),
-        Some("DER") => Ok(Format::Der),
-        _ => Err(Error::Usage(format!(
-            "x509: Invalid format \"{}\" for option -{option}",
-            value.to_string_lossy()
-        ))),
-    }
-}
-
 /// Digest names OpenSSL accepts that baldssl does not implement.
 fn is_unimplemented_digest(name: &str) -> bool {
     matches!(
@@ -210,8 +198,10 @@ fn parse_options(raw: &[OsString]) -> Result<Options> {
             "help" => o.help = true,
             "in" => o.input = Some(value),
             "out" => o.output = Some(value),
-            "inform" => o.inform = Some(parse_format(&value, "inform")?),
-            "outform" => o.outform = parse_format(&value, "outform")?,
+            "inform" => {
+                o.inform = Some(parse_format(&value, "x509", "inform")?);
+            }
+            "outform" => o.outform = parse_format(&value, "x509", "outform")?,
             "noout" => o.noout = true,
             "text" => mark(&mut o, Print::Text),
             "subject" => mark(&mut o, Print::Subject),
@@ -234,30 +224,6 @@ fn parse_options(raw: &[OsString]) -> Result<Options> {
     }
     o.prints.sort_unstable();
     Ok(o)
-}
-
-fn read_input(path: Option<&OsStr>) -> Result<Vec<u8>> {
-    match path {
-        None => {
-            let mut buf = Vec::new();
-            io::stdin().read_to_end(&mut buf).map_err(|e| Error::Io {
-                context: "reading stdin".into(),
-                message: e.to_string(),
-            })?;
-            Ok(buf)
-        }
-        Some(p) => fs::read(p).map_err(|e| {
-            let shown = p.to_string_lossy().into_owned();
-            if e.kind() == io::ErrorKind::NotFound {
-                Error::NotFound { path: shown }
-            } else {
-                Error::Io {
-                    context: format!("reading {shown}"),
-                    message: e.to_string(),
-                }
-            }
-        }),
-    }
 }
 
 /// The environment variable selecting the OpenSSL release line to imitate.

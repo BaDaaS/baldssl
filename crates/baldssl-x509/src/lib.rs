@@ -1,9 +1,30 @@
-//! X.509 certificates: decoding from PEM or DER, and printing in the exact
-//! formats of `openssl x509`.
+//! X.509 certificates and certificate requests: decoding certificates
+//! from PEM or DER and printing them in the exact formats of `openssl
+//! x509`; writing distinguished names from `-subj` as OpenSSL does
+//! ([`DistinguishedName`]); and creating, reading and verifying certificate
+//! signing requests ([`CertificationRequest`]).
 //!
 //! Supported public keys: P-256, P-384, P-521 (`id-ecPublicKey` with a named
 //! curve), Ed25519, and RSA for display. Anything else is reported as
 //! [`baldssl_core::Error::Unsupported`].
+//!
+//! # Terms
+//!
+//! - **X.509**, the ITU-T recommendation ([X.509]) defining certificates,
+//!   profiled for the Internet by [RFC 5280].
+//! - **PEM**, Privacy-Enhanced Mail: the base64 text armour of [RFC 7468];
+//!   **DER**, Distinguished Encoding Rules ([X.690] clause 10), the one
+//!   binary encoding of each value.
+//! - **PKCS**, Public-Key Cryptography Standards; **CSR**, certificate
+//!   signing request, the PKCS#10 structure of [RFC 2986].
+//! - **RDN**, relative distinguished name, one component of a name; **OID**,
+//!   object identifier, the ASN.1 name of an attribute or an algorithm.
+//!
+//! [X.509]: https://www.itu.int/rec/T-REC-X.509
+//! [RFC 5280]: https://www.rfc-editor.org/rfc/rfc5280
+//! [RFC 7468]: https://www.rfc-editor.org/rfc/rfc7468
+//! [X.690]: https://www.itu.int/rec/T-REC-X.690
+//! [RFC 2986]: https://www.rfc-editor.org/rfc/rfc2986
 
 mod algorithm;
 mod cert;
