@@ -19,12 +19,12 @@
 
 use baldssl_core::{Error, Result};
 use baldssl_crypto::{
-    algebra::encoding::Decodable as _,
+    algebra::{curve::Curve, encoding::Decodable as _, field::PrimeField as _},
     hash::Algorithm as Hash,
     instances::{P256, P384, P521},
     signature::{
         SignEncoded, SignatureAlgorithm, VerifyEncoded,
-        ecdsa::{sign_with_hash, verify_with_hash},
+        ecdsa::{is_sig_value, sign_with_hash, verify_with_hash},
         eddsa::{Ed25519, Ed25519Parameters, PublicKey as EddsaPublicKey},
     },
 };
@@ -46,6 +46,11 @@ pub trait Signing: KeyAlgorithm {
     /// curve.
     const DEFAULT: Self::Choice;
 
+    /// The length of the longest encoded signature, which every signature
+    /// of [`Signing::sign`] fits (`EVP_PKEY_get_size`, the most OpenSSL
+    /// reads of a signature file).
+    const MAX_SIGNATURE_LEN: usize;
+
     /// The signature algorithm a choice gives.
     fn algorithm(choice: Self::Choice) -> SignatureAlgorithm;
 
@@ -64,6 +69,11 @@ pub trait Signing: KeyAlgorithm {
         message: &[u8],
     ) -> Result<Vec<u8>>;
 
+    /// Whether `signature` is a signature as the scheme encodes one,
+    /// whatever its values: the syntax that verifying checks first. What
+    /// [`Signing::verify`] accepts is a signature.
+    fn is_signature(signature: &[u8]) -> bool;
+
     /// Whether the encoded `signature` of `message` verifies under `key`.
     fn verify(
         key: &Self::PublicKey,
@@ -81,6 +91,8 @@ where
     type Choice = Hash;
 
     const DEFAULT: Hash = Hash::Sha256;
+
+    const MAX_SIGNATURE_LEN: usize = ecdsa_max_len(<C as Curve>::Scalar::BITS);
 
     fn algorithm(hash: Hash) -> SignatureAlgorithm {
         SignatureAlgorithm::Ecdsa(hash)
@@ -102,6 +114,10 @@ where
             .map_err(|_| Error::invalid("ECDSA: no nonce"))
     }
 
+    fn is_signature(signature: &[u8]) -> bool {
+        is_sig_value(signature)
+    }
+
     fn verify(
         key: &Self::PublicKey,
         hash: Hash,
@@ -118,6 +134,9 @@ impl Signing for Ed25519 {
 
     const DEFAULT: () = ();
 
+    /// The 64 bytes of RFC 8032 section 5.1.6, step 6.
+    const MAX_SIGNATURE_LEN: usize = 64;
+
     fn algorithm((): ()) -> SignatureAlgorithm {
         SignatureAlgorithm::Ed25519
     }
@@ -131,6 +150,12 @@ impl Signing for Ed25519 {
             Ok(signature) => Ok(signature),
             Err(never) => match never {},
         }
+    }
+
+    /// Any bytes: a signature of another length does not verify, and is
+    /// not malformed.
+    fn is_signature(_signature: &[u8]) -> bool {
+        true
     }
 
     fn verify(key: &[u8], (): (), message: &[u8], signature: &[u8]) -> bool {
@@ -160,6 +185,28 @@ where
     ) -> Result<Vec<u8>> {
         self.sign(A::choice_opt(algorithm).ok_or_else(mismatch)?, message)
     }
+}
+
+/// The length of the longest DER `ECDSA-Sig-Value` for a group order of
+/// `bits` bits: a SEQUENCE of two INTEGERs below the order, each at most
+/// `bits / 8 + 1` bytes (an integer of `bits` bits, with a leading zero
+/// byte when its top bit fills a byte), as X.690 section 8.3 encodes them,
+/// with the lengths of section 8.1.3. For P-256, P-384 and P-521: 72, 104
+/// and 139 bytes.
+const fn ecdsa_max_len(bits: u32) -> usize {
+    /// The length of a TLV with `content` bytes of content.
+    const fn tlv(content: usize) -> usize {
+        let length_octets = if content < 0x80 {
+            1
+        } else if content <= 0xff {
+            2
+        } else {
+            3
+        };
+        content.saturating_add(length_octets).saturating_add(1)
+    }
+    let integer = (bits as usize / 8).saturating_add(1);
+    tlv(tlv(integer).saturating_mul(2))
 }
 
 /// A key and an algorithm that do not go together.
@@ -216,7 +263,69 @@ impl AnyPrivateKey {
     }
 }
 
+/// Whether `signature` is a signature under a typed key and a run-time
+/// algorithm, and if so whether it verifies.
+fn check_as<A>(
+    key: &A::PublicKey,
+    algorithm: SignatureAlgorithm,
+    message: &[u8],
+    signature: &[u8],
+) -> Result<bool>
+where
+    A: Signing,
+{
+    let choice = A::choice_opt(algorithm).ok_or_else(mismatch)?;
+    if A::is_signature(signature) {
+        Ok(A::verify(key, choice, message, signature))
+    } else {
+        Err(Error::invalid("the bytes are not a signature"))
+    }
+}
+
 impl PublicKey {
+    /// The length of the longest signature under this key
+    /// ([`Signing::MAX_SIGNATURE_LEN`]).
+    #[must_use]
+    pub fn max_signature_len(&self) -> usize {
+        match self {
+            PublicKey::P256(_) => P256::MAX_SIGNATURE_LEN,
+            PublicKey::P384(_) => P384::MAX_SIGNATURE_LEN,
+            PublicKey::P521(_) => P521::MAX_SIGNATURE_LEN,
+            PublicKey::Ed25519(_) => Ed25519::MAX_SIGNATURE_LEN,
+        }
+    }
+
+    /// Whether the encoded `signature` of `message` verifies under this key
+    /// with `algorithm`, telling apart what does not verify (`Ok(false)`)
+    /// from what is not a signature at all, as OpenSSL does.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] when the bytes are not a signature
+    /// ([`Signing::is_signature`]), or the algorithm is not one of the
+    /// key's.
+    pub fn check_signature(
+        &self,
+        algorithm: SignatureAlgorithm,
+        message: &[u8],
+        signature: &[u8],
+    ) -> Result<bool> {
+        match self {
+            PublicKey::P256(q) => {
+                check_as::<P256>(q, algorithm, message, signature)
+            }
+            PublicKey::P384(q) => {
+                check_as::<P384>(q, algorithm, message, signature)
+            }
+            PublicKey::P521(q) => {
+                check_as::<P521>(q, algorithm, message, signature)
+            }
+            PublicKey::Ed25519(bytes) => {
+                check_as::<Ed25519>(bytes, algorithm, message, signature)
+            }
+        }
+    }
+
     /// Whether the encoded `signature` of `message` verifies under this key
     /// with `algorithm`: false when the algorithm is not one of the key's.
     #[must_use]
