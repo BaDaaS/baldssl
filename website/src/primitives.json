@@ -126,6 +126,104 @@
       "purpose": "Enough of RFC 8446 to fetch a server's certificate chain with `s_client`.",
       "status": "planned",
       "link": ""
+    },
+    {
+      "id": "bignum",
+      "name": "Arbitrary-precision integers",
+      "purpose": "Integers of thousands of bits and modular arithmetic on them (Montgomery multiplication, exponentiation), constant time for secrets: the base of RSA, DSA and Diffie-Hellman.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "primes",
+      "name": "Primality testing and prime generation",
+      "purpose": "Miller-Rabin and random and safe primes, for RSA keys, DSA and DH parameters, and openssl prime.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "rsa-crypt",
+      "name": "RSA encryption",
+      "purpose": "RSAES-PKCS1-v1_5 and OAEP, for pkeyutl, rsautl, CMS and S/MIME.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "dsa",
+      "name": "DSA",
+      "purpose": "Domain parameters, keys, signing and verification, for dsa, dsaparam and gendsa.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "dh",
+      "name": "Finite-field Diffie-Hellman",
+      "purpose": "Parameters, named groups (RFC 7919), keys and key agreement, for dhparam and pkeyutl -derive.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "crl",
+      "name": "Certificate revocation lists",
+      "purpose": "Reading, printing, verifying and issuing X.509 CRLs, for crl, crl2pkcs7, ca and verify.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "cms",
+      "name": "PKCS#7 and CMS",
+      "purpose": "SignedData, EnvelopedData and the other CMS content types, for pkcs7, cms, smime, ts and PKCS#12.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "ocsp",
+      "name": "OCSP",
+      "purpose": "OCSP requests and responses (RFC 6960), for ocsp.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "tsp",
+      "name": "Time-stamp protocol",
+      "purpose": "RFC 3161 requests, responses and tokens, for ts.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "kdf",
+      "name": "Key derivation functions",
+      "purpose": "HKDF, scrypt, TLS1-PRF, SSKDF, X9.63 and KBKDF, for kdf, pkcs8 and HPKE.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "mac",
+      "name": "MACs beyond HMAC",
+      "purpose": "CMAC, GMAC, KMAC, Poly1305 and SipHash, for mac.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "hpke",
+      "name": "HPKE",
+      "purpose": "Hybrid Public Key Encryption (RFC 9180), for Encrypted Client Hello.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "more-digests",
+      "name": "More digests",
+      "purpose": "SHA-3 and SHAKE, BLAKE2, MD5, RIPEMD-160, SM3, and SHA-512/224 and SHA-512/256, for dgst and their shortcut commands.",
+      "status": "planned",
+      "link": ""
+    },
+    {
+      "id": "more-ciphers",
+      "name": "More block ciphers",
+      "purpose": "ARIA, Camellia, Triple DES and SM4 in their modes, for enc and their shortcut commands.",
+      "status": "planned",
+      "link": ""
     }
   ]
 }
