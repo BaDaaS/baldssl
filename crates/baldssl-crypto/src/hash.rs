@@ -41,6 +41,18 @@ pub trait Digest: Sized {
         h.update(data);
         h.finalize()
     }
+
+    /// The hash of the concatenation of `parts`, without building it: the
+    /// fold of [`Digest::update`] over them, which the action law makes the
+    /// same as [`Digest::digest`] of their concatenation.
+    #[must_use]
+    fn digest_parts(parts: &[&[u8]]) -> Vec<u8> {
+        let mut h = Self::new();
+        for part in parts {
+            h.update(part);
+        }
+        h.finalize()
+    }
 }
 
 /// The digests the CLI can select by name.
@@ -276,6 +288,25 @@ mod tests {
             prop_assert_eq!(split::<Sha512>(&data, cut), Sha512::digest(&data));
             prop_assert_eq!(stream::<Sha224>(&data, chunk), Sha224::digest(&data));
             prop_assert_eq!(stream::<Sha384>(&data, chunk), Sha384::digest(&data));
+        }
+
+        /// `digest_parts` is the digest of the concatenation, for any way of
+        /// cutting the input into parts, the empty ones included.
+        #[test]
+        fn parts_are_concatenated(
+            data in prop::collection::vec(any::<u8>(), 0..400),
+            mut cuts in prop::collection::vec(0usize..400, 0..5),
+        ) {
+            cuts.push(0);
+            cuts.push(data.len());
+            for c in &mut cuts {
+                *c = (*c).min(data.len());
+            }
+            cuts.sort_unstable();
+            let parts: Vec<&[u8]> =
+                cuts.windows(2).filter_map(|w| data.get(w[0]..w[1])).collect();
+            prop_assert_eq!(Sha512::digest_parts(&parts), Sha512::digest(&data));
+            prop_assert_eq!(Sha256::digest_parts(&parts), Sha256::digest(&data));
         }
     }
 }

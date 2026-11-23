@@ -51,6 +51,16 @@ impl core::ops::BitOr for Choice {
     }
 }
 
+/// Exclusive or: addition in $\mathbb{F}_2$, so two choices are equal when
+/// their sum is false.
+impl core::ops::BitXor for Choice {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self {
+        Choice(self.0 ^ rhs.0)
+    }
+}
+
 impl core::ops::Not for Choice {
     type Output = Self;
 

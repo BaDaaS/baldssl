@@ -96,6 +96,38 @@ pub trait PrimeField: Field {
     /// The canonical big-endian encoding, [`PrimeField::BYTES`] bytes.
     fn to_bytes_be(&self) -> Vec<u8>;
 
+    /// Decodes the canonical little-endian encoding of
+    /// [`PrimeField::BYTES`] bytes: the big-endian one read backwards, with
+    /// the same rejections as [`PrimeField::from_bytes_be`].
+    #[must_use]
+    fn from_bytes_le(bytes: &[u8]) -> (Self, Choice) {
+        let be: Vec<u8> = bytes.iter().rev().copied().collect();
+        Self::from_bytes_be(&be)
+    }
+
+    /// The canonical little-endian encoding, [`PrimeField::BYTES`] bytes:
+    /// the big-endian one reversed.
+    #[must_use]
+    fn to_bytes_le(&self) -> Vec<u8> {
+        let mut le = self.to_bytes_be();
+        le.reverse();
+        le
+    }
+
+    /// Whether the canonical representative in $[0, p)$ is odd: the sign
+    /// that point compression records for the coordinate it drops
+    /// ([SEC 1, section 2.3.3][sec1], [RFC 8032, section 5.1.2][rfc8032]).
+    /// Negation swaps it on nonzero elements, since $p - v$ is odd exactly
+    /// when $v$ is even, $p$ being odd.
+    ///
+    /// [sec1]: https://www.secg.org/sec1-v2.pdf
+    /// [rfc8032]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
+    #[must_use]
+    fn is_odd(&self) -> Choice {
+        let low = self.to_bytes_be().last().map_or(0, |b| b & 1);
+        Choice::from_bit(u64::from(low))
+    }
+
     /// The integer whose little-endian encoding is `bytes`, of any length,
     /// reduced modulo $p$: how RFC 8032 reads a hash as a scalar
     /// ([section 5.1.6][rfc8032-5.1.6], steps 2 and 4). Horner's rule over

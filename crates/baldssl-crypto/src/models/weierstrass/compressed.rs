@@ -57,14 +57,6 @@ where
 
 impl<C> Eq for Compressed<C> where C: ShortWeierstrass {}
 
-/// Whether the canonical integer of a field element is odd.
-fn is_odd<F>(v: &F) -> bool
-where
-    F: PrimeField,
-{
-    v.to_bytes_be().last().is_some_and(|b| b & 1 == 1)
-}
-
 /// `00` for the identity, otherwise `02 || x` or `03 || x` by the parity of
 /// $y$, $x$ big-endian.
 impl<C> Encodable for Compressed<C>
@@ -78,7 +70,11 @@ where
             return vec![0x00];
         };
         let mut out = Vec::with_capacity(1 + C::Base::BYTES);
-        out.push(if is_odd(&y) { 0x03 } else { 0x02 });
+        out.push(if y.is_odd().to_bool_vartime() {
+            0x03
+        } else {
+            0x02
+        });
         out.extend(x.to_bytes_be());
         out
     }
@@ -110,12 +106,12 @@ where
             return Err(InvalidEncoding);
         }
         let want_odd = prefix == 0x03;
-        let y = if is_odd(&root) == want_odd {
+        let y = if root.is_odd().to_bool_vartime() == want_odd {
             root
         } else {
             -root
         };
-        if is_odd(&y) != want_odd {
+        if y.is_odd().to_bool_vartime() != want_odd {
             // y = 0 = -0 is even, so 03 has no point.
             return Err(InvalidEncoding);
         }

@@ -281,7 +281,14 @@ where
             F::<M, N>::from_bytes_be(&bad.to_bytes_be(F::<M, N>::BYTES));
         assert!(!valid.to_bool_vartime(), "{}: accepted p or p + 1", M::NAME);
         assert_eq!(x, F::<M, N>::ZERO);
+        let mut le = bad.to_bytes_be(F::<M, N>::BYTES);
+        le.reverse();
+        assert!(!F::<M, N>::from_bytes_le(&le).1.to_bool_vartime());
     }
+    assert!(!F::<M, N>::from_bytes_le(&[0u8; 3]).1.to_bool_vartime());
+    // -1 = p - 1 is even, 1 is odd.
+    assert!(!top.is_odd().to_bool_vartime());
+    assert!(F::<M, N>::ONE.is_odd().to_bool_vartime());
     let all_ones = vec![0xffu8; F::<M, N>::BYTES];
     assert!(!F::<M, N>::from_bytes_be(&all_ones).1.to_bool_vartime());
     assert!(!F::<M, N>::from_bytes_be(&[0u8; 3]).1.to_bool_vartime());
@@ -334,6 +341,28 @@ where
         "{} bytes",
         M::NAME
     );
+    // The little-endian codec is the big-endian one composed with reversal,
+    // and decodes what it encodes.
+    let mut le = ra.to_bytes_be(Fp::<M, N>::BYTES);
+    le.reverse();
+    assert_eq!(a.to_bytes_le(), le, "{} le bytes", M::NAME);
+    let (back, ok) = Fp::<M, N>::from_bytes_le(&le);
+    assert!(
+        ok.to_bool_vartime() && back == a,
+        "{} le round trip",
+        M::NAME
+    );
+    // Parity is that of the representative, and negation flips it on the
+    // nonzero elements, p being odd.
+    assert_eq!(a.is_odd().to_bool_vartime(), ra.bit(0), "{} odd", M::NAME);
+    if ra != Nat(vec![]) {
+        assert_ne!(
+            (-a).is_odd().to_bool_vartime(),
+            a.is_odd().to_bool_vartime(),
+            "{} odd of -a",
+            M::NAME
+        );
+    }
 
     // Ring axioms.
     assert_eq!(a + b, b + a);

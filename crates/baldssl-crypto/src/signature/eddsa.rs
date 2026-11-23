@@ -93,6 +93,25 @@ pub struct EdDSA<P>(PhantomData<P>)
 where
     P: EddsaParameters;
 
+/// The secret scalar of section 5.1.5 as $b$ little-endian bytes: the first
+/// half of $H(\mathrm{seed})$ with the $c$ low bits and the bits above $n$
+/// cleared, and bit $n$ set.
+fn clamped_le<P>(seed: &P::Seed) -> Vec<u8>
+where
+    P: EddsaParameters,
+{
+    let h = SecretBytes::new(P::Hash::digest(seed.as_ref()));
+    let mut s: Vec<u8> = h.expose().iter().take(P::B / 8).copied().collect();
+    for bit in 0..P::C {
+        set_bit(&mut s, bit, false);
+    }
+    for bit in P::N..P::B {
+        set_bit(&mut s, bit, false);
+    }
+    set_bit(&mut s, P::N, true);
+    s
+}
+
 /// Clears, then sets, bit `index` of a little-endian integer.
 fn set_bit(le: &mut [u8], index: usize, value: bool) {
     if let Some(byte) = le.get_mut(index / 8) {
@@ -111,15 +130,7 @@ where
 
     /// The clamped first half of $H(\mathrm{seed})$, big-endian.
     fn secret_scalar(seed: &P::Seed) -> Vec<u8> {
-        let h = P::Hash::digest(seed.as_ref());
-        let mut s: Vec<u8> = h.iter().take(P::B / 8).copied().collect();
-        for bit in 0..P::C {
-            set_bit(&mut s, bit, false);
-        }
-        for bit in P::N..P::B {
-            set_bit(&mut s, bit, false);
-        }
-        set_bit(&mut s, P::N, true);
+        let mut s = clamped_le::<P>(seed);
         s.reverse();
         s
     }
@@ -134,22 +145,7 @@ fn hash_scalar<P>(parts: &[&[u8]]) -> Scalar<P>
 where
     P: EddsaParameters,
 {
-    let mut h = P::Hash::new();
-    for part in parts {
-        h.update(part);
-    }
-    Scalar::<P>::from_le_bytes_mod_order(&h.finalize())
-}
-
-/// A scalar's little-endian encoding, $b$ bits.
-fn scalar_le<P>(scalar: &Scalar<P>) -> Vec<u8>
-where
-    P: EddsaParameters,
-{
-    let mut le = scalar.to_bytes_be();
-    le.reverse();
-    le.resize(P::B / 8, 0);
-    le
+    Scalar::<P>::from_le_bytes_mod_order(&P::Hash::digest_parts(parts))
 }
 
 /// An EdDSA public key as a verifier holds it: the encoding as given
@@ -253,7 +249,11 @@ where
 
     fn encode(&self) -> Vec<u8> {
         let mut out = self.r.clone();
-        out.extend(scalar_le::<P>(&self.s));
+        // The order l is below 2^b, so a scalar fits in b bits: the resize only appends
+        // zeros.
+        let mut s = self.s.to_bytes_le();
+        s.resize(P::B / 8, 0);
+        out.extend(s);
         out
     }
 }
@@ -272,13 +272,12 @@ where
             return Err(InvalidEncoding);
         }
         let (r, s_le) = bytes.split_at(half);
-        let mut big_endian = s_le.to_vec();
-        big_endian.reverse();
         // The scalar field's encoding may be shorter than b bits: the
         // bytes above it must be zero.
-        let extra = big_endian.len().saturating_sub(Scalar::<P>::BYTES);
-        let (high, low) = big_endian.split_at(extra);
-        let (s, below) = Scalar::<P>::from_bytes_be(low);
+        let (low, high) = s_le
+            .split_at_checked(Scalar::<P>::BYTES)
+            .ok_or(InvalidEncoding)?;
+        let (s, below) = Scalar::<P>::from_bytes_le(low);
         if high.iter().any(|&b| b != 0) || !below.to_bool_vartime() {
             return Err(InvalidEncoding);
         }
@@ -311,9 +310,7 @@ where
     ) -> Result<Signature<P>, core::convert::Infallible> {
         let h = SecretBytes::new(P::Hash::digest(key.seed().as_ref()));
         let prefix = h.expose().get(P::B / 8..).unwrap_or_default();
-        let mut s_le = Self::secret_scalar(key.seed());
-        s_le.reverse();
-        let s = SecretBytes::new(s_le);
+        let s = SecretBytes::new(clamped_le::<P>(key.seed()));
         let secret = Scalar::<P>::from_le_bytes_mod_order(s.expose());
         let r = hash_scalar::<P>(&[prefix, message]);
         let big_r = <P::Curve as Curve>::scalar_mul(
