@@ -244,7 +244,7 @@
       "section": "tasks",
       "title": "Hash a file",
       "explanation": "Prints the SHA-256 digest of a file, to check that a download is intact.",
-      "status": "not-yet",
+      "status": "supported",
       "deterministic": true,
       "lines": ["openssl dgst -sha256 cert.pem"]
     },
