@@ -11,8 +11,8 @@
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::{
-    fs::{File, OpenOptions},
-    io,
+    fs::{self, File, OpenOptions},
+    io::{self, Write as _},
     path::Path,
 };
 
@@ -77,6 +77,26 @@ pub fn create_owner_only(path: &Path) -> Result<File> {
     #[cfg(unix)]
     options.mode(0o600);
     options.open(path).map_err(|e| write_error(path, &e))
+}
+
+/// Writes `bytes` to the file `path`, or to standard output without one,
+/// as a command's output goes.
+///
+/// # Errors
+///
+/// [`Error::Io`] when the file or standard output cannot be written.
+pub fn write_output(bytes: &[u8], path: Option<&Path>) -> Result<()> {
+    if let Some(path) = path {
+        return fs::write(path, bytes).map_err(|e| write_error(path, &e));
+    }
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(bytes)
+        .and_then(|()| stdout.flush())
+        .map_err(|e| Error::Io {
+            context: "writing stdout".into(),
+            message: e.to_string(),
+        })
 }
 
 /// The error of writing `path`, as baldssl reports it.
