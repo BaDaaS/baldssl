@@ -4,10 +4,12 @@
 //! Supported: `-algorithm EC` with `-pkeyopt ec_paramgen_curve:<curve>` for
 //! P-256 (`prime256v1`), P-384 (`secp384r1`) and P-521 (`secp521r1`), and
 //! `-algorithm ED25519`; `-out`, `-outform PEM|DER`. Algorithm names are
-//! case-insensitive, as in OpenSSL. Anything else (RSA, X25519, encryption
-//! with a cipher, `-text`, parameter files) is reported as unsupported.
+//! case-insensitive, as in OpenSSL. The file `-out` names is created
+//! readable and writable by its owner only, as OpenSSL creates it. Anything
+//! else (RSA, X25519, encryption with a cipher, `-text`, parameter files) is
+//! reported as unsupported.
 
-use std::ffi::OsString;
+use std::{ffi::OsString, path::Path};
 
 use baldssl_core::{Error, Result, encoding::Encodable, pem::Pem};
 use baldssl_pkey::AnyPrivateKey;
@@ -16,7 +18,7 @@ use baldssl_x509::Format;
 use crate::{
     args::{self, Kind, Spec},
     input::parse_format,
-    keygen::KeyParameters,
+    keygen::{KeyParameters, write_private_key},
 };
 
 /// Every option `baldssl genpkey` accepts.
@@ -87,15 +89,51 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     } else {
         key.to_pem().into_bytes()
     };
-    Ok((bytes, output))
+    match output {
+        Some(path) => {
+            write_private_key(Path::new(&path), &bytes)?;
+            Ok((Vec::new(), None))
+        }
+        None => Ok((bytes, None)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
     use super::*;
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
+    }
+
+    /// `-out` writes the key to the file, not to standard output, and on
+    /// Unix the file is readable and writable by its owner only.
+    #[test]
+    fn key_file() {
+        let dir = std::env::temp_dir()
+            .join(format!("baldssl-genpkey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("k.pem");
+        let (stdout, path) = render(&[
+            OsString::from("-algorithm"),
+            OsString::from("ED25519"),
+            OsString::from("-out"),
+            file.clone().into_os_string(),
+        ])
+        .unwrap();
+        assert!(stdout.is_empty() && path.is_none());
+        let written = std::fs::read(&file).unwrap();
+        assert!(written.starts_with(b"-----BEGIN PRIVATE KEY-----\n"));
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]

@@ -114,12 +114,16 @@ done
 structure() {
     "$OPENSSL" asn1parse -in "$1" -i | sed -E 's/\[HEX DUMP\]:[0-9A-F]+//'
 }
+# The permission bits of a file, in octal.
+mode() { perl -e 'printf "%o", (stat shift)[2] & 0777' "$1"; }
 for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
     "EC ec_paramgen_curve:P-521" "ED25519"; do
     read -r alg opt <<<"$spec"
     args=(-algorithm "$alg")
     [[ -n "$opt" ]] && args+=(-pkeyopt "$opt")
     label="genpkey/${opt:-$alg}"
+    # An existing file keeps its mode, in both: start from none.
+    rm -f "$WORK/b-key.pem" "$WORK/o-key.pem"
     if ! "$BALDSSL" genpkey "${args[@]}" -out "$WORK/b-key.pem"; then
         echo "FAIL $label: baldssl genpkey failed"
         fail=$((fail + 1))
@@ -133,6 +137,9 @@ for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
         <(structure "$WORK/o-key.pem"); then
         echo "FAIL $label: structure differs from OpenSSL's"
         diff <(structure "$WORK/o-key.pem") <(structure "$WORK/b-key.pem") || true
+        fail=$((fail + 1))
+    elif [[ "$(mode "$WORK/b-key.pem")" != "$(mode "$WORK/o-key.pem")" ]]; then
+        echo "FAIL $label: key file mode $(mode "$WORK/b-key.pem"), OpenSSL's $(mode "$WORK/o-key.pem")"
         fail=$((fail + 1))
     else
         pass=$((pass + 1))
