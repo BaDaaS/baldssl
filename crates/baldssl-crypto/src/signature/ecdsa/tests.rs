@@ -11,7 +11,9 @@
 use baldssl_test_utils::hex;
 use proptest::prelude::*;
 
-use super::{Ecdsa, Rfc6979, Signature, bits2int};
+use super::{
+    Ecdsa, Rfc6979, Signature, bits2int, sign_with_hash, verify_with_hash,
+};
 use crate::{
     algebra::{
         curve::{Curve, ShortWeierstrass},
@@ -20,10 +22,10 @@ use crate::{
         model::AffineModel,
     },
     drbg::DrbgHash,
-    hash::{Sha1, Sha224, Sha256, Sha384, Sha512},
+    hash::{Algorithm, Sha1, Sha224, Sha256, Sha384, Sha512},
     instances::{P256, P384, P521},
     keys::EcKeyPair,
-    signature::{Signer, Verifier},
+    signature::{SignEncoded, Signer, Verifier},
 };
 
 /// One curve's vectors: the key pair, then the signatures.
@@ -727,6 +729,42 @@ proptest! {
         laws::<P256, Sha512>(&secret, &message, &other);
         laws::<P521, Sha256>(&secret, &message, &other);
     }
+}
+
+/// The run-time hash dispatch is the static scheme: for every hash name,
+/// `sign_with_hash` gives what `Ecdsa::<C, H>` gives for its `H` (signing
+/// is deterministic), and the signature verifies under that name only.
+fn run_time_hash<C>(message: &[u8])
+where
+    C: ShortWeierstrass,
+{
+    let pair = EcKeyPair::<C>::from_secret_opt(C::Scalar::ONE + C::Scalar::ONE)
+        .unwrap();
+    let typed = [
+        Ecdsa::<C, Sha1>::sign_encoded(&pair, message),
+        Ecdsa::<C, Sha224>::sign_encoded(&pair, message),
+        Ecdsa::<C, Sha256>::sign_encoded(&pair, message),
+        Ecdsa::<C, Sha384>::sign_encoded(&pair, message),
+        Ecdsa::<C, Sha512>::sign_encoded(&pair, message),
+    ];
+    for (hash, typed) in Algorithm::ALL.into_iter().zip(typed) {
+        let signature = sign_with_hash(hash, &pair, message).unwrap();
+        assert_eq!(signature, typed.unwrap(), "{hash:?}");
+        for other in Algorithm::ALL {
+            assert_eq!(
+                verify_with_hash(other, pair.public(), message, &signature),
+                other == hash,
+                "{hash:?} verified as {other:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn run_time_hashes() {
+    run_time_hash::<P256>(b"sample");
+    run_time_hash::<P384>(b"");
+    run_time_hash::<P521>(b"test");
 }
 
 /// The empty message, and the secret scalars 1 and $n - 1$.

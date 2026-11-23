@@ -25,10 +25,13 @@
 pub mod ecdsa;
 pub mod eddsa;
 
-use crate::algebra::{
-    curve::Curve,
-    encoding::Encodable,
-    model::{CurveModel, ProjectiveModel},
+use crate::{
+    Algorithm,
+    algebra::{
+        curve::Curve,
+        encoding::{Decodable, Encodable},
+        model::{CurveModel, ProjectiveModel},
+    },
 };
 
 /// A discrete-logarithm signature scheme over a group of prime order.
@@ -98,4 +101,77 @@ pub trait Verifier: SignatureScheme {
         message: &[u8],
         signature: &Self::Signature,
     ) -> bool;
+}
+
+/// Signing to the encoding of the signature: the bytes certificates and
+/// requests carry (a DER `ECDSA-Sig-Value`, the 64 bytes of Ed25519). One
+/// blanket implementation covers every scheme whose signatures encode.
+pub trait SignEncoded: Signer {
+    /// The encoded signature of `message`.
+    ///
+    /// # Errors
+    ///
+    /// The scheme's signing error.
+    fn sign_encoded(
+        key: &Self::SigningKey,
+        message: &[u8],
+    ) -> Result<Vec<u8>, Self::Error>;
+}
+
+impl<S> SignEncoded for S
+where
+    S: Signer,
+    S::Signature: Encodable,
+    <S::Signature as Encodable>::Bytes: AsRef<[u8]>,
+{
+    fn sign_encoded(
+        key: &S::SigningKey,
+        message: &[u8],
+    ) -> Result<Vec<u8>, S::Error> {
+        S::sign(key, message).map(|s| s.encode().as_ref().to_vec())
+    }
+}
+
+/// Verifying an encoded signature: false when the bytes do not decode
+/// ([`Decodable`] is canonical, so a signature has one encoding), and
+/// [`Verifier::verify`] otherwise. One blanket implementation covers every
+/// scheme whose signatures decode.
+pub trait VerifyEncoded: Verifier {
+    /// Whether `signature` decodes and verifies.
+    #[must_use]
+    fn verify_encoded(
+        key: &Self::VerifyingKey,
+        message: &[u8],
+        signature: &[u8],
+    ) -> bool;
+}
+
+impl<S> VerifyEncoded for S
+where
+    S: Verifier,
+    S::Signature: Decodable,
+{
+    fn verify_encoded(
+        key: &S::VerifyingKey,
+        message: &[u8],
+        signature: &[u8],
+    ) -> bool {
+        S::Signature::decode(signature)
+            .is_ok_and(|s| S::verify(key, message, &s))
+    }
+}
+
+/// A signature scheme named at run time: ECDSA with a hash, or Ed25519.
+/// The hash is a parameter of ECDSA only, so this is a sum, not a product
+/// of a family and a hash: there is no Ed25519 with a hash to reject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureAlgorithm {
+    /// ECDSA ([FIPS 186-5] section 6) with the hash.
+    ///
+    /// [FIPS 186-5]: https://csrc.nist.gov/pubs/fips/186-5/final
+    Ecdsa(Algorithm),
+    /// Ed25519 ([RFC 8032] section 5.1), which fixes its hash.
+    ///
+    /// [RFC 8032]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1
+    Ed25519,
 }

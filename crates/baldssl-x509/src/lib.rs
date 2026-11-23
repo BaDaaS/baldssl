@@ -5,7 +5,9 @@
 //! curve), Ed25519, and RSA for display. Anything else is reported as
 //! [`baldssl_core::Error::Unsupported`].
 
+mod algorithm;
 mod cert;
+mod csr;
 mod dn;
 mod ext;
 mod name;
@@ -14,7 +16,9 @@ mod objects_table;
 mod text;
 mod version;
 
+pub use baldssl_crypto::signature::SignatureAlgorithm;
 pub use cert::{Certificate, Validity};
+pub use csr::CertificationRequest;
 pub use dn::{
     DistinguishedName, InputEncoding, StringTypes, SubjError, SubjWarning,
     UTF8_ONLY,
