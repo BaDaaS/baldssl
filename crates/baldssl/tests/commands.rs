@@ -1,6 +1,7 @@
 //! The website's command table (`website/src/commands.json`) must agree
 //! with the binary: a command is marked `supported` or `partial` exactly
-//! when `baldssl help` lists it, and every such command is one OpenSSL has.
+//! when `baldssl help` lists it, and every such command is one OpenSSL has
+//! (a standard command, or a digest shortcut such as `sha256`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{collections::BTreeSet, fs, path::Path, process::Command};
@@ -50,7 +51,10 @@ fn website_status_matches_the_binary() {
         .iter()
         .filter(|(_, _, s)| s == "supported" || s == "partial")
         .map(|(k, n, _)| {
-            assert_eq!(k, "standard", "{n}: shortcut commands not dispatched");
+            assert!(
+                k == "standard" || k == "digest",
+                "{n}: {k} commands are not dispatched"
+            );
             n.clone()
         })
         .collect();
