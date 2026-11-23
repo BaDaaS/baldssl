@@ -176,14 +176,13 @@ where
     type Bytes = Vec<u8>;
 
     fn encode(&self) -> Vec<u8> {
-        let len = encoding_len::<C>();
-        let mut out = vec![0u8; len];
-        for (o, b) in out.iter_mut().zip(self.y.to_bytes_be().iter().rev()) {
-            *o = *b;
-        }
-        let x_parity = self.x.to_bytes_be().last().map_or(0, |b| b & 1);
+        // The encoding has room for BITS + 1 bits, so at least BYTES bytes:
+        // the resize only appends zeros.
+        let mut out = self.y.to_bytes_le();
+        out.resize(encoding_len::<C>(), 0);
+        let sign = u8::try_from(self.x.is_odd().mask() & 0x80).unwrap_or(0);
         if let Some(last) = out.last_mut() {
-            *last |= x_parity << 7;
+            *last |= sign;
         }
         out
     }
@@ -206,32 +205,67 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
+        Self::decode_with(bytes, DecodingRules::Rfc8032)
+    }
+}
+
+/// Which encodings of a point [`Affine::decode_with`] accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodingRules {
+    /// RFC 8032 section 5.1.3: $y < p$, and not $x = 0$ with the sign bit
+    /// set. The canonical encodings only, so decoding inverts encoding.
+    Rfc8032,
+    /// What OpenSSL 3.5 and 4.1 accept for an Ed25519 public key: $y$ is
+    /// read modulo $p$ (so $y \geq p$ is accepted), and the sign bit is
+    /// ignored when $x = 0$. A $y$ with no point is still rejected. Several
+    /// encodings then denote one point; only verification uses it, to give
+    /// OpenSSL's verdicts.
+    OpenSsl,
+}
+
+impl<C> Affine<C>
+where
+    C: TwistedEdwards,
+{
+    /// The point `bytes` encodes under `rules` (RFC 8032 section 5.1.3,
+    /// with the relaxations of [`DecodingRules::OpenSsl`] when asked).
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidEncoding`] for a wrong length, bytes above the field's
+    /// width, a $y$ with no point, and, under [`DecodingRules::Rfc8032`], a
+    /// non-canonical $y$ or $x = 0$ with the sign bit set.
+    pub fn decode_with(
+        bytes: &[u8],
+        rules: DecodingRules,
+    ) -> Result<Self, InvalidEncoding> {
         if bytes.len() != encoding_len::<C>() {
             return Err(InvalidEncoding);
         }
-        let mut be: Vec<u8> = bytes.iter().rev().copied().collect();
-        let top = be.first_mut().ok_or(InvalidEncoding)?;
-        let x_0 = *top >> 7;
+        let mut le = bytes.to_vec();
+        let top = le.last_mut().ok_or(InvalidEncoding)?;
+        let x_0 = Choice::from_bit(u64::from(*top >> 7));
         *top &= 0x7f;
         // The bytes above the field's width, if any, must be zero.
-        let extra = be
-            .len()
-            .checked_sub(C::Base::BYTES)
-            .ok_or(InvalidEncoding)?;
-        let (high, low) = be.split_at(extra);
+        let (low, high) =
+            le.split_at_checked(C::Base::BYTES).ok_or(InvalidEncoding)?;
         if high.iter().any(|&b| b != 0) {
             return Err(InvalidEncoding);
         }
-        let (y, canonical) = C::Base::from_bytes_be(low);
+        let (_, canonical) = C::Base::from_bytes_le(low);
+        let y = C::Base::from_le_bytes_mod_order(low);
         let y2 = y.square();
         let u = y2 - C::Base::ONE;
         let v = d::<C>() * y2 + C::Base::ONE;
         let (x, is_square) = (u * v.invert()).sqrt();
-        let parity = x.to_bytes_be().last().map_or(0, |b| b & 1);
-        let flip = Choice::from_bit(u64::from(parity ^ x_0));
+        let flip = x.is_odd() ^ x_0;
         let x = C::Base::select(&x, &-x, flip);
-        let bad_sign = x.is_zero() & Choice::from_bit(u64::from(x_0));
-        (canonical & is_square & !bad_sign)
+        let bad_sign = x.is_zero() & x_0;
+        let valid = match rules {
+            DecodingRules::Rfc8032 => canonical & is_square & !bad_sign,
+            DecodingRules::OpenSsl => is_square,
+        };
+        valid
             .to_bool_vartime()
             .then_some(point(x, y))
             .ok_or(InvalidEncoding)
