@@ -7,7 +7,7 @@ use baldssl_crypto::{
 };
 use proptest::prelude::*;
 
-use super::Signing;
+use super::{SignatureCheck, Signing};
 use crate::{Algorithm, AnyPrivateKey, PrivateKey, PublicKey};
 
 /// Every run-time signature algorithm.
@@ -43,7 +43,9 @@ fn choice_is_a_retraction() {
 }
 
 /// A typed signature verifies under its choice and under no other
-/// algorithm, and the run-time key signs the same bytes.
+/// algorithm, fits [`Signing::MAX_SIGNATURE_LEN`], is a signature, and
+/// the run-time key signs the same bytes; `check_signature` agrees with
+/// `verify` on everything that is a signature.
 fn signs<A>(key: &PrivateKey<A>, any: &AnyPrivateKey, message: &[u8])
 where
     A: Signing,
@@ -54,6 +56,19 @@ where
             Some(choice) => {
                 let typed = key.sign(choice, message).unwrap();
                 assert_eq!(any.sign(a, message).unwrap(), typed, "{a:?}");
+                assert!(typed.len() <= A::MAX_SIGNATURE_LEN, "{a:?}");
+                assert!(A::is_signature(&typed));
+                assert_eq!(public.max_signature_len(), A::MAX_SIGNATURE_LEN);
+                assert_eq!(
+                    public.check_signature(a, message, &typed),
+                    Ok(SignatureCheck::Verified)
+                );
+                let mut other = message.to_vec();
+                other.push(0);
+                assert_eq!(
+                    public.check_signature(a, &other, &typed),
+                    Ok(SignatureCheck::Failed)
+                );
                 for b in all_algorithms() {
                     assert_eq!(
                         public.verify(b, message, &typed),
@@ -100,4 +115,34 @@ fn defaults() {
         key.default_signature_algorithm(),
         SignatureAlgorithm::Ed25519
     );
+}
+
+/// The longest signatures, as OpenSSL reads them (`EVP_PKEY_get_size`,
+/// measured with OpenSSL 3.5: a signature file of that length followed by
+/// junk verifies, one of a byte more does not).
+#[test]
+fn longest_signatures() {
+    assert_eq!(P256::MAX_SIGNATURE_LEN, 72);
+    assert_eq!(P384::MAX_SIGNATURE_LEN, 104);
+    assert_eq!(P521::MAX_SIGNATURE_LEN, 139);
+    assert_eq!(Ed25519::MAX_SIGNATURE_LEN, 64);
+}
+
+proptest! {
+    /// What verifies is a signature, and `check_signature` is `verify` on
+    /// signatures and `Malformed` elsewhere.
+    #[test]
+    fn check_refines_verify(bytes in prop::collection::vec(any::<u8>(), 0..80)) {
+        let key = AnyPrivateKey::from_secret(Algorithm::P256, &[7; 32]).unwrap();
+        let public = PublicKey::from(&key);
+        let a = SignatureAlgorithm::Ecdsa(Hash::Sha256);
+        let verifies = public.verify(a, b"m", &bytes);
+        match public.check_signature(a, b"m", &bytes) {
+            Ok(SignatureCheck::Verified) => prop_assert!(verifies),
+            Ok(SignatureCheck::Failed | SignatureCheck::Malformed) => {
+                prop_assert!(!verifies);
+            }
+            Err(e) => prop_assert!(false, "a matching algorithm: {e:?}"),
+        }
+    }
 }
