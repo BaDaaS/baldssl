@@ -6,6 +6,7 @@
 //! [`baldssl_core::Error::Unsupported`].
 
 mod cert;
+mod dn;
 mod ext;
 mod name;
 mod objects;
@@ -14,6 +15,10 @@ mod text;
 mod version;
 
 pub use cert::{Certificate, Validity};
+pub use dn::{
+    DistinguishedName, InputEncoding, StringTypes, SubjError, SubjWarning,
+    UTF8_ONLY,
+};
 pub use name::{Name, NameStyle};
 pub use text::{Compat, print_text, serial_line, time_rfc822};
 
