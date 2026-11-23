@@ -11,10 +11,12 @@ use std::ffi::OsString;
 
 use baldssl_core::{Error, Result, encoding::Encodable, pem::Pem};
 use baldssl_pkey::AnyPrivateKey;
+use baldssl_x509::Format;
 
 use crate::{
     args::{self, Kind, Spec},
-    keygen::{KeyParameters, utf8},
+    input::parse_format,
+    keygen::KeyParameters,
 };
 
 /// Every option `baldssl genpkey` accepts.
@@ -71,18 +73,8 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
             "pkeyopt" => parameters.pkeyopt("genpkey", &value)?,
             "out" => output = Some(value),
             "outform" => {
-                match utf8("genpkey", "outform", &value)?
-                    .to_ascii_uppercase()
-                    .as_str()
-                {
-                    "PEM" => der = false,
-                    "DER" => der = true,
-                    other => {
-                        return Err(Error::Usage(format!(
-                            "genpkey: Invalid format \"{other}\" for option -outform"
-                        )));
-                    }
-                }
+                der =
+                    parse_format(&value, "genpkey", "outform")? == Format::Der;
             }
             "text" => return Err(Error::unsupported("genpkey -text")),
             _ => {}
