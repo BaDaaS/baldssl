@@ -46,18 +46,17 @@ const issueLinks = (numbers = []) =>
         )
         .join(', ')}</span>`;
 
-// Every id in tracking.json must exist, and every item whose status is in
-// `untracked` must have at least one issue: the build fails otherwise.
-const checkTracking = (section, items, id, untracked) => {
+// Every id in tracking.json must exist, and every item must have at least
+// one issue, whatever its status, so that each can be picked up and
+// followed: the build fails otherwise.
+const checkTracking = (section, items, id) => {
   const issues = tracking(section);
   const ids = new Set(items.map(id));
   const unknown = Object.keys(issues).filter(k => !ids.has(k));
   if (unknown.length > 0) {
     throw new Error(`tracking.json ${section}: unknown ${unknown.join(', ')}`);
   }
-  const missing = items
-    .filter(i => untracked.includes(i.status) && !issues[id(i)]?.length)
-    .map(id);
+  const missing = items.filter(i => !issues[id(i)]?.length).map(id);
   if (missing.length > 0) {
     throw new Error(
       `tracking.json ${section}: no issue for ${missing.join(', ')}`,
@@ -193,7 +192,6 @@ function examples() {
         'tasks',
         list.filter(e => e.section === 'tasks'),
         e => e.id,
-        ['not-yet'],
       );
       let out = html.replace('<!-- tasks:toggle -->', toolToggle).replace(
         '<!-- tasks -->',
@@ -230,10 +228,7 @@ function primitives() {
     },
     transformIndexHtml(html) {
       const list = JSON.parse(readFileSync(primitivesPath, 'utf8')).primitives;
-      const issues = checkTracking('primitives', list, p => p.id, [
-        'planned',
-        'in-progress',
-      ]);
+      const issues = checkTracking('primitives', list, p => p.id);
       const rows = list
         .map(p => {
           const [label, colors] = PRIMITIVE_STATUS[p.status];
@@ -316,9 +311,7 @@ function commandTables() {
       const { commands } = JSON.parse(readFileSync(commandsPath, 'utf8'));
       const of = kind => commands.filter(c => c.kind === kind);
       const standard = of('standard');
-      const issues = checkTracking('commands', commands, c => c.name, [
-        'planned',
-      ]);
+      const issues = checkTracking('commands', commands, c => c.name);
       const count = s => commands.filter(c => c.status === s).length;
       const summary =
         `${commands.length} commands: ${count('supported')} supported, ` +
