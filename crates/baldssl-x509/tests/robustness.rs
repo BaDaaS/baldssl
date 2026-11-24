@@ -3,7 +3,8 @@
 
 use std::{fs, path::Path};
 
-use baldssl_x509::{Certificate, Compat, Format, certificate_der, print_text};
+use baldssl_core::text::Text as _;
+use baldssl_x509::{Certificate, Compat, Format, certificate_der};
 use proptest::prelude::*;
 
 fn fixture_ders() -> Vec<Vec<u8>> {
@@ -27,8 +28,8 @@ fn fixtures_parse_and_keep_their_encoding() {
     for der in fixture_ders() {
         let cert = Certificate::from_der(&der).unwrap();
         assert_eq!(cert.der, &der[..]);
-        print_text(&cert, Compat::V3).unwrap();
-        print_text(&cert, Compat::V4).unwrap();
+        cert.to_text(Compat::V3).unwrap();
+        cert.to_text(Compat::V4).unwrap();
     }
 }
 
@@ -66,8 +67,8 @@ proptest! {
             der[i] = byte;
         }
         if let Ok(cert) = Certificate::from_der(&der) {
-            let _ = print_text(&cert, Compat::V3);
-            let _ = print_text(&cert, Compat::V4);
+            let _ = cert.to_text(Compat::V3);
+            let _ = cert.to_text(Compat::V4);
             let _ = cert.subject.to_openssl(baldssl_x509::NameStyle::Utf8);
         }
         let _ = certificate_der(&der, Some(Format::Pem));

@@ -16,6 +16,7 @@ pub mod encoding;
 pub mod error;
 pub mod hex;
 pub mod pem;
+pub mod text;
 
 pub use error::Error;
 

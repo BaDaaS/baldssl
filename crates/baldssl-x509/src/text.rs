@@ -10,6 +10,7 @@ use baldssl_core::{
     Error, Result,
     der::{Integer, Reader, Time, TimeKind, tag},
     hex::{self, Case},
+    text::Text,
 };
 
 use crate::{
@@ -393,13 +394,26 @@ fn version_line(version: &Version) -> String {
     }
 }
 
-/// The full `-text` block.
+/// The `openssl x509 -text` block of a certificate, in the layout of the
+/// release line `compat` names.
 ///
 /// # Errors
 ///
 /// [`Error::Unsupported`] for anything baldssl cannot yet print exactly as
 /// OpenSSL does; [`Error::Invalid`] for malformed contents.
-pub fn print_text(cert: &Certificate<'_>, compat: Compat) -> Result<Vec<u8>> {
+impl Text for Certificate<'_> {
+    type Layout = Compat;
+
+    fn to_text(&self, compat: Compat) -> Result<Vec<u8>> {
+        print_certificate(self, compat)
+    }
+}
+
+/// The text form of a certificate, for its [`Text`] impl.
+fn print_certificate(
+    cert: &Certificate<'_>,
+    compat: Compat,
+) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(b"Certificate:\n    Data:\n");
     out.extend_from_slice(version_line(&cert.version).as_bytes());
