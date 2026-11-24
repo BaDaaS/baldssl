@@ -1,10 +1,10 @@
 //! The filesystem side of baldssl: opening output files with the access
-//! OpenSSL gives them, and writing encodings to any writer.
+//! OpenSSL gives them, and writing encodings and text forms to any writer.
 //!
-//! Encodings themselves ([`Pem`], PEM being Privacy-Enhanced Mail,
-//! [RFC 7468]) live in `baldssl-core` and do no I/O, which keeps that crate
-//! extractable to Lean. This crate is the edge where they meet the operating
-//! system.
+//! Encodings ([`Pem`], PEM being Privacy-Enhanced Mail, [RFC 7468]) and
+//! text forms ([`Text`]) live with their types and do no I/O, which keeps
+//! `baldssl-core` extractable to Lean. This crate is the edge where they
+//! meet the operating system.
 //!
 //! [RFC 7468]: https://www.rfc-editor.org/rfc/rfc7468
 
@@ -16,7 +16,7 @@ use std::{
     path::Path,
 };
 
-use baldssl_core::{Error, Result, pem::Pem};
+use baldssl_core::{Error, Result, pem::Pem, text::Text};
 
 /// Writing the PEM armour of a value to any [`io::Write`]: a file, standard
 /// output, a buffer. Every [`Pem`] type has it.
@@ -37,6 +37,31 @@ pub trait WritePem: Pem {
 }
 
 impl<T> WritePem for T where T: Pem {}
+
+/// Writing the text form of a value to any [`io::Write`]. Every [`Text`]
+/// type has it.
+pub trait WriteText: Text {
+    /// Writes the text form of `self` under `layout` ([`Text::to_text`]) to
+    /// `out`, then flushes it.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Text::to_text`], and [`Error::Io`] for the writer's.
+    fn write_text<W>(&self, layout: Self::Layout, mut out: W) -> Result<()>
+    where
+        W: io::Write,
+    {
+        let text = self.to_text(layout)?;
+        out.write_all(&text)
+            .and_then(|()| out.flush())
+            .map_err(|e| Error::Io {
+                context: "writing text".into(),
+                message: e.to_string(),
+            })
+    }
+}
+
+impl<T> WriteText for T where T: Text {}
 
 /// `path`, created (or truncated) for writing, readable and writable by its
 /// owner only (mode 0600 where files have modes), as OpenSSL opens key

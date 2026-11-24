@@ -7,8 +7,8 @@
 #   and baldssl verifies the one OpenSSL writes;
 # - Ed25519 requests are identical (Ed25519 is deterministic); ECDSA ones
 #   have the same subject and public key (OpenSSL's nonces are random);
-# - reading and converting OpenSSL's request (PEM, DER, -noout) prints what
-#   OpenSSL prints;
+# - reading, converting and printing OpenSSL's request (PEM, DER, -noout,
+#   -text) prints what OpenSSL prints;
 # - self-signed certificates (-x509) verify as their own CA in OpenSSL,
 #   and match OpenSSL's for a fixed serial and validity;
 # - -newkey: requests on a generated key verify in OpenSSL, the key is
@@ -117,7 +117,7 @@ while read -r curve _private _public pkcs8; do
                 >"$WORK/o.txt"
             same "$label: subject and key" "$WORK/b.txt" "$WORK/o.txt"
         fi
-        for args in "" "-outform DER" "-noout"; do
+        for args in "" "-outform DER" "-noout" "-text" "-noout -text"; do
             # shellcheck disable=SC2086 # args is a word list by design
             "$OPENSSL" req -in "$WORK/o.pem" $args >"$WORK/o.out"
             # shellcheck disable=SC2086
@@ -163,6 +163,12 @@ while read -r curve _private _public pkcs8; do
             if [[ "$curve" == "ED25519" ]]; then
                 same "$label: identical certificates" "$WORK/bc.pem" \
                     "$WORK/oc.pem"
+                "$BALDSSL" req -x509 -key "$key" -keyform DER \
+                    -subj "$subj" "${fixed[@]}" -text -noout >"$WORK/b.txt"
+                "$OPENSSL" req -x509 -key "$key" -keyform DER \
+                    -subj "$subj" "${fixed[@]}" -text -noout \
+                    >"$WORK/o.txt" 2>/dev/null
+                same "$label: -x509 -text" "$WORK/o.txt" "$WORK/b.txt"
             else
                 extensions="subjectKeyIdentifier,authorityKeyIdentifier"
                 extensions+=",basicConstraints"

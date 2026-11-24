@@ -36,9 +36,10 @@ use std::{ffi::OsString, io::Write as _};
 
 use baldssl_core::{Error, Result, pem};
 use baldssl_crypto::Algorithm;
+use baldssl_fs::WriteText as _;
 use baldssl_x509::{
     Certificate, CertificateTemplate, Compat, Format, certificate_der,
-    fingerprint_line, print_text, serial_line, time_rfc822,
+    fingerprint_line, serial_line, time_rfc822,
 };
 
 use crate::{
@@ -522,7 +523,7 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
                 );
             }
             Print::Text => {
-                out.extend_from_slice(&print_text(&cert, compat)?);
+                cert.write_text(compat, &mut out)?;
             }
         }
     }

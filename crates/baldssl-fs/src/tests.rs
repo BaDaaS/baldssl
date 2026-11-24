@@ -3,9 +3,9 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 
-use baldssl_core::{encoding::Encodable, pem::Pem};
+use baldssl_core::{Result, encoding::Encodable, pem::Pem, text::Text};
 
-use super::{WritePem as _, create_owner_only};
+use super::{WritePem as _, WriteText as _, create_owner_only};
 
 /// A value whose encoding is fixed bytes.
 struct Fixed(&'static [u8]);
@@ -20,6 +20,27 @@ impl Encodable for Fixed {
 
 impl Pem for Fixed {
     const LABEL: &'static str = "TEST";
+}
+
+impl Text for Fixed {
+    type Layout = u8;
+
+    /// The encoding, followed by the layout.
+    fn to_text(&self, layout: u8) -> Result<Vec<u8>> {
+        let mut out = self.0.to_vec();
+        out.push(layout);
+        Ok(out)
+    }
+}
+
+/// `write_text` writes exactly `to_text`, under the layout given.
+#[test]
+fn write_text_is_to_text() {
+    let value = Fixed(b"baldssl");
+    let mut out = Vec::new();
+    value.write_text(b'!', &mut out).unwrap();
+    assert_eq!(out, value.to_text(b'!').unwrap());
+    assert_eq!(out, b"baldssl!");
 }
 
 /// `write_pem` writes exactly `to_pem`.

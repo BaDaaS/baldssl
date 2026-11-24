@@ -63,8 +63,8 @@ fn help() {
 #[test]
 fn refused() {
     assert_eq!(
-        parse_options(&os(&["-text"])).err(),
-        Some(Error::unsupported("req -text"))
+        parse_options(&os(&["-addext", "x=y"])).err(),
+        Some(Error::unsupported("req -addext"))
     );
     assert_eq!(
         parse_options(&os(&["-x509", "-in", "r.pem"])).err(),
