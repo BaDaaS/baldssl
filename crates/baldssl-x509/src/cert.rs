@@ -8,7 +8,9 @@
 
 use baldssl_core::{
     Error, Result,
-    der::{BitString, Integer, Oid, Reader, Time, TimeKind, Tlv, tag},
+    der::{
+        BitString, DerError, Integer, Oid, Reader, Time, TimeKind, Tlv, tag,
+    },
     encoding::Encodable,
 };
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
@@ -53,6 +55,35 @@ pub(crate) struct SubjectPublicKeyInfo<'a> {
     pub(crate) algorithm: AlgorithmIdentifier<'a>,
     /// The `subjectPublicKey` BIT STRING.
     pub(crate) public_key: BitString<'a>,
+}
+
+/// The view of a DER `SubjectPublicKeyInfo` ([RFC 5280] section 4.1),
+/// which certificates and requests share.
+///
+/// # Errors
+///
+/// A TLV that is not a SEQUENCE, or malformed contents.
+///
+/// [RFC 5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+impl<'a> TryFrom<Tlv<'a>> for SubjectPublicKeyInfo<'a> {
+    type Error = Error;
+
+    fn try_from(tlv: Tlv<'a>) -> Result<Self> {
+        if tlv.octet() != tag::SEQUENCE {
+            return Err(DerError::UnexpectedTag {
+                expected: tag::SEQUENCE,
+                found: tlv.octet(),
+            }
+            .into());
+        }
+        let mut r = Reader::new(tlv.value);
+        let spki = SubjectPublicKeyInfo {
+            algorithm: AlgorithmIdentifier::read(&mut r)?,
+            public_key: BitString::parse(r.expect(tag::BIT_STRING)?.value)?,
+        };
+        r.finish()?;
+        Ok(spki)
+    }
 }
 
 /// One `Extension`.
@@ -195,14 +226,7 @@ impl<'a> Certificate<'a> {
         let subject = Name::from_contents(subject_tlv.value)?;
 
         let spki_tlv = tbs.expect(tag::SEQUENCE)?;
-        let mut spki_r = Reader::new(spki_tlv.value);
-        let spki = SubjectPublicKeyInfo {
-            algorithm: AlgorithmIdentifier::read(&mut spki_r)?,
-            public_key: BitString::parse(
-                spki_r.expect(tag::BIT_STRING)?.value,
-            )?,
-        };
-        spki_r.finish()?;
+        let spki = SubjectPublicKeyInfo::try_from(spki_tlv)?;
 
         if tbs.peek_octet_opt() == Some(tag::context(1))
             || tbs.peek_octet_opt() == Some(tag::context(2))

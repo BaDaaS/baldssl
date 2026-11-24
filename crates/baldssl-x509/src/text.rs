@@ -13,8 +13,15 @@ use baldssl_core::{
     text::Text,
 };
 
+use baldssl_core::{der::BitString, encoding::Encodable};
+
 use crate::{
-    cert::Certificate, ext, name::NameStyle, objects, version::Version,
+    CertificationRequest, algorithm,
+    cert::{AlgorithmIdentifier, Certificate, SubjectPublicKeyInfo},
+    ext,
+    name::NameStyle,
+    objects,
+    version::Version,
 };
 
 /// Which OpenSSL release line's `-text` layout to reproduce. The two lines
@@ -221,9 +228,7 @@ fn signature_dump(
 }
 
 /// Signature algorithms whose OpenSSL `sig_print` adds parameter lines.
-fn signature_name(
-    alg: &crate::cert::AlgorithmIdentifier<'_>,
-) -> Result<String> {
+fn signature_name(alg: &AlgorithmIdentifier<'_>) -> Result<String> {
     match alg.oid.to_dotted()?.as_str() {
         "1.2.840.113549.1.1.10" => {
             Err(Error::unsupported("RSASSA-PSS parameters in -text output"))
@@ -277,11 +282,10 @@ fn field_bytes(bits: usize) -> usize {
 
 fn print_public_key(
     out: &mut Vec<u8>,
-    cert: &Certificate<'_>,
+    spki: &SubjectPublicKeyInfo<'_>,
     compat: Compat,
 ) -> Result<()> {
     let per_line = compat.key_bytes_per_line();
-    let spki = &cert.spki;
     let alg = spki.algorithm.oid.to_dotted()?;
     let key = spki.public_key.bytes;
     if spki.public_key.unused != 0 {
@@ -428,32 +432,100 @@ fn print_certificate(
     out.extend_from_slice(time_rfc822(&cert.validity.not_after).as_bytes());
     out.extend_from_slice(b"\n        Subject: ");
     out.extend_from_slice(&cert.subject.to_openssl(compat.name_style())?);
-    out.extend_from_slice(
-        b"\n        Subject Public Key Info:\n            Public Key Algorithm: ",
-    );
-    out.extend_from_slice(
-        objects::long_name(&cert.spki.algorithm.oid)?.as_bytes(),
-    );
     out.push(b'\n');
-    print_public_key(&mut out, cert, compat)?;
+    print_subject_public_key_info(&mut out, &cert.spki, compat)?;
     ext::print_extensions(&mut out, &cert.extensions)?;
-    out.extend_from_slice(b"    Signature Algorithm: ");
+    print_signed(&mut out, &cert.signature_algorithm, &cert.signature, compat)?;
+    Ok(out)
+}
+
+/// The `Subject Public Key Info:` block of a certificate or a request.
+fn print_subject_public_key_info(
+    out: &mut Vec<u8>,
+    spki: &SubjectPublicKeyInfo<'_>,
+    compat: Compat,
+) -> Result<()> {
     out.extend_from_slice(
-        signature_name(&cert.signature_algorithm)?.as_bytes(),
+        b"        Subject Public Key Info:\n            Public Key Algorithm: ",
     );
+    out.extend_from_slice(objects::long_name(&spki.algorithm.oid)?.as_bytes());
+    out.push(b'\n');
+    print_public_key(out, spki, compat)
+}
+
+/// The outer part of X.509's `SIGNED{ToBeSigned}` ([X.509] section 6.2),
+/// which certificates and requests share: the signature algorithm and the
+/// signature, as `X509_signature_print` writes them.
+///
+/// [X.509]: https://www.itu.int/rec/T-REC-X.509
+fn print_signed(
+    out: &mut Vec<u8>,
+    algorithm: &AlgorithmIdentifier<'_>,
+    signature: &BitString<'_>,
+    compat: Compat,
+) -> Result<()> {
+    out.extend_from_slice(b"    Signature Algorithm: ");
+    out.extend_from_slice(signature_name(algorithm)?.as_bytes());
     out.extend_from_slice(b"\n    Signature Value:\n");
-    if cert.signature.unused != 0 {
+    if signature.unused != 0 {
         return Err(Error::unsupported(
             "signature BIT STRING with unused bits",
         ));
     }
-    signature_dump(
-        &mut out,
-        cert.signature.bytes,
-        8,
-        compat.signature_bytes_per_line(),
-    );
-    Ok(out)
+    signature_dump(out, signature.bytes, 8, compat.signature_bytes_per_line());
+    Ok(())
+}
+
+/// The `openssl req -text` block of a request, in the layout of the release
+/// line `compat` names: the `CertificationRequestInfo` (version, subject,
+/// key, attributes), then the signature as for a certificate. OpenSSL
+/// prints `Requested Extensions:` under the attributes even when there are
+/// none, so this does too.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] for attributes, and as for a [`Certificate`] for
+/// the key and the signature.
+impl Text for CertificationRequest {
+    type Layout = Compat;
+
+    fn to_text(&self, compat: Compat) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        out.extend_from_slice(
+            b"Certificate Request:\n    Data:\n        Version: 1 (0x0)\n        Subject: ",
+        );
+        out.extend_from_slice(
+            &self.subject_name()?.to_openssl(compat.name_style())?,
+        );
+        out.push(b'\n');
+        let key = self.public_key().encode();
+        let mut r = Reader::new(&key);
+        let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
+        r.finish()?;
+        print_subject_public_key_info(&mut out, &spki, compat)?;
+        if !self.attributes().is_empty() {
+            return Err(Error::unsupported(
+                "request attributes in -text output",
+            ));
+        }
+        out.extend_from_slice(
+            b"        Attributes:\n            (none)\n            Requested Extensions:\n",
+        );
+        let oid = algorithm::oid(self.algorithm());
+        print_signed(
+            &mut out,
+            &AlgorithmIdentifier {
+                oid: oid.as_oid(),
+                parameters: None,
+            },
+            &BitString {
+                unused: 0,
+                bytes: self.signature(),
+            },
+            compat,
+        )?;
+        Ok(out)
+    }
 }
 
 /// `-serial`: `i2a_ASN1_INTEGER` (upper-case hex, `00` for zero, a
@@ -479,6 +551,9 @@ pub fn serial_line(serial: &Integer) -> String {
 
 #[cfg(test)]
 mod tests {
+    use baldssl_core::encoding::Decodable;
+    use baldssl_test_utils::{fixture, hex};
+
     use super::*;
 
     fn int(bytes: &[u8]) -> Integer {
@@ -572,5 +647,33 @@ mod tests {
         assert_eq!(Compat::from_version_opt("3.0"), Some(Compat::V30));
         assert_eq!(Compat::from_version_opt("3.0.22"), Some(Compat::V30));
         assert_eq!(Compat::from_version_opt("3.5.9"), Some(Compat::V3));
+    }
+
+    /// `req -noout -text` against what each release line of OpenSSL prints
+    /// for every request of the fixtures (`req/text-<line>.txt`, recorded
+    /// by `scripts/gen-request-texts.py` from OpenSSL 3.0.22, 3.5.9 and
+    /// 4.1.0): ECDSA and Ed25519 keys, single and multi-valued RDNs.
+    #[test]
+    fn request_texts() {
+        for (file, compat) in [
+            ("req/text-v30.txt", Compat::V30),
+            ("req/text-v3.txt", Compat::V3),
+            ("req/text-v4.txt", Compat::V4),
+        ] {
+            let mut count = 0;
+            for line in fixture(file).lines().filter(|l| !l.starts_with('#')) {
+                let (request, text) = line.split_once(' ').unwrap();
+                let request =
+                    CertificationRequest::decode(&hex(request)).unwrap();
+                assert_eq!(
+                    String::from_utf8(request.to_text(compat).unwrap())
+                        .unwrap(),
+                    String::from_utf8(hex(text)).unwrap(),
+                    "{file} {count}"
+                );
+                count += 1;
+            }
+            assert_eq!(count, 48, "{file}");
+        }
     }
 }
