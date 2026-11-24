@@ -14,6 +14,11 @@
 //!   `-new`; the key is written unencrypted (`-noenc` or `-nodes`, which
 //!   are required) as PKCS#8 PEM to `-keyout`, or to `privkey.pem` as
 //!   OpenSSL's default configuration says, readable by its owner only;
+//! - extensions: `-addext name=value`, as a configuration file writes them
+//!   (`subjectAltName`, `keyUsage`, `extendedKeyUsage`, `basicConstraints`;
+//!   see the `FromStr` of [`baldssl_x509::Extension`]), each name once, as in
+//!   OpenSSL; with `-x509`, an `-addext` replaces the default extension of
+//!   its kind, which then comes after the others, as in OpenSSL;
 //! - reading one: `-in <file>` (standard input without it), `-inform`;
 //! - `-verify` (the message on standard error, exit 1 on failure, as
 //!   OpenSSL), `-text` (the request, or the `-x509` certificate, as OpenSSL
@@ -32,13 +37,16 @@
 //!
 //! As in OpenSSL, `-key` does not imply `-new`: without `-new`, `-newkey`
 //! or `-x509`, a request is read. Not supported, and reported as such:
-//! `-config`, `-addext`, RSA and other key algorithms, encrypting
+//! `-config`, RSA and other key algorithms, encrypting
 //! the generated key (`-newkey` without `-noenc`), `-x509` with `-in`
 //! (signing an existing request), `-x509` with `-verify`, negative or zero
 //! serials, the interactive prompts (a request is created only with
 //! `-subj`), and encrypted keys.
 
-use std::{ffi::OsString, path::Path};
+use std::{
+    ffi::{OsStr, OsString},
+    path::Path,
+};
 
 use baldssl_core::{
     Error, Result,
@@ -52,7 +60,7 @@ use baldssl_fs::{
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
     Certificate, CertificateTemplate, CertificationRequest, DistinguishedName,
-    Format, InputEncoding, SubjWarning, UTF8_ONLY,
+    Extension, Extensions, Format, InputEncoding, SubjWarning, UTF8_ONLY,
 };
 
 use crate::{
@@ -61,7 +69,7 @@ use crate::{
     issuing::{
         Lifetime, SerialSource, parse_serial, parse_time, signature_algorithm,
     },
-    keygen::KeyParameters,
+    keygen::{KeyParameters, utf8},
 };
 
 /// Every option `baldssl req` accepts, besides the digests.
@@ -194,7 +202,7 @@ pub(crate) const SPECS: &[Spec] = &[
     Spec {
         name: "addext",
         kind: Kind::Value,
-        help: "Extension to add (not supported yet)",
+        help: "Extension to add: name=value, as in a configuration file",
     },
 ];
 
@@ -264,6 +272,7 @@ struct Options {
     output: Output,
     verify: bool,
     text: bool,
+    extensions: Extensions,
     digest: Option<Digest>,
 }
 
@@ -284,6 +293,7 @@ impl Default for Options {
             output: Output::default(),
             verify: false,
             text: false,
+            extensions: Extensions::new(),
             digest: None,
         }
     }
@@ -364,6 +374,7 @@ fn create(o: &Options) -> Result<CertificationRequest> {
         &subject(o)?,
         &key,
         signature_algorithm(&key, o.digest),
+        &o.extensions,
     )
 }
 
@@ -372,14 +383,34 @@ fn create(o: &Options) -> Result<CertificationRequest> {
 fn self_sign(o: &Options) -> Result<Vec<u8>> {
     let key = key(o)?;
     let subject = subject(o)?;
-    CertificateTemplate::self_signed(
+    let mut template = CertificateTemplate::self_signed(
         &subject,
         &(&key).into(),
         o.serial.next("req")?,
         o.lifetime.validity("req")?,
         crate::x509::compat()?,
-    )
-    .sign(&key, signature_algorithm(&key, o.digest))
+    );
+    // -addext replaces v3_ca's extension of the same kind (which moves to
+    // the end) and adds the others, as OpenSSL's replace mode does.
+    template.extensions = template.extensions.override_with(&o.extensions);
+    template.sign(&key, signature_algorithm(&key, o.digest))
+}
+
+/// One `-addext`: the extension, refused when its name was given before
+/// (OpenSSL's "Duplicate extension name"). Extensions go by short name
+/// only, one per kind, so a name given once is a kind given once.
+fn add_extension(
+    extensions: &mut Extensions,
+    names: &mut Vec<String>,
+    value: &OsStr,
+) -> Result<()> {
+    let line = utf8("req", "addext", value)?;
+    let name = line.split_once('=').map_or(line, |(n, _)| n).trim();
+    if names.iter().any(|n| n == name) {
+        return Err(Error::Usage(format!("Duplicate extension name: {name}")));
+    }
+    names.push(name.to_string());
+    extensions.push_new(line.parse::<Extension>()?)
 }
 
 /// Reads the options.
@@ -392,6 +423,7 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
     let mut newkey = false;
     let mut keyout: Option<OsString> = None;
     let mut noenc = false;
+    let mut addext_names: Vec<String> = Vec::new();
     for opt in opts {
         let value = opt.value.clone().unwrap_or_default();
         match opt.name.as_str() {
@@ -439,7 +471,10 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
                     Some(parse_time("req", "not_after", &value)?);
             }
             "text" => o.text = true,
-            "config" | "addext" => {
+            "addext" => {
+                add_extension(&mut o.extensions, &mut addext_names, &value)?;
+            }
+            "config" => {
                 return Err(Error::unsupported(format!("req -{}", opt.name)));
             }
             name => {

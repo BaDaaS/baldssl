@@ -484,8 +484,9 @@ fn print_signed(
 ///
 /// # Errors
 ///
-/// [`Error::Unsupported`] for attributes, and as for a [`Certificate`] for
-/// the key and the signature.
+/// [`Error::Unsupported`] for attributes other than the requested
+/// extensions, and as for a [`Certificate`] for the key, the extensions
+/// and the signature.
 impl Text for CertificationRequest {
     type Layout = Compat;
 
@@ -503,14 +504,13 @@ impl Text for CertificationRequest {
         let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
         r.finish()?;
         print_subject_public_key_info(&mut out, &spki, compat)?;
-        if !self.attributes().is_empty() {
-            return Err(Error::unsupported(
-                "request attributes in -text output",
-            ));
+        let extensions = self.requested_extensions()?;
+        out.extend_from_slice(b"        Attributes:\n");
+        if extensions.is_empty() {
+            out.extend_from_slice(b"            (none)\n");
         }
-        out.extend_from_slice(
-            b"        Attributes:\n            (none)\n            Requested Extensions:\n",
-        );
+        out.extend_from_slice(b"            Requested Extensions:\n");
+        ext::print_extension_list(&mut out, &extensions, 16)?;
         let oid = algorithm::oid(self.algorithm());
         print_signed(
             &mut out,

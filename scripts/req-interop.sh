@@ -14,6 +14,8 @@
 # - -newkey: requests on a generated key verify in OpenSSL, the key is
 #   the request's, standard error is OpenSSL's, and the key file is
 #   readable by its owner only;
+# - -addext: requests and -x509 certificates identical to OpenSSL's for an
+#   Ed25519 key, and the same refusals;
 # - a request with a changed byte fails -verify in both. OpenSSL 3.0 prints
 #   "verify failure" but exits 0 there (later releases exit 1), so with
 #   3.0 OpenSSL's refusal is read from its message. baldssl exits 1 under
@@ -183,6 +185,60 @@ while read -r curve _private _public pkcs8; do
         fi
     done
 done < <(grep -v '^#' "$ROOT/tests/fixtures/keys/keypairs.txt")
+
+# -addext: with an Ed25519 key a request is deterministic, so baldssl's is
+# OpenSSL's byte for byte, for every line of a corpus (spacing quirks of
+# OpenSSL's list parser included); with -x509, an -addext overrides v3_ca's
+# extension of its kind in place. Both refuse a duplicate name, an unknown
+# key usage and an unknown extension.
+ed_key=$(grep '^ED25519' "$ROOT/tests/fixtures/keys/keypairs.txt" | head -1 |
+    awk '{print $4}')
+unhex "$ed_key" >"$WORK/ed.der"
+addexts=("subjectAltName=DNS:a.example,DNS:b.example,IP:10.0.0.1,IP:2001:db8::1"
+    "subjectAltName=email:x@y.example, URI:https://u.example.com/p?q"
+    "subjectAltName = DNS:a , DNS:bc ,DNS: d"
+    "keyUsage=critical,digitalSignature,keyEncipherment"
+    "keyUsage=keyCertSign, cRLSign, decipherOnly"
+    "keyUsage=Digital Signature, keyCertSign"
+    "extendedKeyUsage=serverAuth,clientAuth,1.3.6.1.5.5.7.3.3"
+    "basicConstraints=critical,CA:TRUE,pathlen:2"
+    "basicConstraints=CA:FALSE")
+for line in "${addexts[@]}"; do
+    for who in OPENSSL BALDSSL; do
+        "${!who}" req -new -key "$WORK/ed.der" -keyform DER -subj /CN=x \
+            -addext "$line" -outform DER -out "$WORK/$who.der" 2>/dev/null
+    done
+    same "-addext $line: identical" "$WORK/OPENSSL.der" "$WORK/BALDSSL.der"
+    "$OPENSSL" req -in "$WORK/OPENSSL.der" -inform DER -noout -text \
+        >"$WORK/o.txt"
+    "$BALDSSL" req -in "$WORK/OPENSSL.der" -inform DER -noout -text \
+        >"$WORK/b.txt"
+    same "-addext $line: -text" "$WORK/o.txt" "$WORK/b.txt"
+done
+if [[ "$OPENSSL_VERSION" != 3.0.* ]]; then
+    for who in OPENSSL BALDSSL; do
+        "${!who}" req -x509 -key "$WORK/ed.der" -keyform DER -subj /CN=x \
+            -set_serial 7 -not_before 20261122000000Z \
+            -not_after 20271122000000Z -addext "basicConstraints=CA:FALSE" \
+            -addext "subjectAltName=DNS:x.example" -outform DER \
+            -out "$WORK/$who.der" 2>/dev/null
+    done
+    same "-x509 -addext: identical" "$WORK/OPENSSL.der" "$WORK/BALDSSL.der"
+fi
+for bad in "keyUsage=badName" "fooBar=x" "keyUsage=critical ,digitalSignature" \
+    "X509v3 Key Usage=digitalSignature"; do
+    for who in OPENSSL BALDSSL; do
+        refuse "$who refuses -addext $bad" "${!who}" req -new \
+            -key "$WORK/ed.der" -keyform DER -subj /CN=x -addext "$bad" \
+            -out "$WORK/x.csr"
+    done
+done
+for who in OPENSSL BALDSSL; do
+    refuse "$who refuses a duplicate -addext" "${!who}" req -new \
+        -key "$WORK/ed.der" -keyform DER -subj /CN=x \
+        -addext keyUsage=digitalSignature -addext keyUsage=cRLSign \
+        -out "$WORK/x.csr"
+done
 
 # -newkey: for each algorithm, OpenSSL verifies the request and reads the
 # key, the key is the request's, standard error is OpenSSL's, and the key

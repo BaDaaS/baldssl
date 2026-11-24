@@ -154,10 +154,21 @@ fn read_time(r: &mut Reader<'_>) -> Result<Time> {
     Ok(Time::parse(kind, tlv.value)?)
 }
 
-fn read_extensions(value: &[u8]) -> Result<Vec<Extension<'_>>> {
-    let mut outer = Reader::new(value);
-    let mut seq = outer.sequence()?;
-    outer.finish()?;
+/// The extensions of a DER `Extensions` (`SEQUENCE OF Extension`), in
+/// order: a certificate's, or a request's `extensionRequest` attribute.
+///
+/// # Errors
+///
+/// A TLV that is not a SEQUENCE, or malformed extensions.
+pub(crate) fn read_extensions(list: Tlv<'_>) -> Result<Vec<Extension<'_>>> {
+    if list.octet() != tag::SEQUENCE {
+        return Err(DerError::UnexpectedTag {
+            expected: tag::SEQUENCE,
+            found: list.octet(),
+        }
+        .into());
+    }
+    let mut seq = Reader::new(list.value);
     let mut out = Vec::new();
     while !seq.is_empty() {
         let mut ext = seq.sequence()?;
@@ -234,7 +245,12 @@ impl<'a> Certificate<'a> {
             return Err(Error::unsupported("issuerUniqueID / subjectUniqueID"));
         }
         let extensions = match tbs.optional(tag::context_constructed(3))? {
-            Some(e) => read_extensions(e.value)?,
+            Some(e) => {
+                let mut inner = Reader::new(e.value);
+                let list = inner.read()?;
+                inner.finish()?;
+                read_extensions(list)?
+            }
             None => Vec::new(),
         };
         tbs.finish()?;
