@@ -31,11 +31,22 @@
 //! file, so this is what a default installation of OpenSSL writes; one
 //! without a configuration file writes only the subject key identifier.
 //!
+//!
+//! [`CertificateTemplate::issued`] gives what `openssl x509 -req -CA`
+//! writes for a request: the request's subject and key, the CA's subject
+//! as issuer, and no extension from the request. OpenSSL 3.2 and later add
+//! a subject key identifier and an authority key identifier (the CA's own
+//! subject key identifier, or the hash of its key when it has none);
+//! OpenSSL 3.5 leaves the authority key identifier out when the request's
+//! key is the CA's, OpenSSL 4 does not. OpenSSL 3.0 adds no extension, so
+//! its certificates are version 1. Throughout, a certificate is version 3
+//! when it has extensions and version 1 otherwise, as OpenSSL sets it.
+//!
 //! [RFC 5280 section 4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
 //! [RFC 5280 section 4.2.1.2]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.2
 
 use baldssl_core::{
-    Result,
+    Error, Result,
     der::{
         Time,
         syntax::{
@@ -52,7 +63,7 @@ use baldssl_crypto::{
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
 
 use crate::{
-    Compat,
+    Certificate, CertificationRequest, Compat,
     algorithm::{ALGORITHM_IDENTIFIER, identifier},
     cert::Validity,
     dn::DistinguishedName,
@@ -256,6 +267,52 @@ impl CertificateTemplate {
         }
     }
 
+    /// The certificate a CA issues for `request`, as `openssl x509 -req -CA`
+    /// of the release line `compat` writes it (see the module
+    /// documentation). The request's signature is not checked here.
+    ///
+    /// # Errors
+    ///
+    /// When `ca_key` is not the key of `ca`, which OpenSSL reports as "CA
+    /// certificate and CA private key do not match", or when `ca`'s key
+    /// cannot be read.
+    pub fn issued(
+        request: &CertificationRequest,
+        ca: &Certificate<'_>,
+        ca_key: &AnyPrivateKey,
+        serial: SerialNumber,
+        validity: Validity,
+        compat: Compat,
+    ) -> Result<Self> {
+        if !ca.matches_private_key(ca_key) {
+            return Err(Error::invalid(
+                "CA certificate and CA private key do not match",
+            ));
+        }
+        let ca_public = PublicKey::from(ca_key);
+        let subject_key = request.public_key();
+        let mut extensions = Vec::new();
+        if compat != Compat::V30 {
+            extensions.push(Extension::SubjectKeyIdentifier(key_identifier(
+                subject_key,
+            )));
+            if compat == Compat::V4 || subject_key != &ca_public {
+                let id = ca
+                    .subject_key_identifier_opt()
+                    .map_or_else(|| key_identifier(&ca_public), <[u8]>::to_vec);
+                extensions.push(Extension::AuthorityKeyIdentifier(id));
+            }
+        }
+        Ok(CertificateTemplate {
+            serial,
+            issuer: ca.subject_der.to_vec(),
+            validity,
+            subject: request.subject_der().to_vec(),
+            public_key: subject_key.clone(),
+            extensions,
+        })
+    }
+
     /// The DER `TBSCertificate`, signed with `algorithm`.
     fn tbs(&self, algorithm: SignatureAlgorithm) -> Result<Vec<u8>> {
         let raw = |der: &[u8]| RawTlv::parse(der);
@@ -281,6 +338,9 @@ impl CertificateTemplate {
                 ),
             ),
         ));
+        if self.extensions.is_empty() {
+            return self.tbs_v1(algorithm);
+        }
         Ok(encode(
             &tbs,
             &(
@@ -306,6 +366,41 @@ impl CertificateTemplate {
                                         (extensions, ()),
                                     ),
                                 ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ))
+    }
+
+    /// The DER `TBSCertificate` of a version 1 certificate (no version
+    /// field, no extensions).
+    fn tbs_v1(&self, algorithm: SignatureAlgorithm) -> Result<Vec<u8>> {
+        let raw = |der: &[u8]| RawTlv::parse(der);
+        let tbs = Sequence((
+            Unsigned,
+            (
+                ALGORITHM_IDENTIFIER,
+                (Any, (Sequence((Any, (Any, ()))), (Any, (Any, ())))),
+            ),
+        ));
+        Ok(encode(
+            &tbs,
+            &(
+                self.serial.0.clone(),
+                (
+                    identifier(algorithm),
+                    (
+                        raw(&self.issuer)?,
+                        (
+                            (
+                                raw(&self.validity.not_before.to_der())?,
+                                (raw(&self.validity.not_after.to_der())?, ()),
+                            ),
+                            (
+                                raw(&self.subject)?,
+                                (raw(&self.public_key.encode())?, ()),
                             ),
                         ),
                     ),

@@ -9,7 +9,9 @@
 use baldssl_core::{
     Error, Result,
     der::{BitString, Integer, Oid, Reader, Time, TimeKind, Tlv, tag},
+    encoding::Encodable,
 };
+use baldssl_pkey::{AnyPrivateKey, PublicKey};
 
 use crate::{
     name::Name,
@@ -90,8 +92,13 @@ pub struct Certificate<'a> {
     pub validity: Validity,
     /// `subject`.
     pub subject: Name<'a>,
+    /// The DER of `subject`, as it is: the issuer name of what this
+    /// certificate signs.
+    pub(crate) subject_der: &'a [u8],
     /// `subjectPublicKeyInfo`.
     pub(crate) spki: SubjectPublicKeyInfo<'a>,
+    /// The DER of `subjectPublicKeyInfo`.
+    pub(crate) spki_der: &'a [u8],
     /// `extensions`, empty when absent.
     pub(crate) extensions: Vec<Extension<'a>>,
     /// The outer `signatureAlgorithm`.
@@ -140,6 +147,28 @@ fn read_extensions(value: &[u8]) -> Result<Vec<Extension<'_>>> {
 }
 
 impl<'a> Certificate<'a> {
+    /// Whether `key` is the private key of this certificate's public key,
+    /// as OpenSSL's `X509_check_private_key` asks.
+    #[must_use]
+    pub fn matches_private_key(&self, key: &AnyPrivateKey) -> bool {
+        PublicKey::from(key).encode() == self.spki_der
+    }
+
+    /// The contents of the subject key identifier extension
+    /// ([RFC 5280 section 4.2.1.2]), when it is present and well formed.
+    ///
+    /// [RFC 5280 section 4.2.1.2]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.2
+    pub(crate) fn subject_key_identifier_opt(&self) -> Option<&'a [u8]> {
+        let ext = self
+            .extensions
+            .iter()
+            .find(|e| e.oid.as_bytes() == [0x55, 0x1d, 0x0e])?;
+        let mut r = Reader::new(ext.value);
+        let id = r.expect(tag::OCTET_STRING).ok()?;
+        r.finish().ok()?;
+        Some(id.value)
+    }
+
     /// Decodes a DER certificate. The whole input must be one certificate.
     ///
     /// # Errors
@@ -162,9 +191,11 @@ impl<'a> Certificate<'a> {
             not_after: read_time(&mut validity)?,
         };
         validity.finish()?;
-        let subject = Name::read(&mut tbs)?;
+        let subject_tlv = tbs.expect(tag::SEQUENCE)?;
+        let subject = Name::from_contents(subject_tlv.value)?;
 
-        let mut spki_r = tbs.sequence()?;
+        let spki_tlv = tbs.expect(tag::SEQUENCE)?;
+        let mut spki_r = Reader::new(spki_tlv.value);
         let spki = SubjectPublicKeyInfo {
             algorithm: AlgorithmIdentifier::read(&mut spki_r)?,
             public_key: BitString::parse(
@@ -196,7 +227,9 @@ impl<'a> Certificate<'a> {
             issuer,
             validity: validity_v,
             subject,
+            subject_der: subject_tlv.encoded,
             spki,
+            spki_der: spki_tlv.encoded,
             extensions,
             signature_algorithm,
             signature,

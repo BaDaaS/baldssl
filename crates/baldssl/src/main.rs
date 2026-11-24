@@ -9,6 +9,7 @@
 mod args;
 mod genpkey;
 mod input;
+mod issuing;
 mod req;
 mod x509;
 

@@ -15,19 +15,39 @@
 //! * `-fingerprint <digest>` is accepted as well as OpenSSL's
 //!   `-fingerprint -<digest>`.
 //! * A missing input file exits with 2 (OpenSSL: 1).
+//!
+//! # Signing requests
+//!
+//! `-req` reads a certificate request instead of a certificate, checks its
+//! signature (printing "Certificate request self-signature ok" and its
+//! subject on standard error, as OpenSSL does) and signs a certificate for
+//! it with `-CA` and `-CAkey` (the key defaults to the `-CA` file, as in
+//! OpenSSL), with the extensions of the release line
+//! `BALDSSL_OPENSSL_COMPAT` names (see
+//! [`baldssl_x509::CertificateTemplate::issued`]). The serial number is
+//! `-set_serial`, or the next one of the serial file (`-CAserial`, or with
+//! `-CAcreateserial` the `-CA` file name with `.srl`), or 159 random bits;
+//! the validity is `-days` (30 by default), `-not_before` and `-not_after`.
+//! The printing options then apply to the new certificate. Not supported:
+//! `-req` without `-CA` (`-key`, self-signing), `-CA` without `-req`,
+//! `-extfile`, `-extensions` and `-copy_extensions`.
 
-use std::ffi::OsString;
+use std::{ffi::OsString, io::Write as _};
 
 use baldssl_core::{Error, Result, pem};
 use baldssl_crypto::Algorithm;
 use baldssl_x509::{
-    Certificate, Compat, Format, certificate_der, fingerprint_line, print_text,
-    serial_line, time_rfc822,
+    Certificate, CertificateTemplate, Compat, Format, certificate_der,
+    fingerprint_line, print_text, serial_line, time_rfc822,
 };
 
 use crate::{
     args::{self, Kind, Spec},
-    input::{parse_format, read_input},
+    input::{parse_format, read_input, read_key, read_request},
+    issuing::{
+        Lifetime, SerialSource, default_serial_file, parse_serial, parse_time,
+        signature_algorithm,
+    },
 };
 
 /// Every option `baldssl x509` accepts, besides `-<digest>`.
@@ -102,7 +122,100 @@ pub(crate) const SPECS: &[Spec] = &[
         kind: Kind::Flag,
         help: "Print the fingerprint (default SHA-256; -sha1 for OpenSSL's)",
     },
+    Spec {
+        name: "req",
+        kind: Kind::Flag,
+        help: "Input is a certificate request, to sign with -CA",
+    },
+    Spec {
+        name: "CA",
+        kind: Kind::Value,
+        help: "CA certificate that signs the request",
+    },
+    Spec {
+        name: "CAform",
+        kind: Kind::Value,
+        help: "CA certificate format: PEM or DER (default: detect)",
+    },
+    Spec {
+        name: "CAkey",
+        kind: Kind::Value,
+        help: "CA private key (default: the -CA file)",
+    },
+    Spec {
+        name: "CAkeyform",
+        kind: Kind::Value,
+        help: "CA private key format: PEM or DER (default: detect)",
+    },
+    Spec {
+        name: "CAserial",
+        kind: Kind::Value,
+        help: "Serial file, read, incremented and written back",
+    },
+    Spec {
+        name: "CAcreateserial",
+        kind: Kind::Flag,
+        help: "Create the serial file if it does not exist",
+    },
+    Spec {
+        name: "set_serial",
+        kind: Kind::Value,
+        help: "Serial number of the certificate",
+    },
+    Spec {
+        name: "days",
+        kind: Kind::Value,
+        help: "Days the certificate is valid for (default 30)",
+    },
+    Spec {
+        name: "not_before",
+        kind: Kind::Value,
+        help: "Start of validity: YYMMDDHHMMSSZ, YYYYMMDDHHMMSSZ or today",
+    },
+    Spec {
+        name: "not_after",
+        kind: Kind::Value,
+        help: "End of validity, overriding -days: as -not_before",
+    },
+    Spec {
+        name: "key",
+        kind: Kind::Value,
+        help: "Self-sign with this key (not supported yet)",
+    },
 ];
+
+/// What the input is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Source {
+    /// A certificate, to print.
+    #[default]
+    Certificate,
+    /// A request, to sign with a CA (`-req`).
+    Request,
+}
+
+/// The options of `-req`.
+#[derive(Debug, Default)]
+struct Signing {
+    /// `-CA`.
+    ca: Option<OsString>,
+    /// `-CAform`.
+    ca_form: Option<Format>,
+    /// `-CAkey`.
+    ca_key: Option<OsString>,
+    /// `-CAkeyform`.
+    ca_key_form: Option<Format>,
+    /// `-CAserial`.
+    ca_serial: Option<OsString>,
+    /// `-CAcreateserial`.
+    create_serial: bool,
+    /// `-set_serial`.
+    serial: Option<baldssl_x509::SerialNumber>,
+    /// `-days`, `-not_before`, `-not_after`.
+    lifetime: Lifetime,
+    /// The `-<digest>` option, when one is given.
+    digest: Option<Algorithm>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Print {
@@ -127,6 +240,8 @@ struct Options {
     /// `(sequence number, what)`, sorted before printing.
     prints: Vec<(usize, Print)>,
     digest: (Algorithm, String),
+    source: Source,
+    signing: Signing,
 }
 
 /// Digest names OpenSSL accepts that baldssl does not implement.
@@ -185,6 +300,8 @@ fn parse_options(raw: &[OsString]) -> Result<Options> {
         help: false,
         prints: Vec::new(),
         digest: (Algorithm::Sha256, "sha256".to_string()),
+        source: Source::default(),
+        signing: Signing::default(),
     };
     let mut seq = 0usize;
     let mut mark = |o: &mut Options, p: Print| {
@@ -214,8 +331,37 @@ fn parse_options(raw: &[OsString]) -> Result<Options> {
                 mark(&mut o, Print::EndDate);
             }
             "fingerprint" => mark(&mut o, Print::Fingerprint),
+            "req" => o.source = Source::Request,
+            "CA" => o.signing.ca = Some(value),
+            "CAform" => {
+                o.signing.ca_form =
+                    Some(parse_format(&value, "x509", "CAform")?);
+            }
+            "CAkey" => o.signing.ca_key = Some(value),
+            "CAkeyform" => {
+                o.signing.ca_key_form =
+                    Some(parse_format(&value, "x509", "CAkeyform")?);
+            }
+            "CAserial" => o.signing.ca_serial = Some(value),
+            "CAcreateserial" => o.signing.create_serial = true,
+            "set_serial" => {
+                o.signing.serial = Some(parse_serial("x509", &value)?);
+            }
+            "days" => o.signing.lifetime.set_days("x509", &value)?,
+            "not_before" => {
+                o.signing.lifetime.not_before =
+                    Some(parse_time("x509", "not_before", &value)?);
+            }
+            "not_after" => {
+                o.signing.lifetime.not_after =
+                    Some(parse_time("x509", "not_after", &value)?);
+            }
+            "key" => return Err(Error::unsupported("x509 -key")),
             name => match Algorithm::from_name_opt(name) {
-                Some(alg) => o.digest = (alg, name.to_string()),
+                Some(alg) => {
+                    o.digest = (alg, name.to_string());
+                    o.signing.digest = Some(alg);
+                }
                 None => {
                     return Err(Error::unsupported(format!("digest {name}")));
                 }
@@ -223,7 +369,88 @@ fn parse_options(raw: &[OsString]) -> Result<Options> {
         }
     }
     o.prints.sort_unstable();
+    match (o.source, o.signing.ca.is_some()) {
+        (Source::Request, false) => {
+            return Err(Error::unsupported("x509 -req without -CA (-key)"));
+        }
+        (Source::Certificate, true) => {
+            return Err(Error::unsupported("x509 -CA without -req"));
+        }
+        _ => {}
+    }
     Ok(o)
+}
+
+/// Where the serial number comes from: `-set_serial`, the serial file, or
+/// random bits.
+fn serial_source(s: &Signing) -> SerialSource {
+    match (&s.serial, &s.ca_serial, &s.ca) {
+        (Some(serial), _, _) => SerialSource::Given(serial.clone()),
+        (None, Some(path), _) => SerialSource::File {
+            path: path.into(),
+            create: s.create_serial,
+        },
+        (None, None, Some(ca)) if s.create_serial => SerialSource::File {
+            path: default_serial_file(ca),
+            create: true,
+        },
+        _ => SerialSource::Random,
+    }
+}
+
+/// Writes `line` and a newline on standard error.
+fn note(line: &[u8]) {
+    let mut err = std::io::stderr();
+    // Nothing to do if standard error is gone.
+    let _ = err.write_all(line).and_then(|()| err.write_all(b"\n"));
+}
+
+/// The certificate `-req` signs: the request of the input, checked, then
+/// signed by the CA. Prints what OpenSSL prints on standard error.
+fn issue(o: &Options, compat: Compat) -> Result<Vec<u8>> {
+    let s = &o.signing;
+    let request = read_request(o.input.as_deref(), o.inform)?;
+    if !request.verify() {
+        if compat != Compat::V30 {
+            note(b"Warning: CSR self-signature does not match the contents");
+        }
+        note(b"Certificate request self-signature did not match the contents");
+        return Err(Error::invalid(
+            "certificate request self-signature did not match the contents",
+        ));
+    }
+    note(b"Certificate request self-signature ok");
+    let mut subject = b"subject=".to_vec();
+    subject.extend_from_slice(
+        &request.subject_name()?.to_openssl(compat.name_style())?,
+    );
+    note(&subject);
+    let ca_path = s
+        .ca
+        .as_deref()
+        .ok_or_else(|| Error::unsupported("x509 -req without -CA (-key)"))?;
+    let ca_der = certificate_der(&read_input(Some(ca_path))?, s.ca_form)?;
+    let ca = Certificate::from_der(&ca_der)?;
+    let ca_key =
+        read_key(s.ca_key.as_deref().unwrap_or(ca_path), s.ca_key_form)?;
+    if !ca.matches_private_key(&ca_key) {
+        note(b"CA certificate and CA private key do not match");
+        return Err(Error::invalid(
+            "CA certificate and CA private key do not match",
+        ));
+    }
+    if s.digest == Some(Algorithm::Sha1) {
+        return Err(Error::unsupported("x509 -req: digest sha1"));
+    }
+    CertificateTemplate::issued(
+        &request,
+        &ca,
+        &ca_key,
+        serial_source(s).next("x509")?,
+        s.lifetime.validity("x509")?,
+        compat,
+    )?
+    .sign(&ca_key, signature_algorithm(&ca_key, s.digest))
 }
 
 /// The environment variable selecting the OpenSSL release line to imitate.
@@ -252,8 +479,12 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     if o.help {
         return Ok((args::usage("x509", SPECS).into_bytes(), None));
     }
-    let input = read_input(o.input.as_deref())?;
-    let der = certificate_der(&input, o.inform)?;
+    let der = match o.source {
+        Source::Request => issue(&o, compat)?,
+        Source::Certificate => {
+            certificate_der(&read_input(o.input.as_deref())?, o.inform)?
+        }
+    };
     let cert = Certificate::from_der(&der)?;
 
     let mut out = Vec::new();
@@ -385,5 +616,52 @@ mod tests {
             parse_options(&os(&["-fingerprint", "x"])),
             Err(Error::Usage(_))
         ));
+    }
+
+    /// `-req` takes `-CA`, `-CA` takes `-req`, and the serial comes from
+    /// `-set_serial`, the serial file, or random bits, in that order.
+    #[test]
+    fn signing_options() {
+        let o = parse_options(&os(&[
+            "-req", "-CA", "ca.crt", "-days", "90", "-sha384",
+        ]))
+        .unwrap();
+        assert_eq!(o.source, Source::Request);
+        assert_eq!(o.signing.lifetime.days, 90);
+        assert_eq!(o.signing.digest, Some(Algorithm::Sha384));
+        assert_eq!(serial_source(&o.signing), SerialSource::Random);
+        let o =
+            parse_options(&os(&["-req", "-CA", "ca.crt", "-CAcreateserial"]))
+                .unwrap();
+        assert_eq!(
+            serial_source(&o.signing),
+            SerialSource::File {
+                path: "ca.srl".into(),
+                create: true
+            }
+        );
+        let o = parse_options(&os(&[
+            "-req",
+            "-CA",
+            "ca.crt",
+            "-CAserial",
+            "s.srl",
+            "-set_serial",
+            "5",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            serial_source(&o.signing),
+            SerialSource::Given(s) if s.as_be_bytes() == [5]
+        ));
+        for refused in [&["-req"][..], &["-CA", "ca.crt"], &["-key", "k.pem"]] {
+            assert!(
+                matches!(
+                    parse_options(&os(refused)),
+                    Err(Error::Unsupported(_))
+                ),
+                "{refused:?}"
+            );
+        }
     }
 }
