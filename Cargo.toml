@@ -6,6 +6,7 @@ members = [
   "crates/baldssl",
   "crates/baldssl-core",
   "crates/baldssl-crypto",
+  "crates/baldssl-fs",
   "crates/baldssl-pkey",
   "crates/baldssl-test-utils",
   "crates/baldssl-x509",
@@ -24,6 +25,7 @@ repository = "https://github.com/BaDaaS/baldssl"
 [workspace.dependencies]
 baldssl-core = { path = "crates/baldssl-core", version = "0.1.0" }
 baldssl-crypto = { path = "crates/baldssl-crypto", version = "0.1.0" }
+baldssl-fs = { path = "crates/baldssl-fs", version = "0.1.0" }
 baldssl-pkey = { path = "crates/baldssl-pkey", version = "0.1.0" }
 baldssl-test-utils = { path = "crates/baldssl-test-utils" }
 baldssl-x509 = { path = "crates/baldssl-x509", version = "0.1.0" }

@@ -37,6 +37,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "baldssl-fs"
+version = "0.1.0"
+dependencies = [
+ "baldssl-core",
+]
+
+[[package]]
 name = "baldssl-pkey"
 version = "0.1.0"
 dependencies = [
