@@ -22,6 +22,24 @@ practices" says what the project does; this file says how to work in it.
 - Model structures as traits that compose: a trait has the traits it needs as
   supertraits (a projective model is a constant-time group). A plain `impl`
   holds only what is specific to one type.
+- An operation on a value is a method of the value, or of a trait it implements,
+  not a free function that takes it (`request.to_text(compat)`, not
+  `print_request_text(&request, compat)`). An action a third party performs on a
+  value (signing it, issuing it) is a trait of that party.
+- Behaviour several types share is a trait (`Encodable`, `Pem`, `Text`); what
+  follows from it is an extension trait with a blanket impl (`WritePem` for
+  every `Pem`), not a copy per type.
+- Use the standard library's vocabulary where it fits: a conversion is `From` or
+  `TryFrom` (`Algorithm: TryFrom<&RawTlv>`), a name parses with `FromStr`, a
+  text form is `Display`, a sink is `io::Write`. Where it does not fit, the
+  documentation says why (`Text` gives bytes and fails with a reason, which
+  `Display` cannot).
+- Take and return the type a value has, never its raw bytes when a type exists:
+  a DER element is a `RawTlv` or a `Tlv`, not a `&[u8]` or a `Vec<u8>`.
+- Encodings and text forms do no I/O. Reading and writing files lives in
+  `baldssl-fs`, generic over `io::Write`; who may read a file is decided where
+  it is opened (`create_owner_only`). A module holds one concern: no file
+  handling in a command's key generation, no printing in a parser.
 - Constant-time code takes `Choice`, never `bool`, and never branches or indexes
   on secret data. Name the property: `_ct` for constant time, `_vartime` for
   variable time.
