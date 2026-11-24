@@ -29,11 +29,11 @@ uses nightly `rustfmt` and `taplo`; `make setup` installs the tools.
 OpenSSL releases print `-text` differently, so the printer takes a profile,
 `baldssl_x509::text::Compat`, chosen by the CLI from `BALDSSL_OPENSSL_COMPAT`:
 
-| Profile | Release line | Differences                                                                        |
-| ------- | ------------ | ---------------------------------------------------------------------------------- |
-| `3.0`   | OpenSSL 3.0  | names in the older escaped style (`CN = x`, `\XX` escapes, quoted values)          |
-| `3`     | OpenSSL 3.5  | the default                                                                        |
-| `4`     | OpenSSL 4.x  | hex dump geometry, no RSA modulus sign byte, EC key header with the security level |
+| Profile | Release line | Differences                                                                                                                                 |
+| ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `3.0`   | OpenSSL 3.0  | names in the older escaped style (`CN = x`, `\XX` escapes, quoted values)                                                                   |
+| `3`     | OpenSSL 3.5  | the default                                                                                                                                 |
+| `4`     | OpenSSL 4.x  | hex dump geometry, no RSA modulus sign byte, EC key header with the security level; no authority key identifier in `req -x509` certificates |
 
 Golden files exist per profile (`golden/v30`, `v3`, `v4` in the fixtures,
 recorded from OpenSSL 3.0.22, 3.5.9 and 4.1.0), and `scripts/interop.sh` picks
