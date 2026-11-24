@@ -175,3 +175,27 @@ fn object_identifiers() {
         assert_eq!(Some(id), ObjectId::from_dotted_opt(dotted), "{dotted}");
     }
 }
+
+/// Names parse as OpenSSL spells them, in any case; `secp256r1` does not.
+#[test]
+fn algorithm_names() {
+    for (name, algorithm) in [
+        ("P-256", Algorithm::P256),
+        ("prime256v1", Algorithm::P256),
+        ("PRIME256V1", Algorithm::P256),
+        ("p-384", Algorithm::P384),
+        ("secp384r1", Algorithm::P384),
+        ("P-521", Algorithm::P521),
+        ("secp521r1", Algorithm::P521),
+        ("ED25519", Algorithm::Ed25519),
+        ("ed25519", Algorithm::Ed25519),
+    ] {
+        assert_eq!(name.parse::<Algorithm>().unwrap(), algorithm, "{name}");
+    }
+    for name in ["secp256r1", "P256", "ec", ""] {
+        assert!(matches!(
+            name.parse::<Algorithm>(),
+            Err(Error::Unsupported(_))
+        ));
+    }
+}

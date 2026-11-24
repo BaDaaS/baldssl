@@ -171,6 +171,29 @@ pub enum Algorithm {
     Ed25519,
 }
 
+/// The algorithm a name gives, as OpenSSL spells it, ignoring case: a curve
+/// by its NIST name or its OpenSSL short name (`P-256` or `prime256v1`,
+/// `P-384` or `secp384r1`, `P-521` or `secp521r1`), or `ED25519`. OpenSSL
+/// does not accept `secp256r1` for P-256 in `ec_paramgen_curve`, so neither
+/// does this.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] for any other name.
+impl core::str::FromStr for Algorithm {
+    type Err = Error;
+
+    fn from_str(name: &str) -> Result<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "p-256" | "prime256v1" => Ok(Algorithm::P256),
+            "p-384" | "secp384r1" => Ok(Algorithm::P384),
+            "p-521" | "secp521r1" => Ok(Algorithm::P521),
+            "ed25519" => Ok(Algorithm::Ed25519),
+            _ => Err(Error::unsupported(format!("key algorithm {name}"))),
+        }
+    }
+}
+
 /// The EC curves, as a value: the dispatch from an algorithm to the generic
 /// curve code of `baldssl-crypto`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

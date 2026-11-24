@@ -86,7 +86,7 @@
       "section": "tasks",
       "title": "Create a self-signed CA certificate",
       "explanation": "Creates a new key (ca-key.pem) and a certificate for it, signed by itself, valid for 10 years. This is the root of a private certificate authority.",
-      "status": "not-yet",
+      "status": "supported",
       "deterministic": false,
       "lines": [
         "openssl req -x509 -newkey ec \\",
@@ -94,6 +94,9 @@
         "  -noenc -keyout ca-key.pem \\",
         "  -out ca.crt -days 3650 \\",
         "  -subj \"/CN=Example CA\""
+      ],
+      "verify": [
+        "openssl verify -CAfile ca.crt ca.crt"
       ]
     },
     {

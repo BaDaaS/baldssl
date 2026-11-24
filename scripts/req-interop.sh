@@ -11,6 +11,9 @@
 #   OpenSSL prints;
 # - self-signed certificates (-x509) verify as their own CA in OpenSSL,
 #   and match OpenSSL's for a fixed serial and validity;
+# - -newkey: requests on a generated key verify in OpenSSL, the key is
+#   the request's, standard error is OpenSSL's, and the key file is
+#   readable by its owner only;
 # - a request with a changed byte fails -verify in both. OpenSSL 3.0 prints
 #   "verify failure" but exits 0 there (later releases exit 1), so with
 #   3.0 OpenSSL's refusal is read from its message. baldssl exits 1 under
@@ -26,8 +29,16 @@ if [[ "$#" -ne 2 ]]; then
     echo "usage: $0 <openssl> <baldssl>" >&2
     exit 2
 fi
-OPENSSL=$1
-BALDSSL=$2
+# Absolute paths, so the programs still run from another directory.
+absolute() {
+    if [[ "$1" == */* ]]; then
+        echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+    else
+        echo "$1"
+    fi
+}
+OPENSSL=$(absolute "$1")
+BALDSSL=$(absolute "$2")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/baldssl-req.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -166,6 +177,51 @@ while read -r curve _private _public pkcs8; do
         fi
     done
 done < <(grep -v '^#' "$ROOT/tests/fixtures/keys/keypairs.txt")
+
+# -newkey: for each algorithm, OpenSSL verifies the request and reads the
+# key, the key is the request's, standard error is OpenSSL's, and the key
+# file is readable by its owner only (privkey.pem without -keyout).
+mode() { perl -e 'printf "%o", (stat shift)[2] & 0777' "$1"; }
+"$OPENSSL" ecparam -name secp384r1 -out "$WORK/p384.pem"
+newkeys=("ec -pkeyopt ec_paramgen_curve:P-256"
+    "ec -pkeyopt ec_paramgen_curve:secp384r1"
+    "ec -pkeyopt ec_paramgen_curve:P-521" "ec:$WORK/p384.pem" "ed25519")
+for spec in "${newkeys[@]}"; do
+    read -r -a args <<<"$spec"
+    label="-newkey $spec"
+    for who in OPENSSL BALDSSL; do
+        mkdir -p "$WORK/$who"
+        (cd "$WORK/$who" && "${!who}" req -newkey "${args[@]}" -noenc \
+            -subj /CN=new.example -out r.csr 2>err.txt)
+    done
+    b="$WORK/BALDSSL"
+    check "$label: OpenSSL verifies the request" \
+        "$OPENSSL" req -in "$b/r.csr" -verify -noout
+    "$OPENSSL" pkey -in "$b/privkey.pem" -pubout >"$WORK/k.pub"
+    "$OPENSSL" req -in "$b/r.csr" -noout -pubkey >"$WORK/r.pub"
+    same "$label: the key is the request's" "$WORK/k.pub" "$WORK/r.pub"
+    same "$label: standard error" "$WORK/OPENSSL/err.txt" "$b/err.txt"
+    if [[ "$(mode "$b/privkey.pem")" == 600 ]]; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL $label: key file mode $(mode "$b/privkey.pem")"
+        fail=$((fail + 1))
+    fi
+    rm -rf "$WORK/OPENSSL" "$WORK/BALDSSL"
+done
+"$BALDSSL" req -x509 -newkey ed25519 -noenc -keyout "$WORK/ca-key.pem" \
+    -subj /CN=ca.example -out "$WORK/ca.pem" 2>/dev/null
+check "-x509 -newkey: OpenSSL verifies the certificate" \
+    "$OPENSSL" verify -CAfile "$WORK/ca.pem" "$WORK/ca.pem"
+"$OPENSSL" pkey -in "$WORK/ca-key.pem" -pubout >"$WORK/k.pub"
+"$OPENSSL" x509 -in "$WORK/ca.pem" -noout -pubkey >"$WORK/c.pub"
+same "-x509 -newkey: the key is the certificate's" "$WORK/k.pub" \
+    "$WORK/c.pub"
+for who in OPENSSL BALDSSL; do
+    refuse "$who refuses an EC key without a curve" \
+        "${!who}" req -newkey ec -noenc -keyout "$WORK/x.pem" \
+        -subj /CN=x -out "$WORK/x.csr"
+done
 
 echo "req-interop: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

@@ -8,6 +8,12 @@
 //!   `-multivalue-rdn` (accepted; multi-valued RDNs are always on, as in
 //!   OpenSSL 3), and a digest (`-sha224`, `-sha256`, `-sha384`, `-sha512`;
 //!   SHA-256 by default, and none for Ed25519);
+//! - generating the key as well: `-newkey ec` with `-pkeyopt
+//!   ec_paramgen_curve:<curve>`, `-newkey ec:<parameters file>` (as
+//!   `openssl ecparam` writes it) or `-newkey ed25519`, which implies
+//!   `-new`; the key is written unencrypted (`-noenc` or `-nodes`, which
+//!   are required) as PKCS#8 PEM to `-keyout`, or to `privkey.pem` as
+//!   OpenSSL's default configuration says, readable by its owner only;
 //! - reading one: `-in <file>` (standard input without it), `-inform`;
 //! - `-verify` (the message on standard error, exit 1 on failure, as
 //!   OpenSSL), `-out`, `-outform PEM|DER`, `-noout`;
@@ -22,14 +28,15 @@
 //!   line is the one `BALDSSL_OPENSSL_COMPAT` names, as for `x509` (see
 //!   [`baldssl_x509::CertificateTemplate::self_signed`]).
 //!
-//! As in OpenSSL, `-key` does not imply `-new`: without `-new` or `-x509`,
-//! a request is read. Not supported, and reported as such: `-text`,
-//! `-newkey`, `-config`, `-addext`, `-x509` with `-in` (signing an existing
-//! request), `-x509` with `-verify`, negative or zero serials, the
-//! interactive prompts (a request is created only with `-subj`), and
-//! encrypted keys.
+//! As in OpenSSL, `-key` does not imply `-new`: without `-new`, `-newkey`
+//! or `-x509`, a request is read. Not supported, and reported as such:
+//! `-text`, `-config`, `-addext`, RSA and other key algorithms, encrypting
+//! the generated key (`-newkey` without `-noenc`), `-x509` with `-in`
+//! (signing an existing request), `-x509` with `-verify`, negative or zero
+//! serials, the interactive prompts (a request is created only with
+//! `-subj`), and encrypted keys.
 
-use std::ffi::OsString;
+use std::{ffi::OsString, path::Path};
 
 use baldssl_core::{
     Error, Result,
@@ -37,6 +44,7 @@ use baldssl_core::{
     pem::{self, Pem},
 };
 use baldssl_crypto::Algorithm as Digest;
+use baldssl_fs::{WritePem as _, create_owner_only, write_error};
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
     CertificateTemplate, CertificationRequest, DistinguishedName, Format,
@@ -49,6 +57,7 @@ use crate::{
     issuing::{
         Lifetime, SerialSource, parse_serial, parse_time, signature_algorithm,
     },
+    keygen::KeyParameters,
 };
 
 /// Every option `baldssl req` accepts, besides the digests.
@@ -126,7 +135,27 @@ pub(crate) const SPECS: &[Spec] = &[
     Spec {
         name: "newkey",
         kind: Kind::Value,
-        help: "Generate a key with the request (not supported yet)",
+        help: "Generate a key: ec (with -pkeyopt), ec:<paramfile> or ed25519",
+    },
+    Spec {
+        name: "pkeyopt",
+        kind: Kind::Value,
+        help: "Key generation option: ec_paramgen_curve:<curve>",
+    },
+    Spec {
+        name: "keyout",
+        kind: Kind::Value,
+        help: "File the generated key is written to (default privkey.pem)",
+    },
+    Spec {
+        name: "noenc",
+        kind: Kind::Flag,
+        help: "Do not encrypt the generated key",
+    },
+    Spec {
+        name: "nodes",
+        kind: Kind::Flag,
+        help: "Same as -noenc",
     },
     Spec {
         name: "x509",
@@ -198,12 +227,30 @@ enum Output {
 }
 
 /// The options, once read.
+/// A key `-newkey` generates, and where it is written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NewKey {
+    /// `-newkey` and `-pkeyopt`.
+    parameters: KeyParameters,
+    /// `-keyout`; OpenSSL's default `privkey.pem` without it.
+    keyout: OsString,
+}
+
+/// Where the key of a new request or certificate comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeySource {
+    /// `-key`.
+    File(OsString),
+    /// `-newkey`.
+    New(NewKey),
+}
+
 struct Options {
     mode: Mode,
     product: Product,
     lifetime: Lifetime,
     serial: SerialSource,
-    key: Option<OsString>,
+    key: Option<KeySource>,
     keyform: Option<Format>,
     subj: Option<OsString>,
     encoding: InputEncoding,
@@ -285,11 +332,23 @@ fn subject(o: &Options) -> Result<DistinguishedName> {
 
 /// The key of `-key`.
 fn key(o: &Options) -> Result<AnyPrivateKey> {
-    let path = o
-        .key
-        .as_deref()
-        .ok_or_else(|| Error::unsupported("req -new without -key (-newkey)"))?;
-    read_key(path, o.keyform)
+    match &o.key {
+        None => Err(Error::unsupported(
+            "req -new without -key or -newkey (a key from the configuration)",
+        )),
+        Some(KeySource::File(path)) => read_key(path, o.keyform),
+        Some(KeySource::New(new)) => {
+            let key =
+                AnyPrivateKey::generate(new.parameters.algorithm("req")?)?;
+            // OpenSSL's progress line for a generated key, the same for
+            // every algorithm baldssl generates.
+            eprintln!("-----");
+            let path = Path::new(&new.keyout);
+            key.write_pem(create_owner_only(path)?)
+                .map_err(|e| write_error(path, &e))?;
+            Ok(key)
+        }
+    }
 }
 
 /// A new request, from `-key` and `-subj`.
@@ -322,12 +381,24 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
     let opts =
         args::parse("req", raw, SPECS, |n| Digest::from_name_opt(n).is_some())?;
     let mut o = Options::default();
+    let mut key_file: Option<OsString> = None;
+    let mut parameters = KeyParameters::default();
+    let mut newkey = false;
+    let mut keyout: Option<OsString> = None;
+    let mut noenc = false;
     for opt in opts {
         let value = opt.value.clone().unwrap_or_default();
         match opt.name.as_str() {
             "help" => return Ok(None),
             "new" => o.mode = Mode::Create,
-            "key" => o.key = Some(value),
+            "key" => key_file = Some(value),
+            "newkey" => {
+                parameters.set_newkey("req", &value)?;
+                newkey = true;
+            }
+            "pkeyopt" => parameters.pkeyopt("req", &value)?,
+            "keyout" => keyout = Some(value),
+            "noenc" | "nodes" => noenc = true,
             "keyform" => {
                 o.keyform = Some(parse_format(&value, "req", "keyform")?);
             }
@@ -361,7 +432,7 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
                 o.lifetime.not_after =
                     Some(parse_time("req", "not_after", &value)?);
             }
-            "text" | "newkey" | "config" | "addext" => {
+            "text" | "config" | "addext" => {
                 return Err(Error::unsupported(format!("req -{}", opt.name)));
             }
             name => {
@@ -371,6 +442,28 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
             }
         }
     }
+    o.key = match (key_file, newkey) {
+        (Some(_), true) => {
+            return Err(Error::Usage(
+                "req: -key and -newkey exclude each other".into(),
+            ));
+        }
+        (Some(path), false) => Some(KeySource::File(path)),
+        (None, true) => {
+            if !noenc {
+                return Err(Error::unsupported(
+                    "req -newkey without -noenc (encrypting the key)",
+                ));
+            }
+            // As in OpenSSL, -newkey creates a request.
+            o.mode = Mode::Create;
+            Some(KeySource::New(NewKey {
+                parameters,
+                keyout: keyout.unwrap_or_else(|| "privkey.pem".into()),
+            }))
+        }
+        (None, false) => None,
+    };
     if o.product == Product::Certificate {
         if o.input.is_some() {
             return Err(Error::unsupported("req -x509 -in"));
