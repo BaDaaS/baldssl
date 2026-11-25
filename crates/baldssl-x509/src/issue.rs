@@ -339,7 +339,7 @@ impl CertificateTemplate {
                     .collect(),
             ),
             Compat::V30 if given.is_empty() => Extensions::new(),
-            Compat::V30 | Compat::V3 => {
+            Compat::V30 | Compat::V3 | Compat::V36 => {
                 let mut defaults = Vec::new();
                 if !given.contains_kind(&ski()) {
                     defaults.push(Extension::new(ski()));

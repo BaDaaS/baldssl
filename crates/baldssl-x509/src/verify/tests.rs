@@ -240,3 +240,23 @@ fn error_numbers() {
         assert_eq!(error.code(), code, "{error:?}");
     }
 }
+
+/// Error 9's message gained "or the system clock is incorrect" in OpenSSL
+/// 3.6 (`crypto/x509/x509_txt.c`).
+#[test]
+fn not_yet_valid_message() {
+    let short = "certificate is not yet valid";
+    let long = "certificate is not yet valid or the system clock is incorrect";
+    for (compat, message) in [
+        (Compat::V30, short),
+        (Compat::V3, short),
+        (Compat::V36, long),
+        (Compat::V4, long),
+    ] {
+        assert_eq!(
+            VerifyError::CertNotYetValid.message(compat),
+            message,
+            "{compat:?}"
+        );
+    }
+}

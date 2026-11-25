@@ -98,8 +98,9 @@ impl VerifyError {
         self as u32
     }
 
-    /// OpenSSL's message (`X509_verify_cert_error_string`), by release
-    /// line.
+    /// OpenSSL's message (`X509_verify_cert_error_string` in
+    /// `crypto/x509/x509_txt.c`), by release line: from 3.6, error 9 adds
+    /// "or the system clock is incorrect".
     #[must_use]
     pub fn message(self, compat: Compat) -> &'static str {
         match self {
@@ -109,7 +110,9 @@ impl VerifyError {
             VerifyError::CertSignatureFailure => {
                 "certificate signature failure"
             }
-            VerifyError::CertNotYetValid if compat == Compat::V4 => {
+            VerifyError::CertNotYetValid
+                if matches!(compat, Compat::V36 | Compat::V4) =>
+            {
                 "certificate is not yet valid or the system clock is incorrect"
             }
             VerifyError::CertNotYetValid => "certificate is not yet valid",

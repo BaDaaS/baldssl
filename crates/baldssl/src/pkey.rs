@@ -26,9 +26,7 @@ use baldssl_core::{
 };
 use baldssl_fs::{create_owner_only, write_error};
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
-use baldssl_x509::{
-    Compat, Format, print_private_key_text, print_public_key_text,
-};
+use baldssl_x509::{Format, print_private_key_text, print_public_key_text};
 
 use crate::{
     args::{self, Kind, Spec},
@@ -246,10 +244,10 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     let writes_private = match (o.written, &key) {
         (Written::Nothing, _) => false,
         (Written::AsRead, Key::Private(k)) => {
-            // OpenSSL 3 writes a private key in DER in its algorithm's
-            // traditional form when it has one (SEC1 for EC); OpenSSL 4
-            // writes PKCS#8, as for PEM.
-            if der && compat != Compat::V4 {
+            // OpenSSL 3.0 to 3.5 write a private key in DER in its
+            // algorithm's traditional form when it has one (SEC1 for EC);
+            // 3.6 and 4 write PKCS#8, as for PEM.
+            if der && compat.private_key_der_is_traditional() {
                 out.extend_from_slice(
                     &k.traditional_opt().unwrap_or_else(|| k.encode()),
                 );

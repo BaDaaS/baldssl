@@ -25,18 +25,22 @@ use crate::{
     version::Version,
 };
 
-/// Which OpenSSL release line's `-text` layout to reproduce. The two lines
-/// differ only in hex-dump geometry and the EC key header; everything else
-/// is shared. `scripts/interop.sh` checks each profile against real
+/// Which OpenSSL release line's output to reproduce. The lines differ in
+/// the style of names (3.0), the hex-dump geometry and the EC key header
+/// (4), and how `pkey` writes a private key in DER (3.6 and 4); everything
+/// else is shared. `scripts/interop.sh` checks each profile against real
 /// binaries of that line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Compat {
     /// OpenSSL 3.0, whose names use the older escaped style
     /// ([`NameStyle::Oneline`]).
     V30,
-    /// OpenSSL 3.2 to 3.6.
+    /// OpenSSL 3.2 to 3.5.
     #[default]
     V3,
+    /// OpenSSL 3.6: as 3.5, except that `pkey` writes a private key in DER
+    /// as PKCS#8 ([`Compat::private_key_der_is_traditional`]).
+    V36,
     /// OpenSSL 4.0 and later.
     V4,
 }
@@ -45,7 +49,7 @@ impl Compat {
     /// Bytes per line in `ASN1_buf_print` (keys, modulus).
     fn key_bytes_per_line(self) -> usize {
         match self {
-            Compat::V30 | Compat::V3 => 15,
+            Compat::V30 | Compat::V3 | Compat::V36 => 15,
             Compat::V4 => 16,
         }
     }
@@ -53,7 +57,7 @@ impl Compat {
     /// Bytes per line in `X509_signature_dump`.
     fn signature_bytes_per_line(self) -> usize {
         match self {
-            Compat::V30 | Compat::V3 => 18,
+            Compat::V30 | Compat::V3 | Compat::V36 => 18,
             Compat::V4 => 24,
         }
     }
@@ -64,12 +68,22 @@ impl Compat {
         self != Compat::V4
     }
 
+    /// Whether `openssl pkey -outform DER` writes a private key in its
+    /// algorithm's traditional form (SEC 1's ECPrivateKey for EC) rather
+    /// than PKCS#8. OpenSSL 3.0 to 3.5 call `i2d_PrivateKey_bio`, which
+    /// writes the traditional form; from 3.6, `apps/pkey.c` calls
+    /// `i2d_PKCS8PrivateKey_bio` unless `-traditional` is given.
+    #[must_use]
+    pub fn private_key_der_is_traditional(self) -> bool {
+        matches!(self, Compat::V30 | Compat::V3)
+    }
+
     /// How this release line prints names.
     #[must_use]
     pub fn name_style(self) -> NameStyle {
         match self {
             Compat::V30 => NameStyle::Oneline,
-            Compat::V3 | Compat::V4 => NameStyle::Utf8,
+            Compat::V3 | Compat::V36 | Compat::V4 => NameStyle::Utf8,
         }
     }
 
@@ -80,6 +94,9 @@ impl Compat {
         let s = s.trim();
         if s == "3.0" || s.starts_with("3.0.") {
             return Some(Compat::V30);
+        }
+        if s == "3.6" || s.starts_with("3.6.") {
+            return Some(Compat::V36);
         }
         match s.split('.').next()? {
             "3" => Some(Compat::V3),
@@ -346,7 +363,7 @@ fn print_ec_key(
         return Err(Error::invalid("EC point encoding"));
     }
     let size = match compat {
-        Compat::V30 | Compat::V3 => format!("{} bit", c.bits),
+        Compat::V30 | Compat::V3 | Compat::V36 => format!("{} bit", c.bits),
         Compat::V4 => {
             format!("{} bit field, {} bit security level", c.bits, c.security)
         }
@@ -754,6 +771,8 @@ mod tests {
         assert_eq!(Compat::from_version_opt("3.0"), Some(Compat::V30));
         assert_eq!(Compat::from_version_opt("3.0.22"), Some(Compat::V30));
         assert_eq!(Compat::from_version_opt("3.5.9"), Some(Compat::V3));
+        assert_eq!(Compat::from_version_opt("3.6"), Some(Compat::V36));
+        assert_eq!(Compat::from_version_opt("3.6.5"), Some(Compat::V36));
     }
 
     /// `req -noout -text` against what each release line of OpenSSL prints

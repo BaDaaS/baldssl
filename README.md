@@ -33,6 +33,7 @@ OpenSSL releases print `-text` differently, so the printer takes a profile,
 | ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `3.0`   | OpenSSL 3.0  | names in the older escaped style (`CN = x`, `\XX` escapes, quoted values)                                                                   |
 | `3`     | OpenSSL 3.5  | the default                                                                                                                                 |
+| `3.6`   | OpenSSL 3.6  | as `3`, except that `pkey -outform DER` writes private keys as PKCS#8                                                                       |
 | `4`     | OpenSSL 4.x  | hex dump geometry, no RSA modulus sign byte, EC key header with the security level; no authority key identifier in `req -x509` certificates |
 
 Golden files exist per profile (`golden/v30`, `v3`, `v4` in the fixtures,
