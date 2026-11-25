@@ -34,11 +34,11 @@ fn serials() {
 fn times() {
     let t = |v: &str| parse_time("x", "not_before", OsStr::new(v));
     let utc = t("261122000000Z").unwrap();
-    assert_eq!((utc.kind, utc.year), (TimeKind::Utc, 2026));
+    assert_eq!((utc.kind(), utc.year()), (TimeKind::Utc, 2026));
     // A GeneralizedTime before 2050 is written as a UTCTime.
-    assert_eq!(t("20261122000000Z").unwrap().kind, TimeKind::Utc);
+    assert_eq!(t("20261122000000Z").unwrap().kind(), TimeKind::Utc);
     let late = t("20500101000000Z").unwrap();
-    assert_eq!((late.kind, late.year), (TimeKind::Generalized, 2050));
+    assert_eq!((late.kind(), late.year()), (TimeKind::Generalized, 2050));
     for bad in ["2026", "20261122000000.5Z", "261332000000Z", "x"] {
         assert!(matches!(t(bad), Err(Error::Usage(_))), "{bad}");
     }

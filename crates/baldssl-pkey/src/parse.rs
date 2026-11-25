@@ -312,8 +312,8 @@ fn outer_sequence(der: &[u8]) -> Result<Reader<'_>> {
 
 /// A small non-negative INTEGER.
 fn small_integer(r: &mut Reader<'_>, what: &str) -> Result<u64> {
-    let int = Integer::parse(r.expect(tag::INTEGER)?.value)?;
-    if int.negative {
+    let int = Integer::parse(r.expect(tag::INTEGER)?.value())?;
+    if int.is_negative() {
         return Err(Error::invalid(format!("{what}: negative")));
     }
     int.to_u64_opt()
@@ -404,7 +404,7 @@ fn algorithm(
 /// description.
 fn algorithm_identifier(r: &mut Reader<'_>) -> Result<Algorithm> {
     let tlv = r.read()?;
-    algorithm(&decode(&ALGORITHM_IDENTIFIER, tlv.encoded)?)
+    algorithm(&decode(&ALGORITHM_IDENTIFIER, tlv.encoded())?)
 }
 
 /// The AlgorithmIdentifier of a key type, as written by OpenSSL.
@@ -440,7 +440,7 @@ fn pkcs8(version: u64, mut seq: Reader<'_>) -> Result<AnyPrivateKey> {
         return Err(Error::invalid(format!("PKCS#8: version {version}")));
     }
     let algorithm = algorithm_identifier(&mut seq)?;
-    let private = seq.expect(tag::OCTET_STRING)?.value;
+    let private = seq.expect(tag::OCTET_STRING)?.value();
     seq.optional(tag::context_constructed(0))?;
     let public = seq.optional(tag::context(1))?;
     seq.finish()?;
@@ -450,7 +450,7 @@ fn pkcs8(version: u64, mut seq: Reader<'_>) -> Result<AnyPrivateKey> {
     let key = if algorithm == Algorithm::Ed25519 {
         // CurvePrivateKey ::= OCTET STRING (RFC 8410 section 7).
         let mut inner = Reader::new(private);
-        let seed = inner.expect(tag::OCTET_STRING)?.value;
+        let seed = inner.expect(tag::OCTET_STRING)?.value();
         inner.finish()?;
         if seed.len() != 32 {
             return Err(Error::invalid("Ed25519 private key: not 32 bytes"));
@@ -464,8 +464,8 @@ fn pkcs8(version: u64, mut seq: Reader<'_>) -> Result<AnyPrivateKey> {
         sec1(ec_version, ec, Some(algorithm))?
     };
     if let Some(public) = public {
-        let bits = BitStringContents::parse(public.value)?;
-        if bits.unused != 0 || !matches_public(&key, bits.bytes) {
+        let bits = BitStringContents::parse(public.value())?;
+        if bits.unused() != 0 || !matches_public(&key, bits.bytes()) {
             return Err(Error::invalid(
                 "the public key does not match the private key",
             ));
@@ -487,23 +487,24 @@ fn sec1(
     if version != 1 {
         return Err(Error::invalid(format!("ECPrivateKey: version {version}")));
     }
-    let scalar = seq.expect(tag::OCTET_STRING)?.value;
+    let scalar = seq.expect(tag::OCTET_STRING)?.value();
     let parameters = match seq.optional(tag::context_constructed(0))? {
-        Some(params) => Some(ec_parameters(&RawTlv::parse(params.value)?)?),
+        Some(params) => Some(ec_parameters(&RawTlv::parse(params.value())?)?),
         None => None,
     };
     let public = match seq.optional(tag::context_constructed(1))? {
         Some(public) => {
-            let mut inner = Reader::new(public.value);
-            let bits =
-                BitStringContents::parse(inner.expect(tag::BIT_STRING)?.value)?;
+            let mut inner = Reader::new(public.value());
+            let bits = BitStringContents::parse(
+                inner.expect(tag::BIT_STRING)?.value(),
+            )?;
             inner.finish()?;
-            if bits.unused != 0 {
+            if bits.unused() != 0 {
                 return Err(Error::invalid(
                     "public key: not a whole number of bytes",
                 ));
             }
-            Some(bits.bytes)
+            Some(bits.bytes())
         }
         None => None,
     };

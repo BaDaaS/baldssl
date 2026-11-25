@@ -117,17 +117,22 @@ const MONTHS: [&str; 12] = [
 #[must_use]
 pub fn time_rfc822(t: &Time) -> String {
     let month = MONTHS
-        .get(usize::from(t.month.saturating_sub(1)))
+        .get(usize::from(t.month().saturating_sub(1)))
         .copied()
         .unwrap_or("???");
-    let frac = if t.kind == TimeKind::Generalized && !t.fraction.is_empty() {
-        format!(".{}", t.fraction)
+    let frac = if t.kind() == TimeKind::Generalized && !t.fraction().is_empty()
+    {
+        format!(".{}", t.fraction())
     } else {
         String::new()
     };
     format!(
         "{month} {:2} {:02}:{:02}:{:02}{frac} {} GMT",
-        t.day, t.hour, t.minute, t.second, t.year
+        t.day(),
+        t.hour(),
+        t.minute(),
+        t.second(),
+        t.year()
     )
 }
 
@@ -159,27 +164,27 @@ fn bn_print(
     compat: Compat,
 ) {
     out.extend_from_slice(" ".repeat(indent).as_bytes());
-    let neg = if n.negative { "-" } else { "" };
-    if n.magnitude.is_empty() {
+    let neg = if n.is_negative() { "-" } else { "" };
+    if n.magnitude().is_empty() {
         out.extend_from_slice(format!("{label} 0\n").as_bytes());
         return;
     }
-    if n.magnitude.len() <= 8 {
+    if n.magnitude().len() <= 8 {
         let v = n.magnitude_u128_opt().unwrap_or(0);
         out.extend_from_slice(
             format!("{label} {neg}{v} ({neg}0x{v:x})\n").as_bytes(),
         );
         return;
     }
-    let tail = if n.negative { " (Negative)" } else { "" };
+    let tail = if n.is_negative() { " (Negative)" } else { "" };
     out.extend_from_slice(format!("{label}{tail}\n").as_bytes());
-    let mut buf = Vec::with_capacity(n.magnitude.len().saturating_add(1));
+    let mut buf = Vec::with_capacity(n.magnitude().len().saturating_add(1));
     if compat.bn_sign_byte()
-        && n.magnitude.first().is_some_and(|b| b & 0x80 != 0)
+        && n.magnitude().first().is_some_and(|b| b & 0x80 != 0)
     {
         buf.push(0);
     }
-    buf.extend_from_slice(&n.magnitude);
+    buf.extend_from_slice(n.magnitude());
     buf_print(
         out,
         &buf,
@@ -197,25 +202,25 @@ fn print_serial(out: &mut Vec<u8>, serial: &Integer) {
     let fits = match serial.to_u64_opt() {
         Some(v) => i64::try_from(v).is_ok(),
         None => {
-            serial.negative
-                && serial.magnitude.len() <= 8
+            serial.is_negative()
+                && serial.magnitude().len() <= 8
                 && serial
                     .magnitude_u128_opt()
                     .is_some_and(|m| m <= 1u128 << 63)
         }
     };
-    let minus_one = serial.negative && serial.magnitude == [1];
+    let minus_one = serial.is_negative() && serial.magnitude() == [1];
     if fits && !minus_one {
         let v = serial.magnitude_u128_opt().unwrap_or(0);
-        let neg = if serial.negative { "-" } else { "" };
+        let neg = if serial.is_negative() { "-" } else { "" };
         out.extend_from_slice(format!(" {neg}{v} ({neg}0x{v:x})\n").as_bytes());
     } else {
         out.extend_from_slice(b"\n            ");
-        if serial.negative {
+        if serial.is_negative() {
             out.extend_from_slice(b" (Negative)");
         }
         out.extend_from_slice(
-            hex::colon(&serial.magnitude, Case::Lower).as_bytes(),
+            hex::colon(serial.magnitude(), Case::Lower).as_bytes(),
         );
         out.push(b'\n');
     }
@@ -338,12 +343,12 @@ fn print_ec_key(
         .algorithm
         .parameters
         .ok_or_else(|| Error::invalid("EC key without parameters"))?;
-    if params.octet() != tag::OID {
+    if params.octet_opt() != Some(tag::OID) {
         return Err(Error::unsupported(
             "explicit or implicit EC domain parameters",
         ));
     }
-    let curve_oid = baldssl_core::der::Oid::parse(params.value)?;
+    let curve_oid = baldssl_core::der::Oid::parse(params.value())?;
     let curve = curve_oid.to_dotted()?;
     let Some(c) = CURVES.iter().find(|c| c.oid == curve) else {
         return Err(Error::unsupported(format!(
@@ -403,8 +408,8 @@ fn print_key(
     };
     let data = indent.saturating_add(4);
     let alg = spki.algorithm.oid.to_dotted()?;
-    let key = spki.public_key.bytes;
-    if spki.public_key.unused != 0 {
+    let key = spki.public_key.bytes();
+    if spki.public_key.unused() != 0 {
         return Err(Error::invalid("public key BIT STRING with unused bits"));
     }
     let pad16 = " ".repeat(indent);
@@ -424,15 +429,15 @@ fn print_key(
                 return Err(Error::unsupported("RSA private keys"));
             }
             if let Some(p) = &spki.algorithm.parameters
-                && (p.octet() != tag::NULL || !p.value.is_empty())
+                && (p.octet_opt() != Some(tag::NULL) || !p.value().is_empty())
             {
                 return Err(Error::invalid("rsaEncryption parameters"));
             }
             let mut outer = Reader::new(key);
             let mut seq = outer.sequence()?;
             outer.finish()?;
-            let n = Integer::parse(seq.expect(tag::INTEGER)?.value)?;
-            let e = Integer::parse(seq.expect(tag::INTEGER)?.value)?;
+            let n = Integer::parse(seq.expect(tag::INTEGER)?.value())?;
+            let e = Integer::parse(seq.expect(tag::INTEGER)?.value())?;
             seq.finish()?;
             out.extend_from_slice(
                 format!("{pad16}Public-Key: ({} bit)\n", n.bits()).as_bytes(),
@@ -591,12 +596,17 @@ fn print_signed(
     out.extend_from_slice(b"    Signature Algorithm: ");
     out.extend_from_slice(signature_name(algorithm)?.as_bytes());
     out.extend_from_slice(b"\n    Signature Value:\n");
-    if signature.unused != 0 {
+    if signature.unused() != 0 {
         return Err(Error::unsupported(
             "signature BIT STRING with unused bits",
         ));
     }
-    signature_dump(out, signature.bytes, 8, compat.signature_bytes_per_line());
+    signature_dump(
+        out,
+        signature.bytes(),
+        8,
+        compat.signature_bytes_per_line(),
+    );
     Ok(())
 }
 
@@ -642,10 +652,7 @@ impl Text for CertificationRequest {
                 oid: oid.as_oid(),
                 parameters: None,
             },
-            &BitString {
-                unused: 0,
-                bytes: self.signature(),
-            },
+            &BitString::from_bytes(self.signature()),
             compat,
         )?;
         Ok(out)
@@ -657,13 +664,13 @@ impl Text for CertificationRequest {
 #[must_use]
 pub fn serial_line(serial: &Integer) -> String {
     let mut s = String::from("serial=");
-    if serial.negative {
+    if serial.is_negative() {
         s.push('-');
     }
-    if serial.magnitude.is_empty() {
+    if serial.magnitude().is_empty() {
         s.push_str("00");
     }
-    for (i, b) in serial.magnitude.iter().enumerate() {
+    for (i, b) in serial.magnitude().iter().enumerate() {
         if i > 0 && i % 35 == 0 {
             s.push_str("\\\n");
         }

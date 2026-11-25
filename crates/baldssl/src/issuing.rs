@@ -110,16 +110,11 @@ pub(crate) fn parse_time(
         15 => TimeKind::Generalized,
         _ => return Err(invalid()),
     };
-    let mut time = Time::parse(kind, bytes).map_err(|_| invalid())?;
-    if !time.fraction.is_empty() {
+    let time = Time::parse(kind, bytes).map_err(|_| invalid())?;
+    if !time.fraction().is_empty() {
         return Err(invalid());
     }
-    time.kind = if time.year < 2050 {
-        TimeKind::Utc
-    } else {
-        TimeKind::Generalized
-    };
-    Ok(time)
+    Ok(time.to_rfc5280())
 }
 
 /// The validity options: `-days` (30 by default, as in OpenSSL), and the

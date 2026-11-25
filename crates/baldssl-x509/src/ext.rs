@@ -83,12 +83,12 @@ fn asn1_string_print(out: &mut Vec<u8>, bytes: &[u8]) {
 /// `bignum_to_string`, as used by `i2s_ASN1_INTEGER`: decimal below 128
 /// bits, `0x`-prefixed upper-case hex otherwise.
 pub(crate) fn integer_to_string(int: &Integer) -> String {
-    let sign = if int.negative { "-" } else { "" };
+    let sign = if int.is_negative() { "-" } else { "" };
     if int.bits() < 128 {
         let v = int.magnitude_u128_opt().unwrap_or(0);
         format!("{sign}{v}")
     } else {
-        format!("{sign}0x{}", hex::plain(&int.magnitude, Case::Upper))
+        format!("{sign}0x{}", hex::plain(int.magnitude(), Case::Upper))
     }
 }
 
@@ -125,11 +125,13 @@ fn name_oneline(name: &Name<'_>) -> Result<String> {
             out.push_str(&objects::short_name(&atv.oid)?);
             out.push('=');
             let printable = matches!(
-                atv.value.octet(),
-                tag::PRINTABLE_STRING | tag::IA5_STRING | tag::UTF8_STRING
+                atv.value.octet_opt(),
+                Some(
+                    tag::PRINTABLE_STRING | tag::IA5_STRING | tag::UTF8_STRING
+                )
             ) && atv
                 .value
-                .value
+                .value()
                 .iter()
                 .all(|&b| (b' '..=b'~').contains(&b));
             if !printable {
@@ -137,7 +139,7 @@ fn name_oneline(name: &Name<'_>) -> Result<String> {
                     "DirName with non-ASCII or non-string values",
                 ));
             }
-            out.push_str(&String::from_utf8_lossy(atv.value.value));
+            out.push_str(&String::from_utf8_lossy(atv.value.value()));
         }
     }
     Ok(out)
@@ -145,28 +147,31 @@ fn name_oneline(name: &Name<'_>) -> Result<String> {
 
 /// `i2v_GENERAL_NAME` for one `GeneralName`.
 fn general_name(gn: &Tlv<'_>, out: &mut Vec<Value>) -> Result<()> {
-    match gn.octet() {
-        0xa0 => return Err(Error::unsupported("GeneralName otherName")),
-        0x81 => out.push(named("email", ia5_value(gn.value)?)),
-        0x82 => out.push(named("DNS", ia5_value(gn.value)?)),
-        0xa3 => out.push(named("X400Name", "<unsupported>".into())),
-        0xa4 => {
-            let mut r = Reader::new(gn.value);
+    match gn.octet_opt() {
+        Some(0xa0) => return Err(Error::unsupported("GeneralName otherName")),
+        Some(0x81) => out.push(named("email", ia5_value(gn.value())?)),
+        Some(0x82) => out.push(named("DNS", ia5_value(gn.value())?)),
+        Some(0xa3) => out.push(named("X400Name", "<unsupported>".into())),
+        Some(0xa4) => {
+            let mut r = Reader::new(gn.value());
             let name = Name::read(&mut r)?;
             r.finish()?;
             out.push(named("DirName", name_oneline(&name)?));
         }
-        0xa5 => out.push(named("EdiPartyName", "<unsupported>".into())),
-        0x86 => out.push(named("URI", ia5_value(gn.value)?)),
-        0x87 => out.push(named("IP Address", ip_to_string(gn.value))),
-        0x88 => {
-            let oid = Oid::parse(gn.value)?;
+        Some(0xa5) => out.push(named("EdiPartyName", "<unsupported>".into())),
+        Some(0x86) => out.push(named("URI", ia5_value(gn.value())?)),
+        Some(0x87) => out.push(named("IP Address", ip_to_string(gn.value()))),
+        Some(0x88) => {
+            let oid = Oid::parse(gn.value())?;
             out.push(named("Registered ID", objects::long_name(&oid)?));
         }
-        other => {
+        Some(other) => {
             return Err(Error::invalid(format!(
                 "GeneralName with tag 0x{other:02x}"
             )));
+        }
+        None => {
+            return Err(Error::invalid("GeneralName with a high tag number"));
         }
     }
     Ok(())
@@ -201,7 +206,7 @@ fn subject_key_identifier(ext: &Extension<'_>) -> Result<Printed> {
     let mut r = Reader::new(ext.value);
     let os = r.expect(tag::OCTET_STRING)?;
     r.finish()?;
-    Ok(Printed::Line(hex::colon(os.value, Case::Upper)))
+    Ok(Printed::Line(hex::colon(os.value(), Case::Upper)))
 }
 
 /// Authority Key Identifier (multi-line).
@@ -214,7 +219,7 @@ fn authority_key_identifier(ext: &Extension<'_>) -> Result<Printed> {
     let qualified = issuer.is_some() || serial.is_some();
     let mut values = Vec::new();
     if let Some(k) = keyid {
-        let h = hex::colon(k.value, Case::Upper);
+        let h = hex::colon(k.value(), Case::Upper);
         values.push(if qualified {
             named("keyid", h)
         } else {
@@ -222,14 +227,14 @@ fn authority_key_identifier(ext: &Extension<'_>) -> Result<Printed> {
         });
     }
     if let Some(i) = issuer {
-        general_names(i.value, &mut values)?;
+        general_names(i.value(), &mut values)?;
     }
     if let Some(s) = serial {
-        let int = Integer::parse(s.value)?;
-        if int.negative {
+        let int = Integer::parse(s.value())?;
+        if int.is_negative() {
             return Err(Error::unsupported("negative AKI serial"));
         }
-        values.push(named("serial", hex::colon(&int.magnitude, Case::Upper)));
+        values.push(named("serial", hex::colon(int.magnitude(), Case::Upper)));
     }
     Ok(Printed::Values {
         values,
@@ -241,7 +246,7 @@ fn authority_key_identifier(ext: &Extension<'_>) -> Result<Printed> {
 fn basic_constraints(ext: &Extension<'_>) -> Result<Printed> {
     let mut seq = single_sequence(ext.value)?;
     let ca = match seq.optional(tag::BOOLEAN)? {
-        Some(b) => parse_bool(b.value)?,
+        Some(b) => parse_bool(b.value())?,
         None => false,
     };
     let pathlen = seq.optional(tag::INTEGER)?;
@@ -251,7 +256,7 @@ fn basic_constraints(ext: &Extension<'_>) -> Result<Printed> {
     if let Some(p) = pathlen {
         values.push(named(
             "pathlen",
-            integer_to_string(&Integer::parse(p.value)?),
+            integer_to_string(&Integer::parse(p.value())?),
         ));
     }
     Ok(Printed::Values {
@@ -263,7 +268,7 @@ fn basic_constraints(ext: &Extension<'_>) -> Result<Printed> {
 /// Key Usage: `i2v_ASN1_BIT_STRING` over the named bits.
 fn key_usage(ext: &Extension<'_>) -> Result<Printed> {
     let mut r = Reader::new(ext.value);
-    let bits = BitString::parse(r.expect(tag::BIT_STRING)?.value)?;
+    let bits = BitString::parse(r.expect(tag::BIT_STRING)?.value())?;
     r.finish()?;
     let values = KEY_USAGE_BITS
         .iter()
@@ -285,7 +290,7 @@ fn extended_key_usage(ext: &Extension<'_>) -> Result<Printed> {
     let mut seq = single_sequence(ext.value)?;
     let mut values = Vec::new();
     while !seq.is_empty() {
-        let oid = Oid::parse(seq.expect(tag::OID)?.value)?;
+        let oid = Oid::parse(seq.expect(tag::OID)?.value())?;
         values.push(bare(objects::long_name(&oid)?));
     }
     Ok(Printed::Values {

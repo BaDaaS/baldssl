@@ -158,7 +158,7 @@ impl CertificationRequest {
         Name::from_contents(
             Reader::new(self.subject.as_bytes())
                 .expect(tag::SEQUENCE)?
-                .value,
+                .value(),
         )
     }
 
@@ -198,14 +198,14 @@ impl CertificationRequest {
             let mut top = Reader::new(attribute.as_bytes());
             let mut seq = top.sequence()?;
             top.finish()?;
-            let oid = Oid::parse(seq.expect(tag::OID)?.value)?;
+            let oid = Oid::parse(seq.expect(tag::OID)?.value())?;
             if oid.as_bytes() != EXTENSION_REQUEST.as_oid().as_bytes() {
                 return Err(Error::unsupported(format!(
                     "request attribute {}",
                     oid.to_dotted()?
                 )));
             }
-            let mut values = Reader::new(seq.expect(tag::SET)?.value);
+            let mut values = Reader::new(seq.expect(tag::SET)?.value());
             seq.finish()?;
             let extensions = values.read()?;
             values.finish()?;

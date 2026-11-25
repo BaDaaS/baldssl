@@ -1,12 +1,12 @@
-//! PEM framing ([RFC 7468][rfc7468]): `-----BEGIN LABEL-----`, base64, `-----END
-//! LABEL-----`.
+//! PEM (Privacy-Enhanced Mail) framing ([RFC 7468 section 2][rfc7468]):
+//! `-----BEGIN LABEL-----`, base64, `-----END LABEL-----`.
 //!
 //! Like OpenSSL, text outside the boundaries is ignored and blocks whose label
 //! is not wanted are skipped, so a file holding `openssl x509 -text` output or
 //! a key followed by a certificate still yields the certificate. Line endings
 //! may be LF or CRLF (files written on Windows).
 //!
-//! [rfc7468]: https://www.rfc-editor.org/rfc/rfc7468
+//! [rfc7468]: https://www.rfc-editor.org/rfc/rfc7468#section-2
 
 use crate::{
     base64::{self, Base64Error},
@@ -38,23 +38,42 @@ pub struct PemBlock {
     pub contents: Vec<u8>,
 }
 
-const BEGIN: &[u8] = b"-----BEGIN ";
-const END: &[u8] = b"-----END ";
-const DASHES: &[u8] = b"-----";
+/// The start of a BEGIN line, before the label ([RFC 7468 section 2][s2]).
+///
+/// [s2]: https://www.rfc-editor.org/rfc/rfc7468#section-2
+const BEGIN: &str = "-----BEGIN ";
+/// The start of an END line, before the label ([RFC 7468 section 2][s2]).
+///
+/// [s2]: https://www.rfc-editor.org/rfc/rfc7468#section-2
+const END: &str = "-----END ";
+/// The end of BEGIN and END lines, after the label ([RFC 7468 section
+/// 2][s2]).
+///
+/// [s2]: https://www.rfc-editor.org/rfc/rfc7468#section-2
+const DASHES: &str = "-----";
+/// Base64 characters per line: "Generators MUST wrap the base64-encoded
+/// lines so that each line consists of exactly 64 characters except for the
+/// final line" ([RFC 7468 section 2][s2]).
+///
+/// [s2]: https://www.rfc-editor.org/rfc/rfc7468#section-2
+const LINE_WIDTH: usize = 64;
 
 /// Whether `input` contains a PEM `BEGIN` boundary. Used to tell PEM from DER
 /// when no `-inform` is given, the way OpenSSL 3 does.
 #[must_use]
 pub fn looks_like_pem(input: &[u8]) -> bool {
-    input.windows(BEGIN.len()).any(|w| w == BEGIN)
+    input.windows(BEGIN.len()).any(|w| w == BEGIN.as_bytes())
 }
 
+/// `line` without the CR of a CRLF ending; a line without one is already
+/// trimmed.
 fn trim_cr(line: &[u8]) -> &[u8] {
     line.strip_suffix(b"\r").unwrap_or(line)
 }
 
-fn boundary_opt<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
-    line.strip_prefix(prefix)?.strip_suffix(DASHES)
+fn boundary_opt<'a>(line: &'a [u8], prefix: &str) -> Option<&'a [u8]> {
+    line.strip_prefix(prefix.as_bytes())?
+        .strip_suffix(DASHES.as_bytes())
 }
 
 /// One block as read, before its body is decoded.
@@ -102,14 +121,15 @@ fn matching_opt(
     RawBlock { label, body }: RawBlock,
     labels: &[&str],
 ) -> Option<Result<PemBlock, PemError>> {
-    labels.iter().any(|l| l.as_bytes() == label).then(|| {
+    let wanted = labels.iter().find(|l| l.as_bytes() == label)?;
+    Some(
         base64::decode(&body)
             .map_err(PemError::Base64)
             .map(|contents| PemBlock {
-                label: String::from_utf8_lossy(&label).into_owned(),
+                label: (*wanted).to_owned(),
                 contents,
-            })
-    })
+            }),
+    )
 }
 
 /// Returns the first block whose label is in `labels`.
@@ -153,22 +173,27 @@ pub fn decode_all(
     Ok(out)
 }
 
-/// Encodes a PEM block with 64-column lines and LF line endings, as
-/// `PEM_write` does.
+/// Encodes a PEM block with lines of 64 base64 characters, the last one
+/// shorter (RFC 7468 section 2), and LF line endings, as `PEM_write` does.
 #[must_use]
 pub fn encode(label: &str, contents: &[u8]) -> String {
     let b64 = base64::encode(contents);
-    let mut out = String::with_capacity(b64.len().saturating_add(64));
-    out.push_str("-----BEGIN ");
-    out.push_str(label);
-    out.push_str("-----\n");
-    for line in b64.as_bytes().chunks(64) {
-        out.push_str(&String::from_utf8_lossy(line));
-        out.push('\n');
+    let mut out = String::with_capacity(b64.len().saturating_add(LINE_WIDTH));
+    for boundary in [BEGIN, label, DASHES, "\n"] {
+        out.push_str(boundary);
     }
-    out.push_str("-----END ");
-    out.push_str(label);
-    out.push_str("-----\n");
+    let mut rest = b64.as_str();
+    while !rest.is_empty() {
+        // The final line is what remains when it is shorter than a line.
+        let (line, tail) =
+            rest.split_at_checked(LINE_WIDTH).unwrap_or((rest, ""));
+        out.push_str(line);
+        out.push('\n');
+        rest = tail;
+    }
+    for boundary in [END, label, DASHES, "\n"] {
+        out.push_str(boundary);
+    }
     out
 }
 
@@ -250,7 +275,7 @@ mod tests {
     fn line_width() {
         let pem = encode("CERTIFICATE", &[0u8; 100]);
         for line in pem.lines() {
-            assert!(line.len() <= 64);
+            assert!(line.len() <= LINE_WIDTH);
         }
     }
 

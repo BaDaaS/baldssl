@@ -21,10 +21,7 @@ use crate::{cert::Certificate, text::Compat};
 
 fn version() -> impl Strategy<Value = Version> {
     sign_magnitude(12).prop_map(|(negative, magnitude)| {
-        Version(Integer {
-            negative,
-            magnitude,
-        })
+        Version(Integer::from_sign_magnitude(negative, &magnitude))
     })
 }
 
@@ -50,11 +47,7 @@ proptest! {
 fn known_versions() {
     assert_eq!(Version::v1().known_opt(), Some(0));
     let n = |m: &[u8], negative| {
-        Version(Integer {
-            negative,
-            magnitude: m.to_vec(),
-        })
-        .known_opt()
+        Version(Integer::from_sign_magnitude(negative, m)).known_opt()
     };
     assert_eq!(n(&[2], false), Some(2));
     assert_eq!(n(&[3], false), None);

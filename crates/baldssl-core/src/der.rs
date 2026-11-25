@@ -4,7 +4,8 @@
 //!
 //! ASN.1 ([X.680][x680]) describes data abstractly: types such as INTEGER,
 //! OCTET STRING, OBJECT IDENTIFIER, SEQUENCE. Certificates and keys are
-//! defined in it (RFC 5280, RFC 5208). ASN.1 says nothing about bytes;
+//! defined in it ([RFC 5280 section 4.1][rfc5280], [RFC 5208 section
+//! 5][rfc5208]). ASN.1 says nothing about bytes;
 //! *encoding rules* do, and X.690 defines three of them:
 //!
 //! - **BER**, the Basic Encoding Rules (clause 8): the general rules. They
@@ -55,9 +56,12 @@
 //! indefinite lengths, non-minimal long-form lengths, non-minimal tag numbers,
 //! non-minimal INTEGERs, BOOLEANs other than `00`/`FF`, non-zero BIT STRING
 //! padding and non-minimal OID sub-identifiers. Accepting such encodings is
-//! how signature checks get bypassed: in BERserk (CVE-2014-1568), Mozilla
-//! NSS "does not properly parse ASN.1 values", which let attackers spoof RSA
-//! signatures (NVD's description; a "signature malleability" issue).
+//! how signature checks get bypassed. In BERserk ([CVE-2014-1568][cve]),
+//! Mozilla NSS (Network Security Services), in the words of the National
+//! Vulnerability Database, "does not properly parse ASN.1 values in X.509
+//! certificates, which makes it easier for remote attackers to spoof RSA
+//! signatures via a crafted certificate, aka a 'signature malleability'
+//! issue" (double quotes in the original).
 //!
 //! # Structure
 //!
@@ -68,6 +72,9 @@
 //!
 //! [x690]: https://www.itu.int/rec/T-REC-X.690
 //! [x680]: https://www.itu.int/rec/T-REC-X.680
+//! [rfc5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+//! [rfc5208]: https://www.rfc-editor.org/rfc/rfc5208#section-5
+//! [cve]: https://nvd.nist.gov/vuln/detail/CVE-2014-1568
 
 pub mod syntax;
 pub mod write;
@@ -99,7 +106,8 @@ pub enum DerError {
     IndefiniteLength,
     /// A long-form length that could have been shorter.
     NonMinimalLength,
-    /// A length that does not fit in 32 bits.
+    /// A long-form length of more octets than a `usize` has (8 on 64-bit
+    /// targets, 4 on 32-bit ones).
     LengthTooLarge,
     /// A high tag number that is not minimally encoded.
     NonMinimalTag,
@@ -107,8 +115,9 @@ pub enum DerError {
     UnexpectedTag {
         /// Expected identifier octet.
         expected: u8,
-        /// Identifier octet found (`0` for high tag numbers).
-        found: u8,
+        /// The identifier octet found, `None` for a high tag number (31 and
+        /// above), which takes more than one octet.
+        found: Option<u8>,
     },
     /// Bytes remain after the last expected element.
     TrailingData,
@@ -136,6 +145,66 @@ pub enum DerError {
     UnexpectedValue,
 }
 
+/// Bits 8 and 7 of the identifier octet: the class ([X.690] 8.1.2.2,
+/// Table 1).
+///
+/// [X.690]: https://www.itu.int/rec/T-REC-X.690
+const CLASS_BITS: u8 = 0xc0;
+/// The universal class, `00` in bits 8 and 7 (X.690 Table 1).
+const UNIVERSAL_CLASS: u8 = 0x00;
+/// The application class, `01` in bits 8 and 7 (X.690 Table 1).
+const APPLICATION_CLASS: u8 = 0x40;
+/// The context-specific class, `10` in bits 8 and 7 (X.690 Table 1).
+const CONTEXT_SPECIFIC_CLASS: u8 = 0x80;
+/// The private class, `11` in bits 8 and 7 (X.690 Table 1).
+const PRIVATE_CLASS: u8 = 0xc0;
+/// Bit 6 of the identifier octet: one for a constructed encoding, zero for
+/// a primitive one (X.690 8.1.2.5).
+pub(crate) const CONSTRUCTED_BIT: u8 = 0x20;
+/// Bits 5 to 1 of the identifier octet: the tag number when it is below 31
+/// (X.690 8.1.2.2 c), all ones when it follows in subsequent octets
+/// (8.1.2.4.1 c).
+pub(crate) const TAG_NUMBER_BITS: u8 = 0x1f;
+/// The first tag number written in the high-tag-number form, in octets
+/// after the first (X.690 8.1.2.4); 0 to 30 fit in the first (8.1.2.3).
+pub(crate) const FIRST_HIGH_TAG_NUMBER: u8 = 31;
+/// Bit 8 of an octet of a base-128 number, one on every octet but the last:
+/// a high tag number (X.690 8.1.2.4.2 a) and the subidentifiers of an
+/// OBJECT IDENTIFIER (8.19.2).
+pub(crate) const MORE_OCTETS: u8 = 0x80;
+/// Bits 7 to 1 of an octet of a base-128 number: its digit (X.690 8.1.2.4.2
+/// b, 8.19.2).
+pub(crate) const BASE_128_DIGIT: u8 = 0x7f;
+/// The base of high tag numbers and subidentifiers (X.690 8.1.2.4.2,
+/// 8.19.2).
+const BASE_128: u32 = 128;
+/// Bit 8 of the first length octet: zero for the short form, a length below
+/// 128 in bits 7 to 1 (X.690 8.1.3.4); one for the long form (8.1.3.5 a).
+/// The octet `80` alone is the indefinite form (8.1.3.6.1), which DER
+/// forbids (10.1).
+pub(crate) const LONG_FORM: u8 = 0x80;
+/// Bits 7 to 1 of the first length octet in the long form: how many length
+/// octets follow (X.690 8.1.3.5 b).
+const LENGTH_OCTETS_BITS: u8 = 0x7f;
+/// The smallest length the long form writes: shorter ones take the short
+/// form, as DER's minimal length requires (X.690 8.1.3.4, 10.1).
+pub(crate) const FIRST_LONG_LENGTH: usize = 0x80;
+/// The base of the long form's length octets, its big-endian digits (X.690
+/// 8.1.3.5 c).
+const OCTET_BASE: usize = 256;
+/// The most length octets read or written: those of a `usize`, 8 on 64-bit
+/// targets and 4 on 32-bit ones. Every length a writer gives fits, and so
+/// does the length of every contents that can be in memory; X.690 allows up
+/// to 126 (8.1.3.5 c).
+pub(crate) const MAX_LENGTH_OCTETS: usize = core::mem::size_of::<usize>();
+/// Bit 8 of the first contents octet of an INTEGER, its two's complement
+/// sign (X.690 8.3.3).
+pub(crate) const SIGN_BIT: u8 = 0x80;
+/// The first two arcs `X.Y` of an OBJECT IDENTIFIER share one
+/// subidentifier, `40 X + Y`, with `Y` below 40 when `X` is 0 or 1 (X.690
+/// 8.19.4).
+pub(crate) const ARCS_PER_FIRST_ARC: u128 = 40;
+
 /// The tag class (bits 8-7 of the identifier octet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Class {
@@ -149,13 +218,23 @@ pub(crate) enum Class {
     Private,
 }
 
+/// Whether an encoding is primitive or constructed (bit 6 of the identifier
+/// octet, X.690 8.1.2.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Form {
+    /// The contents are the value's octets.
+    Primitive,
+    /// The contents are the encodings of other values.
+    Constructed,
+}
+
 /// A decoded identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Tag {
     /// The class.
     pub class: Class,
-    /// Constructed (bit 6) or primitive.
-    pub constructed: bool,
+    /// Primitive or constructed.
+    pub form: Form,
     /// The tag number.
     pub number: u32,
 }
@@ -166,35 +245,57 @@ impl Tag {
     #[must_use]
     pub(crate) fn octet_opt(self) -> Option<u8> {
         let class = match self.class {
-            Class::Universal => 0x00,
-            Class::Application => 0x40,
-            Class::ContextSpecific => 0x80,
-            Class::Private => 0xc0,
+            Class::Universal => UNIVERSAL_CLASS,
+            Class::Application => APPLICATION_CLASS,
+            Class::ContextSpecific => CONTEXT_SPECIFIC_CLASS,
+            Class::Private => PRIVATE_CLASS,
         };
-        let pc = if self.constructed { 0x20 } else { 0x00 };
-        let n = u8::try_from(self.number).ok().filter(|&n| n < 31)?;
-        Some(class | pc | n)
+        let form = match self.form {
+            Form::Primitive => 0,
+            Form::Constructed => CONSTRUCTED_BIT,
+        };
+        let n = u8::try_from(self.number)
+            .ok()
+            .filter(|&n| n < FIRST_HIGH_TAG_NUMBER)?;
+        Some(class | form | n)
     }
 
     /// The tag with this low-form identifier octet.
     #[must_use]
     pub(crate) const fn from_octet(b: u8) -> Self {
-        let class = match b >> 6 {
-            0 => Class::Universal,
-            1 => Class::Application,
-            2 => Class::ContextSpecific,
+        let class = match b & CLASS_BITS {
+            UNIVERSAL_CLASS => Class::Universal,
+            APPLICATION_CLASS => Class::Application,
+            CONTEXT_SPECIFIC_CLASS => Class::ContextSpecific,
             _ => Class::Private,
+        };
+        let form = if b & CONSTRUCTED_BIT == 0 {
+            Form::Primitive
+        } else {
+            Form::Constructed
         };
         Tag {
             class,
-            constructed: b & 0x20 != 0,
-            number: u8_to_u32(b & 0x1f),
+            form,
+            number: u8_to_u32(b & TAG_NUMBER_BITS),
         }
+    }
+}
+
+/// The identifier octet `first` when it is the whole identifier, `None`
+/// when a high tag number follows it (X.690 8.1.2.4).
+const fn low_octet_opt(first: u8) -> Option<u8> {
+    if first & TAG_NUMBER_BITS == TAG_NUMBER_BITS {
+        None
+    } else {
+        Some(first)
     }
 }
 
 /// Universal identifier octets used by X.509.
 pub mod tag {
+    use super::{CONSTRUCTED_BIT, CONTEXT_SPECIFIC_CLASS, TAG_NUMBER_BITS};
+
     /// BOOLEAN
     pub const BOOLEAN: u8 = 0x01;
     /// INTEGER
@@ -235,59 +336,72 @@ pub mod tag {
     /// `[n]` context-specific primitive (IMPLICIT on a primitive type).
     #[must_use]
     pub const fn context(n: u8) -> u8 {
-        0x80 | (n & 0x1f)
+        CONTEXT_SPECIFIC_CLASS | (n & TAG_NUMBER_BITS)
     }
 
     /// `[n]` context-specific constructed (EXPLICIT, or IMPLICIT on a
     /// constructed type).
     #[must_use]
     pub const fn context_constructed(n: u8) -> u8 {
-        0xa0 | (n & 0x1f)
+        context(n) | CONSTRUCTED_BIT
     }
 }
 
-/// One tag-length-value element.
+/// One tag-length-value element, a view of the input it was parsed from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tlv<'a> {
     /// The identifier.
     pub(crate) tag: Tag,
     /// The contents octets.
-    pub value: &'a [u8],
+    value: &'a [u8],
     /// The whole element: identifier, length and contents.
-    pub encoded: &'a [u8],
+    encoded: &'a [u8],
 }
 
-impl Tlv<'_> {
-    /// The low-form identifier octet, `0` for high tag numbers.
+impl<'a> Tlv<'a> {
+    /// The one identifier octet, `None` for a high tag number (31 and
+    /// above), whose identifier takes more octets.
     #[must_use]
-    pub fn octet(&self) -> u8 {
-        self.tag.octet_opt().unwrap_or(0)
+    pub fn octet_opt(&self) -> Option<u8> {
+        self.tag.octet_opt()
+    }
+
+    /// The contents octets.
+    #[must_use]
+    pub fn value(&self) -> &'a [u8] {
+        self.value
+    }
+
+    /// The whole element: identifier, length and contents.
+    #[must_use]
+    pub fn encoded(&self) -> &'a [u8] {
+        self.encoded
     }
 }
 
 fn read_tag(data: &[u8]) -> Result<(Tag, usize), DerError> {
     let first = *data.first().ok_or(DerError::UnexpectedEnd)?;
     let low = Tag::from_octet(first);
-    if first & 0x1f != 0x1f {
+    if low_octet_opt(first).is_some() {
         return Ok((low, 1));
     }
     let mut number: u32 = 0;
     let mut i = 1usize;
     loop {
         let b = *data.get(i).ok_or(DerError::UnexpectedEnd)?;
-        if i == 1 && b == 0x80 {
+        if i == 1 && b == MORE_OCTETS {
             return Err(DerError::NonMinimalTag);
         }
         number = number
-            .checked_mul(128)
-            .and_then(|n| n.checked_add(u32::from(b & 0x7f)))
+            .checked_mul(BASE_128)
+            .and_then(|n| n.checked_add(u32::from(b & BASE_128_DIGIT)))
             .ok_or(DerError::NonMinimalTag)?;
         i = i.checked_add(1).ok_or(DerError::UnexpectedEnd)?;
-        if b & 0x80 == 0 {
+        if b & MORE_OCTETS == 0 {
             break;
         }
     }
-    if number < 31 {
+    if number < u32::from(FIRST_HIGH_TAG_NUMBER) {
         return Err(DerError::NonMinimalTag);
     }
     Ok((Tag { number, ..low }, i))
@@ -295,28 +409,32 @@ fn read_tag(data: &[u8]) -> Result<(Tag, usize), DerError> {
 
 fn read_length(data: &[u8]) -> Result<(usize, usize), DerError> {
     let first = *data.first().ok_or(DerError::UnexpectedEnd)?;
-    if first < 0x80 {
+    if first & LONG_FORM == 0 {
         return Ok((usize::from(first), 1));
     }
-    if first == 0x80 {
+    if first == LONG_FORM {
         return Err(DerError::IndefiniteLength);
     }
-    let count = usize::from(first & 0x7f);
-    if count > 4 {
+    let count = usize::from(first & LENGTH_OCTETS_BITS);
+    if count > MAX_LENGTH_OCTETS {
         return Err(DerError::LengthTooLarge);
     }
     let bytes = data.get(1..=count).ok_or(DerError::UnexpectedEnd)?;
     if bytes.first() == Some(&0) {
         return Err(DerError::NonMinimalLength);
     }
-    let mut len: u32 = 0;
+    let mut len: usize = 0;
     for &b in bytes {
-        len = (len << 8) | u32::from(b);
+        // At most MAX_LENGTH_OCTETS base-256 digits, which a usize holds:
+        // the checks never fail, and keep the arithmetic total.
+        len = len
+            .checked_mul(OCTET_BASE)
+            .and_then(|l| l.checked_add(usize::from(b)))
+            .ok_or(DerError::LengthTooLarge)?;
     }
-    if len < 0x80 {
+    if len < FIRST_LONG_LENGTH {
         return Err(DerError::NonMinimalLength);
     }
-    let len = usize::try_from(len).map_err(|_| DerError::LengthTooLarge)?;
     Ok((len, count.checked_add(1).ok_or(DerError::LengthTooLarge)?))
 }
 
@@ -344,6 +462,15 @@ pub fn parse_tlv(data: &[u8]) -> Result<(Tlv<'_>, usize), DerError> {
         },
         total,
     ))
+}
+
+/// `bytes` without its leading zero octets: the big-endian digits of the
+/// same natural number, the empty string for zero.
+pub(crate) fn strip_leading_zeros(mut bytes: &[u8]) -> &[u8] {
+    while let [0, rest @ ..] = bytes {
+        bytes = rest;
+    }
+    bytes
 }
 
 /// A cursor over a concatenation of TLVs.
@@ -382,17 +509,18 @@ impl<'a> Reader<'a> {
         self.data.first().copied()
     }
 
-    /// Reads the next TLV and checks its identifier octet.
+    /// Reads the next TLV and checks its identifier octet, `octet`, one of
+    /// a low tag number (below 31).
     ///
     /// # Errors
     ///
     /// [`DerError::UnexpectedTag`] on a mismatch.
     pub fn expect(&mut self, octet: u8) -> Result<Tlv<'a>, DerError> {
-        let found = self.peek_octet_opt().ok_or(DerError::UnexpectedEnd)?;
-        if found != octet {
+        let first = self.peek_octet_opt().ok_or(DerError::UnexpectedEnd)?;
+        if first != octet {
             return Err(DerError::UnexpectedTag {
                 expected: octet,
-                found,
+                found: low_octet_opt(first),
             });
         }
         self.read()
@@ -417,7 +545,7 @@ impl<'a> Reader<'a> {
     ///
     /// See [`Reader::expect`].
     pub fn sequence(&mut self) -> Result<Reader<'a>, DerError> {
-        Ok(Reader::new(self.expect(tag::SEQUENCE)?.value))
+        Ok(Reader::new(self.expect(tag::SEQUENCE)?.value()))
     }
 
     /// Checks that nothing is left.
@@ -450,16 +578,29 @@ impl<'a> Reader<'a> {
 }
 
 /// A decoded INTEGER: a sign and the big-endian magnitude without leading
-/// zero bytes (empty for zero).
+/// zero bytes (empty for zero, which is never negative). Built only by
+/// [`Integer::parse`], [`Integer::from_sign_magnitude`] and `From<i64>`, so
+/// equal numbers are equal values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Integer {
     /// Strictly negative.
-    pub negative: bool,
+    negative: bool,
     /// `|value|`, big-endian, no leading zeros.
-    pub magnitude: Vec<u8>,
+    magnitude: Vec<u8>,
 }
 
 impl Integer {
+    /// The INTEGER with this sign and big-endian magnitude: leading zero
+    /// octets are dropped, and zero is not negative. Total.
+    #[must_use]
+    pub fn from_sign_magnitude(negative: bool, magnitude: &[u8]) -> Self {
+        let magnitude = strip_leading_zeros(magnitude).to_vec();
+        Integer {
+            negative: negative && !magnitude.is_empty(),
+            magnitude,
+        }
+    }
+
     /// Decodes INTEGER contents (two's complement, minimal).
     ///
     /// # Errors
@@ -468,15 +609,15 @@ impl Integer {
     pub fn parse(value: &[u8]) -> Result<Self, DerError> {
         match value {
             [] => return Err(DerError::InvalidInteger),
-            [0x00, next, ..] if next & 0x80 == 0 => {
+            [0x00, next, ..] if next & SIGN_BIT == 0 => {
                 return Err(DerError::InvalidInteger);
             }
-            [0xff, next, ..] if next & 0x80 != 0 => {
+            [0xff, next, ..] if next & SIGN_BIT != 0 => {
                 return Err(DerError::InvalidInteger);
             }
             _ => {}
         }
-        let negative = value.first().is_some_and(|b| b & 0x80 != 0);
+        let negative = value.first().is_some_and(|b| b & SIGN_BIT != 0);
         let mut magnitude = value.to_vec();
         if negative {
             // |x| = !x + 1 over the two's-complement bytes.
@@ -487,15 +628,19 @@ impl Integer {
                 carry = c;
             }
         }
-        let first_nonzero = magnitude
-            .iter()
-            .position(|&b| b != 0)
-            .unwrap_or(magnitude.len());
-        magnitude.drain(..first_nonzero);
-        Ok(Integer {
-            negative,
-            magnitude,
-        })
+        Ok(Integer::from_sign_magnitude(negative, &magnitude))
+    }
+
+    /// Whether the value is strictly negative.
+    #[must_use]
+    pub fn is_negative(&self) -> bool {
+        self.negative
+    }
+
+    /// `|value|`, big-endian, without leading zeros: empty for zero.
+    #[must_use]
+    pub fn magnitude(&self) -> &[u8] {
+        &self.magnitude
     }
 
     /// Number of significant bits of the magnitude.
@@ -564,12 +709,7 @@ impl From<i64> for Integer {
     /// The INTEGER with value `v`: its sign, and its magnitude without
     /// leading zeros. [`Integer::to_i64_opt`] is the inverse.
     fn from(v: i64) -> Self {
-        let m = v.unsigned_abs().to_be_bytes();
-        let first = m.iter().position(|&b| b != 0).unwrap_or(m.len());
-        Integer {
-            negative: v < 0,
-            magnitude: m.get(first..).unwrap_or_default().to_vec(),
-        }
+        Integer::from_sign_magnitude(v < 0, &v.unsigned_abs().to_be_bytes())
     }
 }
 
@@ -606,13 +746,14 @@ pub(crate) fn parse_null(value: &[u8]) -> Result<(), DerError> {
     }
 }
 
-/// A decoded BIT STRING.
+/// A decoded BIT STRING, built only by [`BitString::parse`] and
+/// [`BitString::from_bytes`], so its padding is valid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitString<'a> {
     /// Number of unused bits in the last byte (0 to 7).
-    pub unused: u8,
+    unused: u8,
     /// The bytes, unused bits zero.
-    pub bytes: &'a [u8],
+    bytes: &'a [u8],
 }
 
 impl<'a> BitString<'a> {
@@ -637,10 +778,29 @@ impl<'a> BitString<'a> {
         Ok(BitString { unused, bytes })
     }
 
+    /// The BIT STRING of these whole bytes, no bit unused. Total.
+    #[must_use]
+    pub fn from_bytes(bytes: &'a [u8]) -> Self {
+        BitString { unused: 0, bytes }
+    }
+
+    /// Number of unused bits in the last byte (0 to 7, 0 when there is no
+    /// byte).
+    #[must_use]
+    pub fn unused(&self) -> u8 {
+        self.unused
+    }
+
+    /// The bytes, unused bits zero.
+    #[must_use]
+    pub fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
     /// Bit `n` in the ASN.1 numbering (bit 0 is the MSB of the first byte).
     #[must_use]
     pub fn bit(&self, n: usize) -> bool {
-        let shift = 7u32.saturating_sub(u32::try_from(n % 8).unwrap_or(0));
+        let shift = 7usize.saturating_sub(n % 8);
         self.bytes
             .get(n / 8)
             .is_some_and(|&b| (b >> shift) & 1 == 1)
@@ -659,15 +819,15 @@ impl<'a> Oid<'a> {
     /// [`DerError::InvalidOid`] when empty, truncated, or a sub-identifier
     /// has a leading `0x80`.
     pub fn parse(value: &'a [u8]) -> Result<Self, DerError> {
-        if value.last().is_none_or(|&b| b & 0x80 != 0) {
+        if value.last().is_none_or(|&b| b & MORE_OCTETS != 0) {
             return Err(DerError::InvalidOid);
         }
         let mut start = true;
         for &b in value {
-            if start && b == 0x80 {
+            if start && b == MORE_OCTETS {
                 return Err(DerError::InvalidOid);
             }
-            start = b & 0x80 == 0;
+            start = b & MORE_OCTETS == 0;
         }
         Ok(Oid(value))
     }
@@ -682,16 +842,17 @@ impl<'a> Oid<'a> {
     ///
     /// # Errors
     ///
-    /// [`Error::Unsupported`] if an arc exceeds 128 bits.
+    /// [`Error::Unsupported`] if an arc is $2^{128}$ or more: parsing bounds
+    /// neither the number nor the size of the arcs.
     pub fn to_dotted(&self) -> Result<String, Error> {
         let mut arcs: Vec<u128> = Vec::new();
         let mut acc: u128 = 0;
         for &b in self.0 {
             acc = acc
-                .checked_mul(128)
-                .map(|a| a | u128::from(b & 0x7f))
+                .checked_mul(u128::from(BASE_128))
+                .map(|a| a | u128::from(b & BASE_128_DIGIT))
                 .ok_or_else(|| Error::unsupported("OID arc above 128 bits"))?;
-            if b & 0x80 == 0 {
+            if b & MORE_OCTETS == 0 {
                 arcs.push(acc);
                 acc = 0;
             }
@@ -700,9 +861,11 @@ impl<'a> Oid<'a> {
         for (i, arc) in arcs.iter().enumerate() {
             if i == 0 {
                 let (first, second) = match *arc {
-                    a if a < 40 => (0, a),
-                    a if a < 80 => (1, a.saturating_sub(40)),
-                    a => (2, a.saturating_sub(80)),
+                    a if a < ARCS_PER_FIRST_ARC => (0, a),
+                    a if a < 2 * ARCS_PER_FIRST_ARC => {
+                        (1, a.saturating_sub(ARCS_PER_FIRST_ARC))
+                    }
+                    a => (2, a.saturating_sub(2 * ARCS_PER_FIRST_ARC)),
                 };
                 let _ = write!(out, "{first}.{second}");
             } else {
@@ -722,26 +885,28 @@ pub enum TimeKind {
     Generalized,
 }
 
-/// A decoded UTCTime or GeneralizedTime (always UTC, `Z`, in DER).
+/// A decoded UTCTime or GeneralizedTime (always UTC, `Z`, in DER), built
+/// only by [`Time::parse`] and [`Time::from_unix_seconds`], so its fields
+/// are a valid date and time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Time {
     /// Encoding used.
-    pub kind: TimeKind,
+    kind: TimeKind,
     /// Full year.
-    pub year: u16,
+    year: u16,
     /// 1 to 12.
-    pub month: u8,
+    month: u8,
     /// 1 to 31, valid for the month.
-    pub day: u8,
+    day: u8,
     /// 0 to 23.
-    pub hour: u8,
+    hour: u8,
     /// 0 to 59.
-    pub minute: u8,
+    minute: u8,
     /// 0 to 59.
-    pub second: u8,
+    second: u8,
     /// Fraction digits after the `.`, GeneralizedTime only (no trailing
     /// zeros in DER).
-    pub fraction: String,
+    fraction: String,
 }
 
 fn digits_opt(s: &[u8]) -> Option<u16> {
@@ -829,6 +994,32 @@ mod civil {
 /// [section 4.1.2.5]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
 const FIRST_GENERALIZED_YEAR: u16 = 2050;
 
+/// The two-digit UTCTime years below which the year is in the 2000s, from
+/// which it is in the 1900s: "Where YY is greater than or equal to 50, the
+/// year SHALL be interpreted as 19YY; and Where YY is less than 50, the year
+/// SHALL be interpreted as 20YY" ([RFC 5280 section 4.1.2.5.1]).
+///
+/// [RFC 5280 section 4.1.2.5.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5.1
+const UTC_TIME_PIVOT: u16 = 50;
+/// The year of UTCTime's `YY = 00` from [`UTC_TIME_PIVOT`] on.
+const UTC_TIME_LATE_CENTURY: u16 = 1900;
+/// The year of UTCTime's `YY = 00` below [`UTC_TIME_PIVOT`].
+const UTC_TIME_EARLY_CENTURY: u16 = 2000;
+/// Years in a century: UTCTime writes the year modulo it.
+const YEARS_PER_CENTURY: u16 = 100;
+
+/// The encoding RFC 5280 requires of a certificate's time in `year`
+/// ([section 4.1.2.5]).
+///
+/// [section 4.1.2.5]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
+fn rfc5280_kind(year: u16) -> TimeKind {
+    if year < FIRST_GENERALIZED_YEAR {
+        TimeKind::Utc
+    } else {
+        TimeKind::Generalized
+    }
+}
+
 impl Time {
     /// The time `seconds` after the Unix epoch, in the encoding RFC 5280
     /// requires of a certificate ([section 4.1.2.5]): UTCTime through 2049,
@@ -849,6 +1040,7 @@ impl Time {
                   doy < 366) keep each subtraction non-negative"
     )]
     pub fn from_unix_seconds(seconds: u64) -> Self {
+        // A count above i64::MAX is past the end of 9999 too: clamped.
         let seconds =
             i64::try_from(seconds).map_or(END_OF_9999, |s| s.min(END_OF_9999));
         let days = seconds / SECONDS_PER_DAY;
@@ -871,14 +1063,12 @@ impl Time {
             mp + MARCH - MONTHS_PER_YEAR
         };
         let year = yoe + era * YEARS_PER_ERA + i64::from(month <= 2);
+        // The fallbacks are never taken: the algorithm's fields are a month,
+        // a day, an hour, a minute and a second of a year from 1970 to 9999.
         let narrow = |v: i64| u8::try_from(v).unwrap_or(u8::MAX);
         let year = u16::try_from(year).unwrap_or(u16::MAX);
         Time {
-            kind: if year < FIRST_GENERALIZED_YEAR {
-                TimeKind::Utc
-            } else {
-                TimeKind::Generalized
-            },
+            kind: rfc5280_kind(year),
             year,
             month: narrow(month),
             day: narrow(day),
@@ -887,6 +1077,71 @@ impl Time {
             second: narrow(rest % SECONDS_PER_MINUTE),
             fraction: String::new(),
         }
+    }
+
+    /// The same instant in the encoding RFC 5280 requires of a certificate
+    /// ([section 4.1.2.5]): UTCTime through 2049, GeneralizedTime from 2050,
+    /// without a fraction, which a certificate's time never has
+    /// (sections 4.1.2.5.1 and 4.1.2.5.2), so the fraction is dropped.
+    ///
+    /// [section 4.1.2.5]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
+    #[must_use]
+    pub fn to_rfc5280(&self) -> Self {
+        Time {
+            kind: rfc5280_kind(self.year),
+            fraction: String::new(),
+            ..self.clone()
+        }
+    }
+
+    /// The encoding the time was read in, or written in.
+    #[must_use]
+    pub fn kind(&self) -> TimeKind {
+        self.kind
+    }
+
+    /// The full year, 1950 to 2049 for a UTCTime, 0 to 9999 for a
+    /// GeneralizedTime.
+    #[must_use]
+    pub fn year(&self) -> u16 {
+        self.year
+    }
+
+    /// The month, 1 to 12.
+    #[must_use]
+    pub fn month(&self) -> u8 {
+        self.month
+    }
+
+    /// The day of the month, 1 to its last.
+    #[must_use]
+    pub fn day(&self) -> u8 {
+        self.day
+    }
+
+    /// The hour, 0 to 23.
+    #[must_use]
+    pub fn hour(&self) -> u8 {
+        self.hour
+    }
+
+    /// The minute, 0 to 59.
+    #[must_use]
+    pub fn minute(&self) -> u8 {
+        self.minute
+    }
+
+    /// The second, 0 to 59.
+    #[must_use]
+    pub fn second(&self) -> u8 {
+        self.second
+    }
+
+    /// The decimal digits of the fraction of a second, after the `.`, with
+    /// no trailing zero: empty when there is none, always for a UTCTime.
+    #[must_use]
+    pub fn fraction(&self) -> &str {
+        &self.fraction
     }
 
     /// Seconds after the Unix epoch, negative before it: the inverse of
@@ -917,14 +1172,19 @@ impl Time {
             + i64::from(self.second)
     }
 
-    /// The DER of the time, one TLV: a UTCTime (`YYMMDDHHMMSSZ`, tag 23)
-    /// or a GeneralizedTime (`YYYYMMDDHHMMSS[.fff]Z`, tag 24), the inverse
-    /// of [`Time::parse`].
+    /// The DER of the time, one TLV: a UTCTime (`YYMMDDHHMMSSZ`,
+    /// [`tag::UTC_TIME`]) or a GeneralizedTime (`YYYYMMDDHHMMSS[.fff]Z`,
+    /// [`tag::GENERALIZED_TIME`]), the inverse of [`Time::parse`].
     #[must_use]
     pub fn to_der(&self) -> RawTlv {
         let (tag, mut text) = match self.kind {
-            TimeKind::Utc => (0x17, format!("{:02}", self.year % 100)),
-            TimeKind::Generalized => (0x18, format!("{:04}", self.year)),
+            TimeKind::Utc => (
+                tag::UTC_TIME,
+                format!("{:02}", self.year % YEARS_PER_CENTURY),
+            ),
+            TimeKind::Generalized => {
+                (tag::GENERALIZED_TIME, format!("{:04}", self.year))
+            }
         };
         let _ = write!(
             text,
@@ -951,7 +1211,12 @@ impl Time {
         let (year, rest) = match kind {
             TimeKind::Utc => {
                 let yy = u16::from(two(body, 0)?);
-                let year = if yy < 50 { 2000 + yy } else { 1900 + yy };
+                let century = if yy < UTC_TIME_PIVOT {
+                    UTC_TIME_EARLY_CENTURY
+                } else {
+                    UTC_TIME_LATE_CENTURY
+                };
+                let year = century.saturating_add(yy);
                 (year, body.get(2..).ok_or(DerError::InvalidTime)?)
             }
             TimeKind::Generalized => {
@@ -963,20 +1228,22 @@ impl Time {
         };
         let (fixed, fraction) = match kind {
             TimeKind::Utc => (rest, &[][..]),
-            TimeKind::Generalized => match rest.iter().position(|&c| c == b'.')
-            {
-                None => (rest, &[][..]),
-                Some(dot) => {
-                    let frac = rest.get(dot.saturating_add(1)..).unwrap_or(&[]);
-                    if frac.is_empty()
-                        || frac.last() == Some(&b'0')
-                        || !frac.iter().all(u8::is_ascii_digit)
-                    {
-                        return Err(DerError::InvalidTime);
+            TimeKind::Generalized => {
+                let mut parts = rest.splitn(2, |&c| c == b'.');
+                let fixed = parts.next().ok_or(DerError::InvalidTime)?;
+                match parts.next() {
+                    None => (fixed, &[][..]),
+                    Some(frac) => {
+                        if frac.is_empty()
+                            || frac.last() == Some(&b'0')
+                            || !frac.iter().all(u8::is_ascii_digit)
+                        {
+                            return Err(DerError::InvalidTime);
+                        }
+                        (fixed, frac)
                     }
-                    (rest.get(..dot).unwrap_or(&[]), frac)
                 }
-            },
+            }
         };
         if fixed.len() != 10 {
             return Err(DerError::InvalidTime);
@@ -989,7 +1256,8 @@ impl Time {
             hour: two(fixed, 4)?,
             minute: two(fixed, 6)?,
             second: two(fixed, 8)?,
-            fraction: String::from_utf8_lossy(fraction).into_owned(),
+            // ASCII digits, checked above: each octet is its character.
+            fraction: fraction.iter().copied().map(char::from).collect(),
         };
         let valid = (1..=12).contains(&t.month)
             && t.day >= 1
@@ -1032,7 +1300,7 @@ mod tests {
         assert_eq!(parse_tlv(&[0x04, 0x00]).unwrap().1, 2);
         let mut long = vec![0x04, 0x81, 0x80];
         long.extend([0u8; 0x80]);
-        assert_eq!(parse_tlv(&long).unwrap().0.value.len(), 0x80);
+        assert_eq!(parse_tlv(&long).unwrap().0.value().len(), 0x80);
         assert_eq!(parse_tlv(&[0x04, 0x80]), Err(DerError::IndefiniteLength));
         assert_eq!(
             parse_tlv(&[0x04, 0x81, 0x05, 0, 0, 0, 0, 0]),
@@ -1043,7 +1311,7 @@ mod tests {
             Err(DerError::NonMinimalLength)
         );
         assert_eq!(
-            parse_tlv(&[0x04, 0x85, 1, 0, 0, 0, 0]),
+            parse_tlv(&[0x04, 0x89, 1, 0, 0, 0, 0, 0, 0, 0, 0]),
             Err(DerError::LengthTooLarge)
         );
         assert_eq!(parse_tlv(&[0x04, 0x02, 0]), Err(DerError::UnexpectedEnd));
@@ -1068,13 +1336,25 @@ mod tests {
     #[test]
     fn integers() {
         let i = Integer::parse(&[0x00, 0x80]).unwrap();
-        assert_eq!((i.negative, i.magnitude), (false, vec![0x80]));
+        assert_eq!(
+            (i.is_negative(), i.magnitude().to_vec()),
+            (false, vec![0x80])
+        );
         let i = Integer::parse(&[0xff]).unwrap();
-        assert_eq!((i.negative, i.magnitude), (true, vec![0x01]));
+        assert_eq!(
+            (i.is_negative(), i.magnitude().to_vec()),
+            (true, vec![0x01])
+        );
         let i = Integer::parse(&[0x80]).unwrap();
-        assert_eq!((i.negative, i.magnitude), (true, vec![0x80]));
+        assert_eq!(
+            (i.is_negative(), i.magnitude().to_vec()),
+            (true, vec![0x80])
+        );
         let i = Integer::parse(&[0x00]).unwrap();
-        assert_eq!((i.negative, i.magnitude.len(), i.bits()), (false, 0, 0));
+        assert_eq!(
+            (i.is_negative(), i.magnitude().len(), i.bits()),
+            (false, 0, 0)
+        );
         assert_eq!(Integer::parse(&[0x01, 0x00]).unwrap().bits(), 9);
         assert!(Integer::parse(&[]).is_err());
         assert!(Integer::parse(&[0x00, 0x7f]).is_err());
@@ -1113,14 +1393,17 @@ mod tests {
     #[test]
     fn times() {
         let t = Time::parse(TimeKind::Utc, b"271121120424Z").unwrap();
-        assert_eq!((t.year, t.month, t.day, t.second), (2027, 11, 21, 24));
+        assert_eq!(
+            (t.year(), t.month(), t.day(), t.second()),
+            (2027, 11, 21, 24)
+        );
         let t = Time::parse(TimeKind::Utc, b"500101000000Z").unwrap();
-        assert_eq!(t.year, 1950);
+        assert_eq!(t.year(), 1950);
         let t = Time::parse(TimeKind::Generalized, b"20500229235959.5Z").ok();
         assert!(t.is_none(), "2050 is not a leap year");
         let t =
             Time::parse(TimeKind::Generalized, b"20480229235959.25Z").unwrap();
-        assert_eq!((t.day, t.fraction.as_str()), (29, "25"));
+        assert_eq!((t.day(), t.fraction()), (29, "25"));
         for bad in [
             &b"2711211204Z"[..],
             b"271321120424Z",
@@ -1144,7 +1427,7 @@ mod tests {
         let mut r = Reader::new(&data);
         let mut seq = r.sequence().unwrap();
         let int = seq.expect(tag::INTEGER).unwrap();
-        assert_eq!(int.value, &[0x05]);
+        assert_eq!(int.value(), &[0x05]);
         seq.finish().unwrap();
         assert_eq!(r.optional(tag::BOOLEAN).unwrap(), None);
         assert!(r.expect(tag::INTEGER).is_err());
@@ -1195,13 +1478,13 @@ mod tests {
         }
         let t = Tag {
             class: Class::Application,
-            constructed: true,
+            form: Form::Constructed,
             number: 30,
         };
         assert_eq!(t.octet_opt(), Some(0x7e));
         assert_eq!(Tag { number: 31, ..t }.octet_opt(), None);
         let (tlv, _) = parse_tlv(&[0x5f, 0x81, 0x00, 0x00]).unwrap();
-        assert_eq!((tlv.tag.number, tlv.octet()), (128, 0));
+        assert_eq!((tlv.tag.number, tlv.octet_opt()), (128, None));
     }
 
     #[test]
@@ -1212,7 +1495,7 @@ mod tests {
         assert_eq!(parse_tlv(&four), Err(DerError::UnexpectedEnd));
         let mut two = vec![0x04, 0x82, 0x01, 0x00];
         two.extend([0u8; 0x100]);
-        assert_eq!(parse_tlv(&two).unwrap().0.value.len(), 0x100);
+        assert_eq!(parse_tlv(&two).unwrap().0.value().len(), 0x100);
     }
 
     #[test]
@@ -1275,7 +1558,7 @@ mod tests {
             let time = Time::from_unix_seconds(seconds);
             let raw = time.to_der();
             let der = raw.as_bytes();
-            let kind = if der[0] == 0x17 { TimeKind::Utc } else { TimeKind::Generalized };
+            let kind = if der[0] == tag::UTC_TIME { TimeKind::Utc } else { TimeKind::Generalized };
             prop_assert_eq!(Time::parse(kind, &der[2..]), Ok(time));
         }
     }
@@ -1294,14 +1577,44 @@ mod tests {
         assert!(utc(b"271121240000Z").is_err());
         assert!(utc(b"271121236000Z").is_err());
         assert!(utc(b"271121235960Z").is_err());
-        assert_eq!(utc(b"490101000000Z").unwrap().year, 2049);
+        assert_eq!(utc(b"490101000000Z").unwrap().year(), 2049);
         let gt = Time::parse(TimeKind::Generalized, b"20000229000000Z");
         assert!(gt.is_ok(), "2000 is a leap year (divisible by 400)");
         let gt = Time::parse(TimeKind::Generalized, b"21000229000000Z");
         assert!(gt.is_err(), "2100 is not");
     }
 
+    /// `from_sign_magnitude` drops leading zeros and the sign of zero, so
+    /// it agrees with what `parse` gives.
+    #[test]
+    fn sign_magnitude_is_canonical() {
+        let zero = Integer::from_sign_magnitude(true, &[0, 0]);
+        assert_eq!(zero, Integer::from(0));
+        assert!(!zero.is_negative());
+        let minus = Integer::from_sign_magnitude(true, &[0, 0x80]);
+        assert_eq!(minus, Integer::parse(&[0x80]).unwrap());
+        assert_eq!(minus.magnitude(), [0x80]);
+    }
+
     proptest! {
+        /// Canonicity of `Time::parse`: whatever it accepts, `to_der` writes
+        /// back as the same contents. Random digits, and digits shaped like
+        /// a date, which reach the accepted set far more often.
+        #[test]
+        fn time_canonical(s in prop_oneof![
+            "[0-9]{12,14}(\\.[0-9]{1,3})?Z",
+            "(19|20)?[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])\
+             ([01][0-9]|2[0-3])[0-5][0-9][0-5][0-9](\\.[0-9]{1,3})?Z",
+        ]) {
+            for kind in [TimeKind::Utc, TimeKind::Generalized] {
+                if let Ok(time) = Time::parse(kind, s.as_bytes()) {
+                    let raw = time.to_der();
+                    let (tlv, _) = parse_tlv(raw.as_bytes()).unwrap();
+                    prop_assert_eq!(tlv.value(), s.as_bytes());
+                }
+            }
+        }
+
         /// Canonicity: an accepted TLV re-encodes to the exact bytes read,
         /// so the decoder is injective on its accepted set.
         #[test]
@@ -1314,10 +1627,10 @@ mod tests {
             enc.extend(&body);
             let (tlv, used) = parse_tlv(&enc).unwrap();
             prop_assert_eq!(used, enc.len());
-            prop_assert_eq!(tlv.value, &body[..]);
-            prop_assert_eq!(tlv.octet(), octet);
-            let mut again = encode_header(tlv.octet(), tlv.value.len());
-            again.extend(tlv.value);
+            prop_assert_eq!(tlv.value(), &body[..]);
+            prop_assert_eq!(tlv.octet_opt(), Some(octet));
+            let mut again = encode_header(octet, tlv.value().len());
+            again.extend(tlv.value());
             prop_assert_eq!(again, enc);
         }
 
@@ -1326,8 +1639,8 @@ mod tests {
         #[test]
         fn parse_is_total(data in prop::collection::vec(any::<u8>(), 0..64)) {
             if let Ok((tlv, used)) = parse_tlv(&data) {
-                prop_assert_eq!(tlv.encoded, &data[..used]);
-                prop_assert!(tlv.encoded.ends_with(tlv.value));
+                prop_assert_eq!(tlv.encoded(), &data[..used]);
+                prop_assert!(tlv.encoded().ends_with(tlv.value()));
             }
         }
 
@@ -1345,17 +1658,41 @@ mod tests {
                 }
             }
             let int = Integer::parse(&bytes[start..]).unwrap();
-            prop_assert_eq!(int.negative, v < 0);
+            prop_assert_eq!(int.is_negative(), v < 0);
             let mag = int.magnitude_u128_opt().unwrap();
             prop_assert_eq!(mag, u128::from(v.unsigned_abs()));
         }
 
+        /// `to_dotted` gives digits and dots, and fails only on an arc too
+        /// large for 128 bits, which takes 19 octets of base 128 or more.
         #[test]
-        fn oid_dotted_total(data in prop::collection::vec(any::<u8>(), 0..32)) {
+        fn oid_dotted(data in prop::collection::vec(any::<u8>(), 0..48)) {
             if let Ok(oid) = Oid::parse(&data) {
-                let s = oid.to_dotted().unwrap();
-                prop_assert!(s.chars().all(|c| c.is_ascii_digit() || c == '.'));
+                match oid.to_dotted() {
+                    Ok(s) => prop_assert!(
+                        s.chars().all(|c| c.is_ascii_digit() || c == '.')
+                    ),
+                    Err(e) => {
+                        prop_assert!(matches!(e, Error::Unsupported(_)));
+                        let longest = data
+                            .split_inclusive(|b| b & 0x80 == 0)
+                            .map(<[u8]>::len)
+                            .max();
+                        prop_assert!(longest >= Some(19));
+                    }
+                }
             }
+        }
+
+        #[test]
+        fn oid_dotted_rejects_a_129_bit_arc(extra in 0u8..0x7f) {
+            // 2.5, then an arc of 19 base-128 digits whose first is at
+            // least 4: 4 * 128^18 = 2^128.
+            let mut data = vec![0x55, 0x84 + extra % 0x7b];
+            data.extend([0x80; 17]);
+            data.push(0x00);
+            let oid = Oid::parse(&data).unwrap();
+            prop_assert!(matches!(oid.to_dotted(), Err(Error::Unsupported(_))));
         }
     }
 }

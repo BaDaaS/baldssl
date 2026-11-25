@@ -26,10 +26,7 @@ impl Version {
     /// v1, the value of an absent version field.
     #[must_use]
     pub(crate) fn v1() -> Self {
-        Version(Integer {
-            negative: false,
-            magnitude: Vec::new(),
-        })
+        Version(Integer::from(0))
     }
 
     /// The INTEGER as stored: 0 for v1, 1 for v2, 2 for v3.

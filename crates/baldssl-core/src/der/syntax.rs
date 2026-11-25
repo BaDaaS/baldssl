@@ -72,9 +72,11 @@
 use std::borrow::Cow;
 
 use super::{
-    BitString as BitStringContents, DerError, Integer, Oid, parse_bool,
-    parse_tlv, tag, write,
+    BitString as BitStringContents, CONSTRUCTED_BIT, DerError,
+    FIRST_HIGH_TAG_NUMBER, Integer, MORE_OCTETS, Oid, parse_bool, parse_tlv,
+    strip_leading_zeros, tag, write,
 };
+use crate::num::u32_to_usize;
 
 /// A description of a DER encoding: see the module documentation for the
 /// law it satisfies.
@@ -138,14 +140,14 @@ where
 /// contents and the bytes after it.
 fn expect(input: &[u8], octet: u8) -> Result<(&[u8], &[u8]), DerError> {
     let (tlv, used) = parse_tlv(input)?;
-    if tlv.octet() != octet {
+    if tlv.octet_opt() != Some(octet) {
         return Err(DerError::UnexpectedTag {
             expected: octet,
-            found: tlv.octet(),
+            found: tlv.octet_opt(),
         });
     }
     let rest = input.get(used..).ok_or(DerError::UnexpectedEnd)?;
-    Ok((tlv.value, rest))
+    Ok((tlv.value(), rest))
 }
 
 /// Appends the TLV with identifier octet `octet` and these contents.
@@ -229,8 +231,7 @@ impl Natural {
     /// The number with these big-endian bytes; leading zeros are dropped.
     #[must_use]
     pub fn from_be_bytes(bytes: &[u8]) -> Self {
-        let first = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
-        Natural(bytes.get(first..).unwrap_or(&[]).to_vec())
+        Natural(strip_leading_zeros(bytes).to_vec())
     }
 
     /// The big-endian bytes, without leading zeros.
@@ -250,7 +251,9 @@ impl Syntax for Unsigned {
     type Value = Natural;
 
     fn write(&self, value: &Natural, out: &mut Vec<u8>) {
-        out.extend(write::unsigned_integer(value.as_be_bytes()));
+        out.extend_from_slice(
+            write::unsigned_integer(value.as_be_bytes()).as_bytes(),
+        );
     }
 
     fn read<'a>(
@@ -259,10 +262,10 @@ impl Syntax for Unsigned {
     ) -> Result<(Natural, &'a [u8]), DerError> {
         let (contents, rest) = expect(input, tag::INTEGER)?;
         let int = Integer::parse(contents)?;
-        if int.negative {
+        if int.is_negative() {
             return Err(DerError::UnexpectedValue);
         }
-        Ok((Natural::from_be_bytes(&int.magnitude), rest))
+        Ok((Natural::from_be_bytes(int.magnitude()), rest))
     }
 }
 
@@ -283,7 +286,7 @@ impl Syntax for Signed {
     type Value = Integer;
 
     fn write(&self, value: &Integer, out: &mut Vec<u8>) {
-        out.extend(write::integer(value));
+        out.extend_from_slice(write::integer(value).as_bytes());
     }
 
     fn read<'a>(
@@ -310,13 +313,13 @@ impl Syntax for Small {
     type Value = u64;
 
     fn write(&self, value: &u64, out: &mut Vec<u8>) {
-        out.extend(write::small_integer(*value));
+        out.extend_from_slice(write::small_integer(*value).as_bytes());
     }
 
     fn read<'a>(&self, input: &'a [u8]) -> Result<(u64, &'a [u8]), DerError> {
         let (contents, rest) = expect(input, tag::INTEGER)?;
         let int = Integer::parse(contents)?;
-        if int.negative {
+        if int.is_negative() {
             return Err(DerError::UnexpectedValue);
         }
         Ok((int.to_u64_opt().ok_or(DerError::UnexpectedValue)?, rest))
@@ -356,7 +359,12 @@ impl Tagged for OctetString {
 }
 
 /// OCTET STRING whose contents are exactly one encoding of `P`, as the
-/// `privateKey` of PKCS#8 and the `extnValue` of an X.509 extension.
+/// `privateKey` of PKCS#8 (Public-Key Cryptography Standards #8,
+/// [RFC 5208 section 5][pkcs8]) and the `extnValue` of an X.509 extension
+/// ([RFC 5280 section 4.1][x509]).
+///
+/// [pkcs8]: https://www.rfc-editor.org/rfc/rfc5208#section-5
+/// [x509]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
 #[derive(Debug, Clone, Copy)]
 pub struct OctetStringOf<P>(pub P)
 where
@@ -400,7 +408,7 @@ impl Syntax for BitString {
     type Value = Vec<u8>;
 
     fn write(&self, value: &Vec<u8>, out: &mut Vec<u8>) {
-        out.extend(write::bit_string(value));
+        out.extend_from_slice(write::bit_string(value).as_bytes());
     }
 
     fn read<'a>(
@@ -409,10 +417,10 @@ impl Syntax for BitString {
     ) -> Result<(Vec<u8>, &'a [u8]), DerError> {
         let (contents, rest) = expect(input, tag::BIT_STRING)?;
         let bits = BitStringContents::parse(contents)?;
-        if bits.unused != 0 {
+        if bits.unused() != 0 {
             return Err(DerError::UnexpectedValue);
         }
-        Ok((bits.bytes.to_vec(), rest))
+        Ok((bits.bytes().to_vec(), rest))
     }
 }
 
@@ -431,42 +439,48 @@ impl Tagged for BitString {
 #[derive(Debug, Clone, Copy)]
 pub struct NamedBits;
 
+/// The leading bit of a BIT STRING octet, bit 8: the bits are placed "in
+/// bits 8 to 1 of the first subsequent octet, followed by bits 8 to 1 of the
+/// second subsequent octet" (X.690 8.6.2.1).
+const LEADING_BIT: u8 = 0x80;
+
 impl Syntax for NamedBits {
     type Value = u64;
 
     fn write(&self, value: &u64, out: &mut Vec<u8>) {
+        let named = |i: usize| value >> i & 1 == 1;
         // The highest bit named, and the octets up to it.
-        let Some(highest) = (0..64u32).rev().find(|&i| value >> i & 1 == 1)
+        let Some(highest) =
+            (0..u32_to_usize(u64::BITS)).rev().find(|&i| named(i))
         else {
-            out.extend(write::tlv(tag::BIT_STRING, &[0]));
+            put(out, tag::BIT_STRING, &[0]);
             return;
         };
-        let octets =
-            usize::try_from(highest / 8).unwrap_or(0).saturating_add(1);
-        let unused =
-            u8::try_from(7u32.saturating_sub(highest % 8)).unwrap_or(0);
+        let octets = (highest / 8).saturating_add(1);
         let mut contents = vec![0u8; octets.saturating_add(1)];
         if let Some(first) = contents.first_mut() {
-            *first = unused;
+            // The bits after the highest in its octet, 0 to 7: the
+            // conversion never fails.
+            *first =
+                u8::try_from(7usize.saturating_sub(highest % 8)).unwrap_or(0);
         }
-        for i in (0..=highest).filter(|&i| value >> i & 1 == 1) {
-            let at = usize::try_from(i / 8).unwrap_or(0).saturating_add(1);
-            if let Some(octet) = contents.get_mut(at) {
-                *octet |= 0x80 >> (i % 8);
+        for i in (0..=highest).filter(|&i| named(i)) {
+            if let Some(octet) = contents.get_mut((i / 8).saturating_add(1)) {
+                *octet |= LEADING_BIT >> (i % 8);
             }
         }
-        out.extend(write::tlv(tag::BIT_STRING, &contents));
+        put(out, tag::BIT_STRING, &contents);
     }
 
     fn read<'a>(&self, input: &'a [u8]) -> Result<(u64, &'a [u8]), DerError> {
         let (contents, rest) = expect(input, tag::BIT_STRING)?;
         let bits = BitStringContents::parse(contents)?;
         let total = bits
-            .bytes
+            .bytes()
             .len()
             .saturating_mul(8)
-            .saturating_sub(usize::from(bits.unused));
-        if total > 64 {
+            .saturating_sub(usize::from(bits.unused()));
+        if total > u32_to_usize(u64::BITS) {
             return Err(DerError::UnexpectedValue);
         }
         let mut value = 0u64;
@@ -501,16 +515,16 @@ const fn valid_oid_contents(contents: &[u8]) -> bool {
     let Some(last) = contents.last() else {
         return false;
     };
-    if *last & 0x80 != 0 {
+    if *last & MORE_OCTETS != 0 {
         return false;
     }
     let mut start = true;
     let mut rest = contents;
     while let [b, tail @ ..] = rest {
-        if start && *b == 0x80 {
+        if start && *b == MORE_OCTETS {
             return false;
         }
-        start = *b & 0x80 == 0;
+        start = *b & MORE_OCTETS == 0;
         rest = tail;
     }
     true
@@ -546,16 +560,19 @@ impl ObjectId {
     /// when it is not a valid object identifier.
     #[must_use]
     pub fn from_dotted_opt(dotted: &str) -> Option<Self> {
-        let encoded = write::oid_opt(dotted)?;
-        let (tlv, _) = parse_tlv(&encoded).ok()?;
-        Some(ObjectId(Cow::Owned(tlv.value.to_vec())))
+        write::oid_contents_opt(dotted).map(|c| ObjectId(Cow::Owned(c)))
     }
 
     /// The dotted form.
     ///
     /// # Errors
     ///
-    /// None in practice: the contents are checked when the value is built.
+    /// [`crate::Error::Unsupported`] when an arc is $2^{128}$ or more: the
+    /// contents are checked to be an OBJECT IDENTIFIER's when the value is
+    /// built, but the size of their arcs is not bounded (see
+    /// [`Oid::to_dotted`]). An identifier built by
+    /// [`ObjectId::from_dotted_opt`] has arcs below $2^{128}$, and never
+    /// fails.
     pub fn to_dotted(&self) -> crate::Result<String> {
         self.as_oid().to_dotted()
     }
@@ -637,7 +654,9 @@ impl RawTlv {
     }
 
     /// The TLV with the one-octet identifier `tag` and these contents, the
-    /// length written minimally. Total: every such pair is one TLV.
+    /// length written minimally. Total: every such pair is one TLV, whose
+    /// length takes at most the octets of a `usize`, which is what
+    /// [`RawTlv::parse`] reads back.
     #[must_use]
     pub fn from_tag_and_contents(tag: u8, contents: &[u8]) -> Self {
         RawTlv(write::tlv(tag, contents))
@@ -672,7 +691,7 @@ impl Syntax for Any {
     ) -> Result<(RawTlv, &'a [u8]), DerError> {
         let (tlv, used) = parse_tlv(input)?;
         let rest = input.get(used..).ok_or(DerError::UnexpectedEnd)?;
-        Ok((RawTlv(tlv.encoded.to_vec()), rest))
+        Ok((RawTlv(tlv.encoded().to_vec()), rest))
     }
 }
 
@@ -900,7 +919,7 @@ where
 {
     /// The identifier octet, `[N]` context-specific constructed.
     const OCTET: u8 = {
-        assert!(N < 31, "a tag number below 31");
+        assert!(N < FIRST_HIGH_TAG_NUMBER, "a tag number below 31");
         tag::context_constructed(N)
     };
 }
@@ -948,13 +967,13 @@ where
     /// The identifier octet `[N]` context-specific, without the constructed
     /// bit.
     const NUMBER: u8 = {
-        assert!(N < 31, "a tag number below 31");
+        assert!(N < FIRST_HIGH_TAG_NUMBER, "a tag number below 31");
         tag::context(N)
     };
 
     /// The identifier octet: `[N]`, constructed when the inner encoding is.
     fn octet(&self) -> u8 {
-        Self::NUMBER | (self.0.tag() & 0x20)
+        Self::NUMBER | (self.0.tag() & CONSTRUCTED_BIT)
     }
 }
 
@@ -972,18 +991,25 @@ where
         out.extend(encoding);
     }
 
+    /// Reads the TLV with the `[N]` identifier, then gives the inner
+    /// description a copy of it carrying the inner identifier octet. A
+    /// [`Syntax`] reads whole encodings, identifier included, and has no
+    /// reader of contents alone, so this copy (one allocation, and the
+    /// header parsed twice) is what lets `Implicit` wrap every tagged
+    /// description. Retagging keeps the length, so the copy is one TLV and
+    /// the inner description must use all of it.
     fn read<'a>(
         &self,
         input: &'a [u8],
     ) -> Result<(P::Value, &'a [u8]), DerError> {
         let (tlv, used) = parse_tlv(input)?;
-        if tlv.octet() != self.octet() {
+        if tlv.octet_opt() != Some(self.octet()) {
             return Err(DerError::UnexpectedTag {
                 expected: self.octet(),
-                found: tlv.octet(),
+                found: tlv.octet_opt(),
             });
         }
-        let mut retagged = tlv.encoded.to_vec();
+        let mut retagged = tlv.encoded().to_vec();
         if let Some(first) = retagged.first_mut() {
             *first = self.0.tag();
         }

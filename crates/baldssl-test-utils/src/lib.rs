@@ -32,6 +32,8 @@ pub fn hex(s: &str) -> Vec<u8> {
     digits
         .chunks(2)
         .map(|pair| {
+            // Two octets that are not UTF-8 are not hexadecimal either: the
+            // empty string they become fails to parse just below.
             let pair = core::str::from_utf8(pair).unwrap_or_default();
             u8::from_str_radix(pair, 16)
                 .unwrap_or_else(|_| panic!("not hexadecimal: {s:?}"))

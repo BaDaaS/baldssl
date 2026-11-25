@@ -38,8 +38,8 @@ pub enum Error {
     Der(DerError),
     /// Well-formed DER that is not a valid structure of the expected type.
     Invalid(String),
-    /// A valid input that baldssl does not handle yet. The message names the
-    /// feature; the status of every command is on the website.
+    /// A valid input outside what baldssl handles. The message names the
+    /// feature; the website lists what every command supports.
     Unsupported(String),
     /// Bad command-line usage.
     Usage(String),
@@ -110,7 +110,7 @@ impl core::fmt::Display for Error {
             Error::Unsupported(m) => {
                 write!(
                     f,
-                    "unsupported: {m} (not implemented yet, see \
+                    "unsupported: {m} (what baldssl supports: \
                      https://badaas.be/baldssl/#commands)"
                 )
             }

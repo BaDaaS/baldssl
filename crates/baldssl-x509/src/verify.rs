@@ -334,7 +334,7 @@ impl Certificate<'_> {
         let mut top = Reader::new(view.value);
         let mut seq = top.sequence()?;
         top.finish()?;
-        Ok(seq.optional(tag::context(0))?.map(|t| t.value))
+        Ok(seq.optional(tag::context(0))?.map(|t| t.value()))
     }
 
     /// Whether the key usage, if any, allows signing certificates.
@@ -363,10 +363,10 @@ impl Certificate<'_> {
     fn signed_by(&self, issuer: &Certificate<'_>) -> Result<bool> {
         let key = PublicKey::decode(issuer.spki_der)?;
         let algorithm = self.signature_algorithm_value()?;
-        if self.signature.unused != 0 {
+        if self.signature.unused() != 0 {
             return Ok(false);
         }
-        Ok(key.verify(algorithm, self.tbs_der, self.signature.bytes))
+        Ok(key.verify(algorithm, self.tbs_der, self.signature.bytes()))
     }
 
     /// The outer signature algorithm, as baldssl names it.
@@ -374,7 +374,7 @@ impl Certificate<'_> {
         let alg = &self.signature_algorithm;
         let params = alg
             .parameters
-            .map(|p| RawTlv::parse(p.encoded))
+            .map(|p| RawTlv::parse(p.encoded()))
             .transpose()?;
         from_identifier(&(ObjectId::from(alg.oid), (params, ())))
     }

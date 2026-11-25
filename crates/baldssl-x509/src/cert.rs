@@ -37,7 +37,7 @@ impl<'a> AlgorithmIdentifier<'a> {
     /// On malformed DER.
     pub(crate) fn read(r: &mut Reader<'a>) -> Result<Self> {
         let mut seq = r.sequence()?;
-        let oid = Oid::parse(seq.expect(tag::OID)?.value)?;
+        let oid = Oid::parse(seq.expect(tag::OID)?.value())?;
         let parameters = if seq.is_empty() {
             None
         } else {
@@ -69,17 +69,17 @@ impl<'a> TryFrom<Tlv<'a>> for SubjectPublicKeyInfo<'a> {
     type Error = Error;
 
     fn try_from(tlv: Tlv<'a>) -> Result<Self> {
-        if tlv.octet() != tag::SEQUENCE {
+        if tlv.octet_opt() != Some(tag::SEQUENCE) {
             return Err(DerError::UnexpectedTag {
                 expected: tag::SEQUENCE,
-                found: tlv.octet(),
+                found: tlv.octet_opt(),
             }
             .into());
         }
-        let mut r = Reader::new(tlv.value);
+        let mut r = Reader::new(tlv.value());
         let spki = SubjectPublicKeyInfo {
             algorithm: AlgorithmIdentifier::read(&mut r)?,
-            public_key: BitString::parse(r.expect(tag::BIT_STRING)?.value)?,
+            public_key: BitString::parse(r.expect(tag::BIT_STRING)?.value())?,
         };
         r.finish()?;
         Ok(spki)
@@ -142,9 +142,9 @@ pub struct Certificate<'a> {
 
 fn read_time(r: &mut Reader<'_>) -> Result<Time> {
     let tlv = r.read()?;
-    let kind = match tlv.octet() {
-        tag::UTC_TIME => TimeKind::Utc,
-        tag::GENERALIZED_TIME => TimeKind::Generalized,
+    let kind = match tlv.octet_opt() {
+        Some(tag::UTC_TIME) => TimeKind::Utc,
+        Some(tag::GENERALIZED_TIME) => TimeKind::Generalized,
         found => {
             return Err(baldssl_core::der::DerError::UnexpectedTag {
                 expected: tag::UTC_TIME,
@@ -153,7 +153,7 @@ fn read_time(r: &mut Reader<'_>) -> Result<Time> {
             .into());
         }
     };
-    Ok(Time::parse(kind, tlv.value)?)
+    Ok(Time::parse(kind, tlv.value())?)
 }
 
 /// The extensions of a DER `Extensions` (`SEQUENCE OF Extension`), in
@@ -163,23 +163,23 @@ fn read_time(r: &mut Reader<'_>) -> Result<Time> {
 ///
 /// A TLV that is not a SEQUENCE, or malformed extensions.
 pub(crate) fn read_extensions(list: Tlv<'_>) -> Result<Vec<Extension<'_>>> {
-    if list.octet() != tag::SEQUENCE {
+    if list.octet_opt() != Some(tag::SEQUENCE) {
         return Err(DerError::UnexpectedTag {
             expected: tag::SEQUENCE,
-            found: list.octet(),
+            found: list.octet_opt(),
         }
         .into());
     }
-    let mut seq = Reader::new(list.value);
+    let mut seq = Reader::new(list.value());
     let mut out = Vec::new();
     while !seq.is_empty() {
         let mut ext = seq.sequence()?;
-        let oid = Oid::parse(ext.expect(tag::OID)?.value)?;
+        let oid = Oid::parse(ext.expect(tag::OID)?.value())?;
         let critical = match ext.optional(tag::BOOLEAN)? {
-            Some(b) => baldssl_core::der::parse_bool(b.value)?,
+            Some(b) => baldssl_core::der::parse_bool(b.value())?,
             None => false,
         };
-        let value = ext.expect(tag::OCTET_STRING)?.value;
+        let value = ext.expect(tag::OCTET_STRING)?.value();
         ext.finish()?;
         out.push(Extension {
             oid,
@@ -210,7 +210,7 @@ impl<'a> Certificate<'a> {
         let mut r = Reader::new(ext.value);
         let id = r.expect(tag::OCTET_STRING).ok()?;
         r.finish().ok()?;
-        Some(id.value)
+        Some(id.value())
     }
 
     /// Decodes a DER certificate. The whole input must be one certificate.
@@ -225,9 +225,9 @@ impl<'a> Certificate<'a> {
         top.finish()?;
 
         let tbs_tlv = cert.expect(tag::SEQUENCE)?;
-        let mut tbs = Reader::new(tbs_tlv.value);
+        let mut tbs = Reader::new(tbs_tlv.value());
         let version = tbs.syntax(&version_field())?.unwrap_or_else(Version::v1);
-        let serial = Integer::parse(tbs.expect(tag::INTEGER)?.value)?;
+        let serial = Integer::parse(tbs.expect(tag::INTEGER)?.value())?;
         let tbs_signature = AlgorithmIdentifier::read(&mut tbs)?;
         let issuer = Name::read(&mut tbs)?;
         let mut validity = tbs.sequence()?;
@@ -237,7 +237,7 @@ impl<'a> Certificate<'a> {
         };
         validity.finish()?;
         let subject_tlv = tbs.expect(tag::SEQUENCE)?;
-        let subject = Name::from_contents(subject_tlv.value)?;
+        let subject = Name::from_contents(subject_tlv.value())?;
 
         let spki_tlv = tbs.expect(tag::SEQUENCE)?;
         let spki = SubjectPublicKeyInfo::try_from(spki_tlv)?;
@@ -249,7 +249,7 @@ impl<'a> Certificate<'a> {
         }
         let extensions = match tbs.optional(tag::context_constructed(3))? {
             Some(e) => {
-                let mut inner = Reader::new(e.value);
+                let mut inner = Reader::new(e.value());
                 let list = inner.read()?;
                 inner.finish()?;
                 read_extensions(list)?
@@ -259,7 +259,8 @@ impl<'a> Certificate<'a> {
         tbs.finish()?;
 
         let signature_algorithm = AlgorithmIdentifier::read(&mut cert)?;
-        let signature = BitString::parse(cert.expect(tag::BIT_STRING)?.value)?;
+        let signature =
+            BitString::parse(cert.expect(tag::BIT_STRING)?.value())?;
         cert.finish()?;
 
         Ok(Certificate {
@@ -270,11 +271,11 @@ impl<'a> Certificate<'a> {
             issuer,
             validity: validity_v,
             subject,
-            subject_der: subject_tlv.encoded,
+            subject_der: subject_tlv.encoded(),
             spki,
-            spki_der: spki_tlv.encoded,
+            spki_der: spki_tlv.encoded(),
             extensions,
-            tbs_der: tbs_tlv.encoded,
+            tbs_der: tbs_tlv.encoded(),
             signature_algorithm,
             signature,
         })

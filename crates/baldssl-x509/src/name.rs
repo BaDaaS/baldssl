@@ -54,7 +54,7 @@ impl<'a> Name<'a> {
     ///
     /// On malformed DER or an empty RDN.
     pub(crate) fn read(r: &mut Reader<'a>) -> Result<Self> {
-        Self::from_contents(r.expect(tag::SEQUENCE)?.value)
+        Self::from_contents(r.expect(tag::SEQUENCE)?.value())
     }
 
     /// Decodes a Name from the contents of its SEQUENCE.
@@ -66,11 +66,11 @@ impl<'a> Name<'a> {
         let mut seq = Reader::new(value);
         let mut rdns = Vec::new();
         while !seq.is_empty() {
-            let mut set = Reader::new(seq.expect(tag::SET)?.value);
+            let mut set = Reader::new(seq.expect(tag::SET)?.value());
             let mut rdn = Vec::new();
             while !set.is_empty() {
                 let mut atv = set.sequence()?;
-                let oid = Oid::parse(atv.expect(tag::OID)?.value)?;
+                let oid = Oid::parse(atv.expect(tag::OID)?.value())?;
                 let value = atv.read()?;
                 atv.finish()?;
                 rdn.push(Attribute { oid, value });
@@ -102,17 +102,20 @@ impl<'a> Name<'a> {
                 let mut entries = rdn
                     .iter()
                     .map(|a| {
-                        let value =
-                            if CANONICAL_STRINGS.contains(&a.value.octet()) {
-                                let mut utf8 = Vec::new();
-                                string_to_utf8(&a.value, &mut utf8)?;
-                                RawTlv::from_tag_and_contents(
-                                    tag::UTF8_STRING,
-                                    &canonical_text(&utf8),
-                                )
-                            } else {
-                                RawTlv::parse(a.value.encoded)?
-                            };
+                        let value = if a
+                            .value
+                            .octet_opt()
+                            .is_some_and(|o| CANONICAL_STRINGS.contains(&o))
+                        {
+                            let mut utf8 = Vec::new();
+                            string_to_utf8(&a.value, &mut utf8)?;
+                            RawTlv::from_tag_and_contents(
+                                tag::UTF8_STRING,
+                                &canonical_text(&utf8),
+                            )
+                        } else {
+                            RawTlv::parse(a.value.encoded())?
+                        };
                         let mut entry = RawTlv::from_tag_and_contents(
                             tag::OID,
                             a.oid.as_bytes(),
@@ -305,21 +308,23 @@ fn canonical_text(text: &[u8]) -> Vec<u8> {
 /// [`Error::Unsupported`] for non-string types, [`Error::Invalid`] for a
 /// BMPString or UniversalString of bad length.
 pub(crate) fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
-    match value.octet() {
+    match value.octet_opt() {
         // UTF8String is copied byte for byte, even when it is not UTF-8.
-        tag::UTF8_STRING => out.extend_from_slice(value.value),
+        Some(tag::UTF8_STRING) => out.extend_from_slice(value.value()),
         // One byte per character, read as Latin-1, then UTF-8 encoded.
-        tag::NUMERIC_STRING
-        | tag::PRINTABLE_STRING
-        | tag::T61_STRING
-        | tag::IA5_STRING
-        | tag::VISIBLE_STRING => {
-            for &b in value.value {
+        Some(
+            tag::NUMERIC_STRING
+            | tag::PRINTABLE_STRING
+            | tag::T61_STRING
+            | tag::IA5_STRING
+            | tag::VISIBLE_STRING,
+        ) => {
+            for &b in value.value() {
                 push_utf8(u32::from(b), out)?;
             }
         }
-        tag::BMP_STRING => {
-            let (units, rest) = value.value.as_chunks::<2>();
+        Some(tag::BMP_STRING) => {
+            let (units, rest) = value.value().as_chunks::<2>();
             if !rest.is_empty() {
                 return Err(Error::invalid("BMPString of odd length"));
             }
@@ -327,8 +332,8 @@ pub(crate) fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
                 push_utf8(u32::from(u16::from_be_bytes(*unit)), out)?;
             }
         }
-        tag::UNIVERSAL_STRING => {
-            let (chars, rest) = value.value.as_chunks::<4>();
+        Some(tag::UNIVERSAL_STRING) => {
+            let (chars, rest) = value.value().as_chunks::<4>();
             if !rest.is_empty() {
                 return Err(Error::invalid("UniversalString length"));
             }
@@ -336,10 +341,15 @@ pub(crate) fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
                 push_utf8(u32::from_be_bytes(*c), out)?;
             }
         }
-        other => {
+        Some(other) => {
             return Err(Error::unsupported(format!(
                 "name attribute value of ASN.1 type 0x{other:02x}"
             )));
+        }
+        None => {
+            return Err(Error::unsupported(
+                "name attribute value with a high tag number",
+            ));
         }
     }
     Ok(())
@@ -440,7 +450,7 @@ mod tests {
         };
         let canonical = |der: &[u8]| {
             Name::from_contents(
-                Reader::new(der).expect(tag::SEQUENCE).unwrap().value,
+                Reader::new(der).expect(tag::SEQUENCE).unwrap().value(),
             )
             .unwrap()
             .canonical()

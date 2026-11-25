@@ -117,12 +117,12 @@ fn certificates() {
         matches!(&o.serial, SerialSource::Given(s) if s.as_be_bytes() == [1, 2])
     );
     let before = o.lifetime.not_before.unwrap();
-    assert_eq!((before.kind, before.year), (TimeKind::Utc, 2026));
+    assert_eq!((before.kind(), before.year()), (TimeKind::Utc, 2026));
     let after = o.lifetime.not_after.unwrap();
-    assert_eq!((after.kind, after.year), (TimeKind::Generalized, 2050));
+    assert_eq!((after.kind(), after.year()), (TimeKind::Generalized, 2050));
     // A GeneralizedTime before 2050 is written as a UTCTime.
     let o = options(&["-x509", "-not_before", "20261122000000Z"]);
-    assert_eq!(o.lifetime.not_before.unwrap().kind, TimeKind::Utc);
+    assert_eq!(o.lifetime.not_before.unwrap().kind(), TimeKind::Utc);
 }
 
 #[test]
