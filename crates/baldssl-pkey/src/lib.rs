@@ -14,10 +14,23 @@
 //!   language the structures below are written in.
 //! - **DER**, Distinguished Encoding Rules ([ITU-T X.690][x690], clause 10):
 //!   the encoding of ASN.1 values with exactly one byte string per value.
+//! - **TLV**, type-length-value: one DER element, its identifier octets, its
+//!   length octets and its contents octets ([ITU-T X.690][x690], clause
+//!   8.1.1).
 //! - **EC**, elliptic curve; **NIST**, the US National Institute of Standards
-//!   and Technology, which standardised P-256, P-384 and P-521; **RFC**,
-//!   Request for Comments, the IETF's standards series; **OID**, object
+//!   and Technology, which standardised P-256, P-384 and P-521; **ECDSA**, the
+//!   Elliptic Curve Digital Signature Algorithm ([FIPS 186-5][fips186],
+//!   section 6).
+//! - **SEC 1**, *Standards for Efficient Cryptography 1: Elliptic Curve
+//!   Cryptography* ([SECG, version 2.0][sec1]): the point encodings of its
+//!   section 2.3.3 and the `ECPrivateKey` of its appendix C.4, which [RFC
+//!   5915][rfc5915] republishes.
+//! - **RFC**, Request for Comments, the standards series of the **IETF**,
+//!   the [Internet Engineering Task Force][ietf]; **OID**, object
 //!   identifier, an ASN.1 name for an algorithm or a curve.
+//! - **SubjectPublicKeyInfo**: the structure that carries a public key with
+//!   its algorithm, in certificates and on its own ([RFC 5280, section
+//!   4.1.2.7][rfc5280-spki]).
 //!
 //! # PKCS#8
 //!
@@ -65,14 +78,15 @@
 //!
 //! # Reading keys
 //!
-//! [`AnyPrivateKey`] reads PKCS#8 (`PRIVATE KEY`, [RFC 5958]) and SEC 1 (`EC
-//! PRIVATE KEY`, [RFC 5915]); [`PublicKey`] reads SubjectPublicKeyInfo (`PUBLIC
-//! KEY`, [RFC 5480], and [RFC 8410] for Ed25519). Reading mirrors writing: DER
-//! through [`Decodable`] (the inverse of [`Encodable`]), and PEM by finding the
-//! block (a [`PemBlock`](baldssl_core::pem::PemBlock)) and converting it with
-//! `TryFrom`, which checks the label. A public key is read in two steps: the
-//! DER record of the SubjectPublicKeyInfo, then the checks that make it a key,
-//! so the encoding and the validation are separate.
+//! [`AnyPrivateKey`] reads PKCS#8 (`PRIVATE KEY`, [RFC 5958][rfc5958]) and
+//! SEC 1 (`EC PRIVATE KEY`, [RFC 5915][rfc5915]); [`PublicKey`] reads
+//! SubjectPublicKeyInfo (`PUBLIC KEY`, [RFC 5480][rfc5480], and [RFC
+//! 8410][rfc8410-4] for Ed25519). Reading mirrors writing: DER through
+//! [`Decodable`] (the inverse of [`Encodable`]), and PEM by finding the
+//! block (a [`PemBlock`](baldssl_core::pem::PemBlock)) and converting it
+//! with `TryFrom`, which checks the label. A public key is read in two
+//! steps: the DER record of the SubjectPublicKeyInfo, then the checks that
+//! make it a key, so the encoding and the validation are separate.
 //!
 //! ## Validation, and where it differs from OpenSSL
 //!
@@ -88,17 +102,14 @@
 //! Also stricter: trailing bytes after the DER structure are a
 //! [`Error::Der`] (OpenSSL ignores them). Accepted as OpenSSL does: a scalar
 //! OCTET STRING shorter or longer than the group order (the value is what
-//! counts; [RFC 5915] fixes the length but OpenSSL reads any), compressed
-//! points (returned uncompressed), and any 32 bytes as an Ed25519 public key
-//! (OpenSSL does not decode the point either).
+//! counts; [RFC 5915][rfc5915] fixes the length but OpenSSL reads any),
+//! compressed points (returned uncompressed), and any 32 bytes as an Ed25519
+//! public key (OpenSSL does not decode the point either).
 //!
 //! Not supported, as [`Error::Unsupported`]: explicit curve parameters,
 //! encrypted keys (`ENCRYPTED PRIVATE KEY`, and the legacy `Proc-Type` PEM
 //! headers), and the other algorithms (RSA, X25519, X448, Ed448).
 //!
-//! [rfc5208]: https://www.rfc-editor.org/rfc/rfc5208#section-5
-//! [rfc5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
-//! [rfc8410]: https://www.rfc-editor.org/rfc/rfc8410#section-7
 //! # Structure
 //!
 //! A [`PrivateKey<A>`] carries its algorithm in its type ([`KeyAlgorithm`]:
@@ -108,30 +119,35 @@
 //! is derived from the secret, so a key whose two halves disagree cannot be
 //! built either. Its encoding is the [`Encodable`] implementation, from the
 //! syntax descriptions of `asn1`, and [`Pem`] gives the armour.
-//! [`AnyPrivateKey`] holds a key whose algorithm is chosen at run time, for
-//! the command line.
+//!
+//! [`Algorithm`], [`AnyPrivateKey`] and [`PublicKey`] are the run-time
+//! representations of the finite set of key algorithms, for the command
+//! line. Each has one eliminator, the only place where a run-time value
+//! becomes a type, and every operation on them goes through it.
 //!
 //! [rfc1421]: https://www.rfc-editor.org/rfc/rfc1421
 //! [x680]: https://www.itu.int/rec/T-REC-X.680
 //! [x690]: https://www.itu.int/rec/T-REC-X.690
+//! [fips186]: https://csrc.nist.gov/pubs/fips/186-5/final
+//! [sec1]: https://www.secg.org/sec1-v2.pdf
+//! [ietf]: https://www.ietf.org/
+//! [rfc5280-spki]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.7
 //! [rfc5208]: https://www.rfc-editor.org/rfc/rfc5208#section-5
 //! [rfc5958]: https://www.rfc-editor.org/rfc/rfc5958#section-2
 //! [rfc5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
+//! [rfc5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2
 //! [rfc8410]: https://www.rfc-editor.org/rfc/rfc8410#section-7
+//! [rfc8410-4]: https://www.rfc-editor.org/rfc/rfc8410#section-4
 //! [rfc7468]: https://www.rfc-editor.org/rfc/rfc7468
 //! [rfc7468-10]: https://www.rfc-editor.org/rfc/rfc7468#section-10
 //! [pkey35]: https://docs.openssl.org/3.5/man1/openssl-pkey/
 //! [pkey41]: https://docs.openssl.org/4.1/man1/openssl-pkey/
-//! [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480
-//! [RFC 5915]: https://www.rfc-editor.org/rfc/rfc5915
-//! [RFC 5958]: https://www.rfc-editor.org/rfc/rfc5958
-//! [RFC 8410]: https://www.rfc-editor.org/rfc/rfc8410
 
 mod asn1;
 mod parse;
 mod sign;
 
-pub use parse::PublicKey;
+pub use parse::{Ed25519PublicKey, PublicKey};
 pub use sign::{SignatureCheck, Signing};
 
 use baldssl_core::{
@@ -141,28 +157,54 @@ use baldssl_core::{
     pem::Pem,
 };
 use baldssl_crypto::{
-    algebra::{
-        curve::{Curve, ShortWeierstrass},
-        field::PrimeField,
-    },
+    algebra::{curve::ShortWeierstrass, field::PrimeField},
     instances::{P256, P384, P521},
     keys::{EcKeyPair, EdDsaKeyPair},
     models::weierstrass::{
         COMPRESSED_EVEN, COMPRESSED_ODD, UNCOMPRESSED, affine::Affine,
         compressed::Compressed,
     },
-    os_rng::{self, RngError},
+    os_rng,
     secret::SecretBytes,
     signature::{
         ecdsa::PublicKey as EcdsaPublicKey,
-        eddsa::{Ed25519, Ed25519Parameters},
+        eddsa::{Ed25519, Ed25519Parameters, PublicKey as EddsaPublicKey},
     },
 };
 
-use crate::asn1::{
-    CURVE_PRIVATE_KEY, EC_PRIVATE_KEY, ID_EC_PUBLIC_KEY, ID_ED25519,
-    PRIME256V1, PRIVATE_KEY_INFO, SECP384R1, SECP521R1,
+use crate::{
+    asn1::{
+        AlgorithmIdentifierValue, CURVE_PRIVATE_KEY, EC_PRIVATE_KEY,
+        EC_PRIVATE_KEY_VERSION, ID_EC_PUBLIC_KEY, ID_ED25519, PRIME256V1,
+        PRIVATE_KEY_INFO, PRIVATE_KEY_INFO_VERSION, SECP384R1, SECP521R1,
+    },
+    parse::PrivateKeyLabel,
 };
+
+/// The seal of [`KeyAlgorithm`], [`NamedCurve`] and (through
+/// [`KeyAlgorithm`]) [`Signing`]: their laws are what reading, writing and
+/// signing rely on, and a curve type outside this crate could otherwise
+/// claim [`Algorithm::P256`] with another object identifier.
+mod sealed {
+    /// Implemented by the four key algorithm types.
+    #[allow(
+        unreachable_pub,
+        reason = "public so that public traits can have it as a supertrait, \
+                  in a private module so that no other crate can name it"
+    )]
+    pub trait Sealed {}
+}
+
+impl sealed::Sealed for P256 {}
+impl sealed::Sealed for P384 {}
+impl sealed::Sealed for P521 {}
+impl sealed::Sealed for Ed25519 {}
+
+/// The length of an Ed25519 secret key (the seed) and of an Ed25519 public
+/// key, in bytes: 32 ([RFC 8032, section 5.1.5][rfc8032-5.1.5]).
+///
+/// [rfc8032-5.1.5]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.5
+pub const ED25519_KEY_LEN: usize = 32;
 
 /// A key type, named at run time (the command line's `-algorithm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +217,54 @@ pub enum Algorithm {
     P521,
     /// Ed25519.
     Ed25519,
+}
+
+impl Algorithm {
+    /// Every key algorithm, the one list the others derive from.
+    pub const ALL: [Algorithm; 4] = [
+        Algorithm::P256,
+        Algorithm::P384,
+        Algorithm::P521,
+        Algorithm::Ed25519,
+    ];
+
+    /// Runs `computation` on the key algorithm this value names: the only
+    /// place a run-time algorithm becomes a type, as
+    /// [`baldssl_crypto::hash::Algorithm::with`] is for hashes.
+    pub(crate) fn with<W>(self, computation: W) -> W::Output
+    where
+        W: WithKeyAlgorithm,
+    {
+        match self {
+            Algorithm::P256 => computation.run::<P256>(),
+            Algorithm::P384 => computation.run::<P384>(),
+            Algorithm::P521 => computation.run::<P521>(),
+            Algorithm::Ed25519 => computation.run::<Ed25519>(),
+        }
+    }
+
+    /// The curve's object identifier, for the EC curves.
+    pub(crate) fn curve_oid_opt(self) -> Option<ObjectId> {
+        self.with(CurveOid)
+    }
+
+    /// The AlgorithmIdentifier of the key type, as OpenSSL writes it: the
+    /// algorithm, and the curve as parameter for EC.
+    pub(crate) fn algorithm_identifier(self) -> AlgorithmIdentifierValue {
+        self.with(Identifier)
+    }
+
+    /// The length of the private key in bytes: the scalar at the full
+    /// length of the group order (32, 48, 66), or the 32-byte Ed25519 seed.
+    #[must_use]
+    pub fn secret_len(self) -> usize {
+        self.with(SecretLen)
+    }
+
+    /// The names OpenSSL accepts for the algorithm, in lower case.
+    fn names(self) -> &'static [&'static str] {
+        self.with(Names)
+    }
 }
 
 /// The algorithm a name gives, as OpenSSL spells it, ignoring case: a curve
@@ -190,43 +280,131 @@ impl core::str::FromStr for Algorithm {
     type Err = Error;
 
     fn from_str(name: &str) -> Result<Self> {
-        match name.to_ascii_lowercase().as_str() {
-            "p-256" | "prime256v1" => Ok(Algorithm::P256),
-            "p-384" | "secp384r1" => Ok(Algorithm::P384),
-            "p-521" | "secp521r1" => Ok(Algorithm::P521),
-            "ed25519" => Ok(Algorithm::Ed25519),
-            _ => Err(Error::unsupported(format!("key algorithm {name}"))),
-        }
+        let lower = name.to_ascii_lowercase();
+        Algorithm::ALL
+            .into_iter()
+            .find(|a| a.names().contains(&lower.as_str()))
+            .ok_or_else(|| Error::unsupported(format!("key algorithm {name}")))
     }
 }
 
-/// The EC curves, as a value: the dispatch from an algorithm to the generic
-/// curve code of `baldssl-crypto`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EcCurve {
-    P256,
-    P384,
-    P521,
+/// A computation generic over the key algorithm, which [`Algorithm::with`]
+/// runs on the algorithm a run-time value names.
+pub(crate) trait WithKeyAlgorithm {
+    /// What the computation gives.
+    type Output;
+
+    /// The computation with the key algorithm `A`.
+    fn run<A>(self) -> Self::Output
+    where
+        A: Signing;
 }
 
-impl EcCurve {
-    /// Decodes a public point in either SEC 1 form (uncompressed `04 || x ||
-    /// y`, or compressed `02 || x` or `03 || x`, big-endian) and returns it
-    /// uncompressed. `None` when it is not a point of the curve other than
-    /// the identity: a wrong length or prefix, a coordinate not below $p$,
-    /// off the curve, an $x$ with no point, or `00`.
-    pub(crate) fn decode_point_opt(self, bytes: &[u8]) -> Option<Vec<u8>> {
-        match self {
-            EcCurve::P256 => point_opt::<P256>(bytes).map(|p| p.encode()),
-            EcCurve::P384 => point_opt::<P384>(bytes).map(|p| p.encode()),
-            EcCurve::P521 => point_opt::<P521>(bytes).map(|p| p.encode()),
-        }
+/// [`KeyAlgorithm::CURVE`].
+struct CurveOid;
+
+impl WithKeyAlgorithm for CurveOid {
+    type Output = Option<ObjectId>;
+
+    fn run<A>(self) -> Self::Output
+    where
+        A: Signing,
+    {
+        A::CURVE
     }
 }
 
-/// A public point of the curve `C` in either SEC 1 form, as
-/// [`EcCurve::decode_point_opt`] reads it, as a point: `None` for the
-/// identity and for whatever is not a point.
+/// [`KeyAlgorithm::OID`] with [`KeyAlgorithm::CURVE`] as parameter.
+struct Identifier;
+
+impl WithKeyAlgorithm for Identifier {
+    type Output = AlgorithmIdentifierValue;
+
+    fn run<A>(self) -> AlgorithmIdentifierValue
+    where
+        A: Signing,
+    {
+        let parameters =
+            A::CURVE.map(|curve| RawTlv::encode(&ObjectIdentifier, &curve));
+        (A::OID, (parameters, ()))
+    }
+}
+
+/// [`KeyAlgorithm::SECRET_LEN`].
+struct SecretLen;
+
+impl WithKeyAlgorithm for SecretLen {
+    type Output = usize;
+
+    fn run<A>(self) -> usize
+    where
+        A: Signing,
+    {
+        A::SECRET_LEN
+    }
+}
+
+/// [`KeyAlgorithm::NAMES`].
+struct Names;
+
+impl WithKeyAlgorithm for Names {
+    type Output = &'static [&'static str];
+
+    fn run<A>(self) -> &'static [&'static str]
+    where
+        A: Signing,
+    {
+        A::NAMES
+    }
+}
+
+/// A new random key.
+struct Generate;
+
+impl WithKeyAlgorithm for Generate {
+    type Output = Result<AnyPrivateKey>;
+
+    fn run<A>(self) -> Result<AnyPrivateKey>
+    where
+        A: Signing,
+    {
+        Ok(A::private_into_any(PrivateKey::<A>::generate()?))
+    }
+}
+
+/// The key of a secret.
+struct FromSecret<'a>(&'a [u8]);
+
+impl WithKeyAlgorithm for FromSecret<'_> {
+    type Output = Result<AnyPrivateKey>;
+
+    fn run<A>(self) -> Result<AnyPrivateKey>
+    where
+        A: Signing,
+    {
+        Ok(A::private_into_any(PrivateKey::<A>::from_secret(self.0)?))
+    }
+}
+
+/// The public key of a SubjectPublicKeyInfo's key bytes.
+pub(crate) struct ReadPublic<'a>(pub(crate) &'a [u8]);
+
+impl WithKeyAlgorithm for ReadPublic<'_> {
+    type Output = Result<PublicKey>;
+
+    fn run<A>(self) -> Result<PublicKey>
+    where
+        A: Signing,
+    {
+        Ok(A::public_into_any(A::read_public(self.0)?))
+    }
+}
+
+/// A public point of the curve `C` in either SEC 1 form (uncompressed `04
+/// || x || y`, or compressed `02 || x` or `03 || x`, big-endian, SEC 1
+/// section 2.3.4), as a point: `None` for the identity (`00`) and for
+/// whatever is not a point (a wrong length or prefix, a coordinate not below
+/// $p$, off the curve, an $x$ with no point).
 pub(crate) fn point_opt<C>(bytes: &[u8]) -> Option<EcdsaPublicKey<C>>
 where
     C: ShortWeierstrass,
@@ -241,40 +419,6 @@ where
     EcdsaPublicKey::new_opt(point)
 }
 
-impl Algorithm {
-    /// The curve's object identifier, for the EC curves.
-    pub(crate) fn curve_oid_opt(self) -> Option<ObjectId> {
-        match self {
-            Algorithm::P256 => Some(PRIME256V1),
-            Algorithm::P384 => Some(SECP384R1),
-            Algorithm::P521 => Some(SECP521R1),
-            Algorithm::Ed25519 => None,
-        }
-    }
-
-    /// The curve, for the EC algorithms.
-    pub(crate) fn curve_opt(self) -> Option<EcCurve> {
-        match self {
-            Algorithm::P256 => Some(EcCurve::P256),
-            Algorithm::P384 => Some(EcCurve::P384),
-            Algorithm::P521 => Some(EcCurve::P521),
-            Algorithm::Ed25519 => None,
-        }
-    }
-
-    /// The length of the private key in bytes: the scalar at the full
-    /// length of the group order (32, 48, 66), or the 32-byte Ed25519 seed.
-    #[must_use]
-    pub fn secret_len(self) -> usize {
-        match self {
-            Algorithm::P256 => <P256 as Curve>::Scalar::BYTES,
-            Algorithm::P384 => <P384 as Curve>::Scalar::BYTES,
-            Algorithm::P521 => <P521 as Curve>::Scalar::BYTES,
-            Algorithm::Ed25519 => 32,
-        }
-    }
-}
-
 /// A key algorithm, as a type: what a key pair of that algorithm is, its
 /// public key, and how PKCS#8 holds it. A [`PrivateKey`] carries its
 /// algorithm in its type, so keys of two algorithms, or their public keys,
@@ -282,14 +426,41 @@ impl Algorithm {
 /// types, and so are their public points.
 ///
 /// Implemented by [`P256`], [`P384`] and [`P521`] (through [`NamedCurve`])
-/// and by [`Ed25519`].
-pub trait KeyAlgorithm: 'static {
+/// and by [`Ed25519`], and sealed: no other type can implement it.
+///
+/// # Laws
+///
+/// Tested as properties over secrets, for every implementation:
+///
+/// - `from_secret(secret(p))` is `p`: it has the same secret and the same
+///   public key;
+/// - `pkcs8(p)` decodes ([`AnyPrivateKey::decode`]) to a key of the same
+///   algorithm and public key, which re-encodes to the same bytes;
+/// - `traditional_opt(p)`, when it is `Some`, decodes as SEC 1 to the key
+///   whose PKCS#8 is `pkcs8(p)`.
+pub trait KeyAlgorithm: sealed::Sealed + Sized + 'static {
     /// The algorithm's run-time name.
     const ALGORITHM: Algorithm;
+    /// The names OpenSSL accepts for the algorithm, in lower case.
+    const NAMES: &'static [&'static str];
+    /// The algorithm's object identifier in an AlgorithmIdentifier.
+    const OID: ObjectId;
+    /// The curve's object identifier, the AlgorithmIdentifier's parameter,
+    /// for EC; `None` for Ed25519, which has no parameters.
+    const CURVE: Option<ObjectId>;
+    /// The length of a secret, in bytes.
+    const SECRET_LEN: usize;
     /// A key pair: the secret and the public key it determines.
     type KeyPair;
     /// The public key, typed by the algorithm.
-    type PublicKey: PartialEq + core::fmt::Debug + ?Sized;
+    type PublicKey: PartialEq + core::fmt::Debug;
+    /// The public key as a SubjectPublicKeyInfo holds it, encoded as the
+    /// algorithm encodes it: for EC the point, for Ed25519 the 32 bytes,
+    /// not decoded (as OpenSSL reads them).
+    type SubjectPublicKey: Clone
+        + Eq
+        + core::fmt::Debug
+        + Encodable<Bytes = Vec<u8>>;
 
     /// A key pair with a uniformly random secret, drawn from `fill`.
     ///
@@ -312,52 +483,151 @@ pub trait KeyAlgorithm: 'static {
     /// The public key of a pair.
     fn public_key(pair: &Self::KeyPair) -> &Self::PublicKey;
 
-    /// The public key's bytes: an uncompressed point (`04 || x || y`,
-    /// big-endian), or the 32-byte Ed25519 encoding (little-endian, RFC
-    /// 8032).
-    fn public_key_bytes(pair: &Self::KeyPair) -> Vec<u8>;
+    /// The public key of a pair, as a SubjectPublicKeyInfo holds it.
+    fn subject_public_key(pair: &Self::KeyPair) -> Self::SubjectPublicKey;
 
-    /// The PKCS#8 encoding of a pair, as `openssl genpkey` writes it.
-    fn pkcs8(pair: &Self::KeyPair) -> Vec<u8>;
+    /// The public key a SubjectPublicKeyInfo's BIT STRING holds.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] for bytes that are not a public key of the
+    /// algorithm.
+    fn read_public(key: &[u8]) -> Result<Self::SubjectPublicKey>;
+
+    /// The PKCS#8 encoding of a pair, as `openssl genpkey` writes it, in
+    /// memory that is wiped when dropped: it holds the secret.
+    fn pkcs8(pair: &Self::KeyPair) -> SecretBytes;
 
     /// The key in its algorithm's own, "traditional", encoding, when it has
-    /// one: SEC1's `ECPrivateKey` with the curve and the public key
-    /// ([RFC 5915] section 3), as OpenSSL 3 writes a private key in DER;
-    /// `None` for Ed25519, which has only PKCS#8.
+    /// one: SEC 1's `ECPrivateKey` with the curve and the public key
+    /// ([RFC 5915, section 3][rfc5915]), as OpenSSL 3 writes a private key
+    /// in DER; `None` for Ed25519, which has only PKCS#8. In memory that is
+    /// wiped when dropped.
     ///
-    /// [RFC 5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
-    fn traditional_opt(pair: &Self::KeyPair) -> Option<Vec<u8>>;
+    /// [rfc5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
+    fn traditional_opt(pair: &Self::KeyPair) -> Option<SecretBytes>;
 
     /// The secret as [`KeyAlgorithm::from_secret`] takes it, in memory
     /// that is wiped when dropped.
     fn secret(pair: &Self::KeyPair) -> SecretBytes;
+
+    /// The run-time key of a typed key: the injection the eliminator of
+    /// [`AnyPrivateKey`] inverts.
+    fn private_into_any(key: PrivateKey<Self>) -> AnyPrivateKey;
+
+    /// The run-time public key of a typed one: the injection
+    /// [`PublicKey`]'s eliminator inverts.
+    fn public_into_any(key: Self::SubjectPublicKey) -> PublicKey;
 }
 
 /// An EC curve with a name in PKCS#8: its object identifier and its
-/// run-time name. Every [`NamedCurve`] is a [`KeyAlgorithm`].
-pub trait NamedCurve: ShortWeierstrass {
+/// run-time name. Every [`NamedCurve`] is a [`KeyAlgorithm`]. Sealed, as
+/// [`KeyAlgorithm`] is.
+pub trait NamedCurve: ShortWeierstrass + sealed::Sealed + Sized {
     /// The algorithm's run-time name.
     const ALGORITHM: Algorithm;
-    /// The curve's object identifier (`namedCurve`, [RFC 5480] section
-    /// 2.1.1.1).
+    /// The names OpenSSL accepts for the curve, in lower case.
+    const NAMES: &'static [&'static str];
+    /// The curve's object identifier (`namedCurve`, [RFC 5480, section
+    /// 2.1.1.1][rfc5480]).
     ///
-    /// [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2.1.1.1
+    /// [rfc5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2.1.1.1
     const OID: ObjectId;
+
+    /// The run-time key of a key on this curve.
+    fn private_into_any(key: PrivateKey<Self>) -> AnyPrivateKey;
+
+    /// The run-time public key of a point of this curve.
+    fn public_into_any(key: EcdsaPublicKey<Self>) -> PublicKey;
 }
 
 impl NamedCurve for P256 {
     const ALGORITHM: Algorithm = Algorithm::P256;
+    const NAMES: &'static [&'static str] = &["p-256", "prime256v1"];
     const OID: ObjectId = PRIME256V1;
+
+    fn private_into_any(key: PrivateKey<P256>) -> AnyPrivateKey {
+        AnyPrivateKey::P256(key)
+    }
+
+    fn public_into_any(key: EcdsaPublicKey<P256>) -> PublicKey {
+        PublicKey::P256(key)
+    }
 }
 
 impl NamedCurve for P384 {
     const ALGORITHM: Algorithm = Algorithm::P384;
+    const NAMES: &'static [&'static str] = &["p-384", "secp384r1"];
     const OID: ObjectId = SECP384R1;
+
+    fn private_into_any(key: PrivateKey<P384>) -> AnyPrivateKey {
+        AnyPrivateKey::P384(key)
+    }
+
+    fn public_into_any(key: EcdsaPublicKey<P384>) -> PublicKey {
+        PublicKey::P384(key)
+    }
 }
 
 impl NamedCurve for P521 {
     const ALGORITHM: Algorithm = Algorithm::P521;
+    const NAMES: &'static [&'static str] = &["p-521", "secp521r1"];
     const OID: ObjectId = SECP521R1;
+
+    fn private_into_any(key: PrivateKey<P521>) -> AnyPrivateKey {
+        AnyPrivateKey::P521(key)
+    }
+
+    fn public_into_any(key: EcdsaPublicKey<P521>) -> PublicKey {
+        PublicKey::P521(key)
+    }
+}
+
+/// Wipes a temporary copy of secret bytes: [`SecretBytes`] overwrites what
+/// it holds when dropped.
+fn wipe(bytes: Vec<u8>) {
+    drop(SecretBytes::new(bytes));
+}
+
+/// The `PrivateKeyInfo` of an algorithm and the encoding of its private
+/// key, in memory that is wiped, and the copy of the private key the record
+/// holds wiped too. Best effort: the description's writer builds buffers
+/// of its own, which it does not wipe.
+fn private_key_info(
+    algorithm: AlgorithmIdentifierValue,
+    private_key: &SecretBytes,
+) -> SecretBytes {
+    let record = (
+        PRIVATE_KEY_INFO_VERSION,
+        (algorithm, (private_key.expose().to_vec(), ())),
+    );
+    let der = SecretBytes::new(encode_with(&PRIVATE_KEY_INFO, &record));
+    let (_, (_, (copy, ()))) = record;
+    wipe(copy);
+    der
+}
+
+/// The `ECPrivateKey` of a pair, with the curve as `[0]` parameters when
+/// given and the public point, in memory that is wiped, and the record's
+/// copy of the scalar wiped too (best effort, as [`private_key_info`]).
+fn ec_private_key<C>(
+    pair: &EcKeyPair<C>,
+    parameters: Option<RawTlv>,
+) -> SecretBytes
+where
+    C: ShortWeierstrass,
+{
+    let record = (
+        EC_PRIVATE_KEY_VERSION,
+        (
+            pair.secret().expose().to_bytes_be(),
+            (parameters, (Some(pair.public().encode()), ())),
+        ),
+    );
+    let der = SecretBytes::new(encode_with(&EC_PRIVATE_KEY, &record));
+    let (_, (scalar, _)) = record;
+    wipe(scalar);
+    der
 }
 
 /// EC keys (RFC 5915 inside PKCS#8), on any named curve.
@@ -366,8 +636,13 @@ where
     C: NamedCurve,
 {
     const ALGORITHM: Algorithm = <C as NamedCurve>::ALGORITHM;
+    const NAMES: &'static [&'static str] = <C as NamedCurve>::NAMES;
+    const OID: ObjectId = ID_EC_PUBLIC_KEY;
+    const CURVE: Option<ObjectId> = Some(<C as NamedCurve>::OID);
+    const SECRET_LEN: usize = C::Scalar::BYTES;
     type KeyPair = EcKeyPair<C>;
     type PublicKey = EcdsaPublicKey<C>;
+    type SubjectPublicKey = EcdsaPublicKey<C>;
 
     fn generate<F, E>(fill: F) -> core::result::Result<EcKeyPair<C>, E>
     where
@@ -393,60 +668,51 @@ where
         pair.public()
     }
 
-    fn public_key_bytes(pair: &EcKeyPair<C>) -> Vec<u8> {
-        pair.public().encode()
+    fn subject_public_key(pair: &EcKeyPair<C>) -> EcdsaPublicKey<C> {
+        *pair.public()
     }
 
-    fn pkcs8(pair: &EcKeyPair<C>) -> Vec<u8> {
-        let ec_private_key = encode_with(
-            &EC_PRIVATE_KEY,
-            &(
-                1,
-                (
-                    pair.secret().expose().to_bytes_be(),
-                    (None, (Some(pair.public().encode()), ())),
-                ),
-            ),
-        );
-        let parameters = RawTlv::encode(&ObjectIdentifier, &C::OID);
-        encode_with(
-            &PRIVATE_KEY_INFO,
-            &(
-                0,
-                (
-                    (ID_EC_PUBLIC_KEY, (Some(parameters), ())),
-                    (ec_private_key, ()),
-                ),
-            ),
+    fn read_public(key: &[u8]) -> Result<EcdsaPublicKey<C>> {
+        point_opt::<C>(key).ok_or_else(|| {
+            Error::invalid("public key: not a point of the curve")
+        })
+    }
+
+    fn pkcs8(pair: &EcKeyPair<C>) -> SecretBytes {
+        private_key_info(
+            <C as NamedCurve>::ALGORITHM.algorithm_identifier(),
+            &ec_private_key(pair, None),
         )
     }
 
-    fn traditional_opt(pair: &EcKeyPair<C>) -> Option<Vec<u8>> {
-        Some(encode_with(
-            &EC_PRIVATE_KEY,
-            &(
-                1,
-                (
-                    pair.secret().expose().to_bytes_be(),
-                    (
-                        Some(RawTlv::encode(&ObjectIdentifier, &C::OID)),
-                        (Some(pair.public().encode()), ()),
-                    ),
-                ),
-            ),
-        ))
+    fn traditional_opt(pair: &EcKeyPair<C>) -> Option<SecretBytes> {
+        let curve = RawTlv::encode(&ObjectIdentifier, &<C as NamedCurve>::OID);
+        Some(ec_private_key(pair, Some(curve)))
     }
 
     fn secret(pair: &EcKeyPair<C>) -> SecretBytes {
         SecretBytes::new(pair.secret().expose().to_bytes_be())
+    }
+
+    fn private_into_any(key: PrivateKey<C>) -> AnyPrivateKey {
+        <C as NamedCurve>::private_into_any(key)
+    }
+
+    fn public_into_any(key: EcdsaPublicKey<C>) -> PublicKey {
+        <C as NamedCurve>::public_into_any(key)
     }
 }
 
 /// Ed25519 keys (RFC 8410 inside PKCS#8).
 impl KeyAlgorithm for Ed25519 {
     const ALGORITHM: Algorithm = Algorithm::Ed25519;
+    const NAMES: &'static [&'static str] = &["ed25519"];
+    const OID: ObjectId = ID_ED25519;
+    const CURVE: Option<ObjectId> = None;
+    const SECRET_LEN: usize = ED25519_KEY_LEN;
     type KeyPair = EdDsaKeyPair<Ed25519Parameters>;
-    type PublicKey = [u8];
+    type PublicKey = EddsaPublicKey<Ed25519Parameters>;
+    type SubjectPublicKey = Ed25519PublicKey;
 
     fn generate<F, E>(
         fill: F,
@@ -458,49 +724,55 @@ impl KeyAlgorithm for Ed25519 {
     }
 
     fn from_secret(secret: &[u8]) -> Result<EdDsaKeyPair<Ed25519Parameters>> {
-        let seed: [u8; 32] = secret
+        let seed: [u8; ED25519_KEY_LEN] = secret
             .try_into()
             .map_err(|_| Error::invalid("private key length"))?;
         Ok(EdDsaKeyPair::from_seed(seed))
     }
 
-    fn public_key(pair: &EdDsaKeyPair<Ed25519Parameters>) -> &[u8] {
-        pair.public().as_bytes()
+    fn public_key(
+        pair: &EdDsaKeyPair<Ed25519Parameters>,
+    ) -> &EddsaPublicKey<Ed25519Parameters> {
+        pair.public()
     }
 
-    fn public_key_bytes(pair: &EdDsaKeyPair<Ed25519Parameters>) -> Vec<u8> {
-        pair.public().as_bytes().to_vec()
+    fn subject_public_key(
+        pair: &EdDsaKeyPair<Ed25519Parameters>,
+    ) -> Ed25519PublicKey {
+        Ed25519PublicKey::from(pair.public())
     }
 
-    fn pkcs8(pair: &EdDsaKeyPair<Ed25519Parameters>) -> Vec<u8> {
+    fn read_public(key: &[u8]) -> Result<Ed25519PublicKey> {
+        Ed25519PublicKey::try_from(key)
+    }
+
+    fn pkcs8(pair: &EdDsaKeyPair<Ed25519Parameters>) -> SecretBytes {
+        let seed = pair.seed().to_vec();
         let curve_private_key =
-            encode_with(&CURVE_PRIVATE_KEY, &pair.seed().to_vec());
-        encode_with(
-            &PRIVATE_KEY_INFO,
-            &(0, ((ID_ED25519, (None, ())), (curve_private_key, ()))),
+            SecretBytes::new(encode_with(&CURVE_PRIVATE_KEY, &seed));
+        wipe(seed);
+        private_key_info(
+            Algorithm::Ed25519.algorithm_identifier(),
+            &curve_private_key,
         )
     }
 
     fn traditional_opt(
         _pair: &EdDsaKeyPair<Ed25519Parameters>,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<SecretBytes> {
         None
     }
 
     fn secret(pair: &EdDsaKeyPair<Ed25519Parameters>) -> SecretBytes {
         SecretBytes::new(pair.seed().to_vec())
     }
-}
 
-fn rng_error(e: RngError) -> Error {
-    match e {
-        RngError::Unsupported => {
-            Error::unsupported("key generation: no source of randomness")
-        }
-        RngError::Os(_) | RngError::Unexpected => Error::Io {
-            context: "reading randomness".into(),
-            message: e.to_string(),
-        },
+    fn private_into_any(key: PrivateKey<Ed25519>) -> AnyPrivateKey {
+        AnyPrivateKey::Ed25519(key)
+    }
+
+    fn public_into_any(key: Ed25519PublicKey) -> PublicKey {
+        PublicKey::Ed25519(key)
     }
 }
 
@@ -533,7 +805,7 @@ where
     ///
     /// When the operating system provides no randomness.
     pub fn generate() -> Result<Self> {
-        let pair = A::generate(os_rng::fill).map_err(rng_error)?;
+        let pair = A::generate(os_rng::fill)?;
         Ok(PrivateKey { pair })
     }
 
@@ -568,10 +840,12 @@ where
         A::public_key(&self.pair)
     }
 
-    /// The public key's bytes (see [`KeyAlgorithm::public_key_bytes`]).
+    /// The public key's bytes: an uncompressed point (`04 || x || y`,
+    /// big-endian), or the 32-byte Ed25519 encoding (little-endian, RFC
+    /// 8032 section 5.1.2).
     #[must_use]
     pub fn public_key_bytes(&self) -> Vec<u8> {
-        A::public_key_bytes(&self.pair)
+        A::subject_public_key(&self.pair).encode()
     }
 
     /// The secret as [`PrivateKey::from_secret`] takes it, in memory that
@@ -579,6 +853,20 @@ where
     #[must_use]
     pub fn secret(&self) -> SecretBytes {
         A::secret(&self.pair)
+    }
+
+    /// The PKCS#8 `PrivateKeyInfo`, DER, as `openssl genpkey` writes it, in
+    /// memory that is wiped when dropped.
+    #[must_use]
+    pub fn pkcs8(&self) -> SecretBytes {
+        A::pkcs8(&self.pair)
+    }
+
+    /// The key's traditional encoding, when it has one (see
+    /// [`KeyAlgorithm::traditional_opt`]).
+    #[must_use]
+    pub fn traditional_opt(&self) -> Option<SecretBytes> {
+        A::traditional_opt(&self.pair)
     }
 }
 
@@ -596,7 +884,11 @@ where
 }
 
 /// The PKCS#8 `PrivateKeyInfo`, DER, as `openssl genpkey` writes it (see
-/// the crate documentation).
+/// the crate documentation), as a plain `Vec<u8>`: [`Encodable::Bytes`]
+/// must be `AsRef<[u8]>`, which [`SecretBytes`] deliberately is not (every
+/// read of a secret goes through its `expose`). This is for writing the key
+/// out at once (a file, PEM text); [`PrivateKey::pkcs8`] gives the same
+/// bytes in memory that is wiped.
 impl<A> Encodable for PrivateKey<A>
 where
     A: KeyAlgorithm,
@@ -604,7 +896,7 @@ where
     type Bytes = Vec<u8>;
 
     fn encode(&self) -> Vec<u8> {
-        A::pkcs8(&self.pair)
+        self.pkcs8().expose().to_vec()
     }
 }
 
@@ -616,13 +908,13 @@ impl<A> Pem for PrivateKey<A>
 where
     A: KeyAlgorithm,
 {
-    const LABEL: &'static str = "PRIVATE KEY";
+    const LABEL: &'static str = PrivateKeyLabel::Pkcs8.label();
 }
 
 /// A private key whose algorithm is chosen at run time, as the command line
 /// does: one typed [`PrivateKey`] per algorithm. Only the boundary that
-/// reads an algorithm name uses it; each operation is one `match` onto the
-/// typed key.
+/// reads an algorithm name uses it; each operation goes through its one
+/// eliminator onto the typed key.
 pub enum AnyPrivateKey {
     /// A P-256 key.
     P256(PrivateKey<P256>),
@@ -634,21 +926,139 @@ pub enum AnyPrivateKey {
     Ed25519(PrivateKey<Ed25519>),
 }
 
+/// A computation generic over the key algorithm, which
+/// [`AnyPrivateKey::with`] runs on the typed key it holds.
+pub(crate) trait WithPrivateKey {
+    /// What the computation gives.
+    type Output;
+
+    /// The computation on a typed key.
+    fn run<A>(self, key: &PrivateKey<A>) -> Self::Output
+    where
+        A: Signing;
+}
+
+/// [`PrivateKey::algorithm`].
+struct AlgorithmOf;
+
+impl WithPrivateKey for AlgorithmOf {
+    type Output = Algorithm;
+
+    fn run<A>(self, key: &PrivateKey<A>) -> Algorithm
+    where
+        A: Signing,
+    {
+        key.algorithm()
+    }
+}
+
+/// [`PrivateKey::public_key_bytes`].
+struct PublicKeyBytes;
+
+impl WithPrivateKey for PublicKeyBytes {
+    type Output = Vec<u8>;
+
+    fn run<A>(self, key: &PrivateKey<A>) -> Vec<u8>
+    where
+        A: Signing,
+    {
+        key.public_key_bytes()
+    }
+}
+
+/// [`PrivateKey::traditional_opt`].
+struct Traditional;
+
+impl WithPrivateKey for Traditional {
+    type Output = Option<SecretBytes>;
+
+    fn run<A>(self, key: &PrivateKey<A>) -> Self::Output
+    where
+        A: Signing,
+    {
+        key.traditional_opt()
+    }
+}
+
+/// [`PrivateKey::secret`].
+struct Secret;
+
+impl WithPrivateKey for Secret {
+    type Output = SecretBytes;
+
+    fn run<A>(self, key: &PrivateKey<A>) -> SecretBytes
+    where
+        A: Signing,
+    {
+        key.secret()
+    }
+}
+
+/// [`PrivateKey::pkcs8`].
+struct Pkcs8;
+
+impl WithPrivateKey for Pkcs8 {
+    type Output = SecretBytes;
+
+    fn run<A>(self, key: &PrivateKey<A>) -> SecretBytes
+    where
+        A: Signing,
+    {
+        key.pkcs8()
+    }
+}
+
+/// The public key of a typed key, at run time.
+pub(crate) struct PublicOf;
+
+impl WithPrivateKey for PublicOf {
+    type Output = PublicKey;
+
+    fn run<A>(self, key: &PrivateKey<A>) -> PublicKey
+    where
+        A: Signing,
+    {
+        A::public_into_any(A::subject_public_key(key.key_pair()))
+    }
+}
+
+/// The `Debug` of the typed key.
+struct DebugOf<'a, 'b>(&'a mut core::fmt::Formatter<'b>);
+
+impl WithPrivateKey for DebugOf<'_, '_> {
+    type Output = core::fmt::Result;
+
+    fn run<A>(self, key: &PrivateKey<A>) -> core::fmt::Result
+    where
+        A: Signing,
+    {
+        core::fmt::Debug::fmt(key, self.0)
+    }
+}
+
 impl AnyPrivateKey {
+    /// Runs `computation` on the typed key this value holds: the only
+    /// place a run-time key becomes a typed one, the inverse of
+    /// [`KeyAlgorithm::private_into_any`].
+    pub(crate) fn with<W>(&self, computation: W) -> W::Output
+    where
+        W: WithPrivateKey,
+    {
+        match self {
+            AnyPrivateKey::P256(k) => computation.run(k),
+            AnyPrivateKey::P384(k) => computation.run(k),
+            AnyPrivateKey::P521(k) => computation.run(k),
+            AnyPrivateKey::Ed25519(k) => computation.run(k),
+        }
+    }
+
     /// A new random key of the given algorithm.
     ///
     /// # Errors
     ///
     /// When the operating system provides no randomness.
     pub fn generate(algorithm: Algorithm) -> Result<Self> {
-        Ok(match algorithm {
-            Algorithm::P256 => AnyPrivateKey::P256(PrivateKey::generate()?),
-            Algorithm::P384 => AnyPrivateKey::P384(PrivateKey::generate()?),
-            Algorithm::P521 => AnyPrivateKey::P521(PrivateKey::generate()?),
-            Algorithm::Ed25519 => {
-                AnyPrivateKey::Ed25519(PrivateKey::generate()?)
-            }
-        })
+        algorithm.with(Generate)
     }
 
     /// The key of the given algorithm with this secret (see
@@ -659,97 +1069,61 @@ impl AnyPrivateKey {
     /// [`Error::Invalid`] for a wrong length or a scalar outside
     /// $[1, n - 1]$.
     pub fn from_secret(algorithm: Algorithm, secret: &[u8]) -> Result<Self> {
-        Ok(match algorithm {
-            Algorithm::P256 => {
-                AnyPrivateKey::P256(PrivateKey::from_secret(secret)?)
-            }
-            Algorithm::P384 => {
-                AnyPrivateKey::P384(PrivateKey::from_secret(secret)?)
-            }
-            Algorithm::P521 => {
-                AnyPrivateKey::P521(PrivateKey::from_secret(secret)?)
-            }
-            Algorithm::Ed25519 => {
-                AnyPrivateKey::Ed25519(PrivateKey::from_secret(secret)?)
-            }
-        })
+        algorithm.with(FromSecret(secret))
     }
 
     /// The key type.
     #[must_use]
     pub fn algorithm(&self) -> Algorithm {
-        match self {
-            AnyPrivateKey::P256(k) => k.algorithm(),
-            AnyPrivateKey::P384(k) => k.algorithm(),
-            AnyPrivateKey::P521(k) => k.algorithm(),
-            AnyPrivateKey::Ed25519(k) => k.algorithm(),
-        }
+        self.with(AlgorithmOf)
     }
 
-    /// The public key's bytes (see [`KeyAlgorithm::public_key_bytes`]).
+    /// The public key's bytes (see [`PrivateKey::public_key_bytes`]).
     #[must_use]
     pub fn public_key_bytes(&self) -> Vec<u8> {
-        match self {
-            AnyPrivateKey::P256(k) => k.public_key_bytes(),
-            AnyPrivateKey::P384(k) => k.public_key_bytes(),
-            AnyPrivateKey::P521(k) => k.public_key_bytes(),
-            AnyPrivateKey::Ed25519(k) => k.public_key_bytes(),
-        }
+        self.with(PublicKeyBytes)
     }
 
     /// The key's traditional encoding, when it has one (see
     /// [`KeyAlgorithm::traditional_opt`]).
     #[must_use]
-    pub fn traditional_opt(&self) -> Option<Vec<u8>> {
-        match self {
-            AnyPrivateKey::P256(k) => P256::traditional_opt(k.key_pair()),
-            AnyPrivateKey::P384(k) => P384::traditional_opt(k.key_pair()),
-            AnyPrivateKey::P521(k) => P521::traditional_opt(k.key_pair()),
-            AnyPrivateKey::Ed25519(k) => Ed25519::traditional_opt(k.key_pair()),
-        }
+    pub fn traditional_opt(&self) -> Option<SecretBytes> {
+        self.with(Traditional)
     }
 
     /// The secret (see [`PrivateKey::secret`]).
     #[must_use]
     pub fn secret(&self) -> SecretBytes {
-        match self {
-            AnyPrivateKey::P256(k) => k.secret(),
-            AnyPrivateKey::P384(k) => k.secret(),
-            AnyPrivateKey::P521(k) => k.secret(),
-            AnyPrivateKey::Ed25519(k) => k.secret(),
-        }
+        self.with(Secret)
+    }
+
+    /// The PKCS#8 encoding (see [`PrivateKey::pkcs8`]).
+    #[must_use]
+    pub fn pkcs8(&self) -> SecretBytes {
+        self.with(Pkcs8)
     }
 }
 
 /// As the typed key it holds.
 impl core::fmt::Debug for AnyPrivateKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            AnyPrivateKey::P256(k) => k.fmt(f),
-            AnyPrivateKey::P384(k) => k.fmt(f),
-            AnyPrivateKey::P521(k) => k.fmt(f),
-            AnyPrivateKey::Ed25519(k) => k.fmt(f),
-        }
+        self.with(DebugOf(f))
     }
 }
 
-/// The PKCS#8 encoding of the typed key it holds.
+/// The PKCS#8 encoding of the typed key it holds, as a plain `Vec<u8>` for
+/// the reason given at the `Encodable` of [`PrivateKey`].
 impl Encodable for AnyPrivateKey {
     type Bytes = Vec<u8>;
 
     fn encode(&self) -> Vec<u8> {
-        match self {
-            AnyPrivateKey::P256(k) => k.encode(),
-            AnyPrivateKey::P384(k) => k.encode(),
-            AnyPrivateKey::P521(k) => k.encode(),
-            AnyPrivateKey::Ed25519(k) => k.encode(),
-        }
+        self.pkcs8().expose().to_vec()
     }
 }
 
 /// PKCS#8 in PEM, as the typed key.
 impl Pem for AnyPrivateKey {
-    const LABEL: &'static str = "PRIVATE KEY";
+    const LABEL: &'static str = PrivateKeyLabel::Pkcs8.label();
 }
 
 #[cfg(test)]

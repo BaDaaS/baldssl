@@ -4,8 +4,8 @@
 use baldssl_core::{
     Error,
     der::{
-        syntax::{ObjectIdentifier, RawTlv},
-        write,
+        syntax::{ObjectIdentifier, RawTlv, decode},
+        tag, write,
     },
     encoding::{Decodable, Encodable},
     pem::{self, Pem, PemBlock},
@@ -13,7 +13,12 @@ use baldssl_core::{
 use baldssl_test_utils::{fixture, hex};
 use proptest::prelude::*;
 
-use crate::{Algorithm, AnyPrivateKey, PublicKey, asn1::SubjectPublicKeyInfo};
+use baldssl_crypto::models::weierstrass::COMPRESSED_EVEN;
+
+use crate::{
+    Algorithm, AnyPrivateKey, PublicKey,
+    asn1::{PRIVATE_KEY_INFO, SubjectPublicKeyInfo},
+};
 
 /// `id-ecPublicKey` and `id-Ed25519`, dotted: the hand-built encodings
 /// below name them independently of the constants under test.
@@ -96,20 +101,13 @@ fn reads_every_openssl_encoding() {
     assert_eq!(seen, 16);
 }
 
-const ALGORITHMS: [Algorithm; 4] = [
-    Algorithm::P256,
-    Algorithm::P384,
-    Algorithm::P521,
-    Algorithm::Ed25519,
-];
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
     /// Reading what baldssl writes gives the same key, in DER and PEM.
     #[test]
     fn round_trip(index in 0usize..4, bytes in prop::collection::vec(any::<u8>(), 66)) {
-        let alg = ALGORITHMS[index];
+        let alg = Algorithm::ALL[index];
         let Ok(key) = AnyPrivateKey::from_secret(alg, &bytes[..alg.secret_len()]) else {
             return Ok(());
         };
@@ -177,7 +175,7 @@ fn one() -> (Vec<u8>, Vec<u8>) {
 /// SEC 1 compressed form of an uncompressed point.
 fn compressed(point: &[u8]) -> Vec<u8> {
     let len = (point.len() - 1) / 2;
-    let mut out = vec![0x02 | (point[2 * len] & 1)];
+    let mut out = vec![COMPRESSED_EVEN | (point[2 * len] & 1)];
     out.extend_from_slice(&point[1..=len]);
     out
 }
@@ -315,7 +313,7 @@ fn versions() {
         write::small_integer(0),
         write::sequence(&[oid(ID_EC_PUBLIC_KEY), oid(P256)]),
         write::octet_string(ec_private_key(1, &d, None, None).as_bytes()),
-        tlv(0x81, &[&[0u8][..], &g].concat()),
+        tlv(tag::context(1), &[&[0u8][..], &g].concat()),
     ]);
     assert!(invalid(&AnyPrivateKey::decode(v0_with_public.as_bytes())));
 }
@@ -333,7 +331,7 @@ fn ed25519_rules() {
             write::octet_string(write::octet_string(seed).as_bytes()),
         ];
         if let Some(public) = public {
-            parts.push(tlv(0x81, &[&[0u8][..], public].concat()));
+            parts.push(tlv(tag::context(1), &[&[0u8][..], public].concat()));
         }
         write::sequence(&parts)
     };
@@ -356,7 +354,7 @@ fn ed25519_rules() {
     assert!(invalid(&AnyPrivateKey::decode(
         p8(0, alg(), &seed[..31], None).as_bytes()
     )));
-    let with_null = write::sequence(&[oid(ID_ED25519), tlv(0x05, &[])]);
+    let with_null = write::sequence(&[oid(ID_ED25519), tlv(tag::NULL, &[])]);
     assert!(invalid(&AnyPrivateKey::decode(
         p8(0, with_null, &seed, None).as_bytes()
     )));
@@ -511,12 +509,7 @@ fn pem_blocks() {
 /// other, and the record re-encodes to the bytes it was read from.
 #[test]
 fn public_key_records() {
-    for alg in [
-        Algorithm::P256,
-        Algorithm::P384,
-        Algorithm::P521,
-        Algorithm::Ed25519,
-    ] {
+    for alg in Algorithm::ALL {
         let spki = spki_of(&AnyPrivateKey::generate(alg).unwrap());
         let record = SubjectPublicKeyInfo::decode(spki.as_bytes()).unwrap();
         assert_eq!(record.encode(), spki.as_bytes(), "{alg:?}: record");
@@ -537,4 +530,54 @@ fn spki_of(key: &AnyPrivateKey) -> RawTlv {
         None => write::sequence(&[write::oid_opt(ID_ED25519).unwrap()]),
     };
     write::sequence(&[algorithm, write::bit_string(&point)])
+}
+
+/// Where the lenient reader of private keys accepts more than the writer
+/// writes: each input reads to a key and re-encodes to the one record the
+/// writer writes for it, which differs from the input. The first two are
+/// not even a `PrivateKeyInfo` as its description reads it.
+#[test]
+fn the_reader_is_lenient() {
+    let (d, g) = one();
+    let algorithm = || write::sequence(&[oid(ID_EC_PUBLIC_KEY), oid(P256)]);
+    let ec = ec_private_key(1, &d, None, Some(&g));
+    let canonical = ec_pkcs8(P256, &ec);
+    // Two attributes out of the order of a DER SET OF: skipped unread.
+    let with_attributes = write::sequence(&[
+        write::small_integer(0),
+        algorithm(),
+        write::octet_string(ec.as_bytes()),
+        write::context_constructed(
+            0,
+            &[
+                write::sequence(&[oid("1.2.3.5")]),
+                write::sequence(&[oid("1.2.3.4")]),
+            ],
+        ),
+    ]);
+    let v2_with_public = write::sequence(&[
+        write::small_integer(1),
+        algorithm(),
+        write::octet_string(ec.as_bytes()),
+        tlv(tag::context(1), &[&[0u8][..], &g].concat()),
+    ]);
+    for input in [&with_attributes, &v2_with_public] {
+        assert!(decode(&PRIVATE_KEY_INFO, input.as_bytes()).is_err());
+    }
+    let curve_inside =
+        ec_pkcs8(P256, &ec_private_key(1, &d, Some(oid(P256)), Some(&g)));
+    let short_scalar = ec_pkcs8(P256, &ec_private_key(1, &[1], None, Some(&g)));
+    let compressed_point =
+        ec_pkcs8(P256, &ec_private_key(1, &d, None, Some(&compressed(&g))));
+    for input in [
+        with_attributes,
+        v2_with_public,
+        curve_inside,
+        short_scalar,
+        compressed_point,
+    ] {
+        let key = AnyPrivateKey::decode(input.as_bytes()).unwrap();
+        assert_eq!(key.encode(), canonical.as_bytes());
+        assert_ne!(input, canonical);
+    }
 }

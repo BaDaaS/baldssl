@@ -248,11 +248,10 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
             // algorithm's traditional form when it has one (SEC1 for EC);
             // 3.6 and 4 write PKCS#8, as for PEM.
             if der && compat.private_key_der_is_traditional() {
-                out.extend_from_slice(
-                    &k.traditional_opt().unwrap_or_else(|| k.encode()),
-                );
+                let encoding = k.traditional_opt().unwrap_or_else(|| k.pkcs8());
+                out.extend_from_slice(encoding.expose());
             } else if der {
-                out.extend_from_slice(&k.encode());
+                out.extend_from_slice(k.pkcs8().expose());
             } else {
                 out.extend_from_slice(k.to_pem().as_bytes());
             }
