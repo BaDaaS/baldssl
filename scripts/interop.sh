@@ -145,6 +145,18 @@ for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
     else
         pass=$((pass + 1))
     fi
+    # -text follows the key with its text: what OpenSSL's pkey -text prints
+    # of the key written.
+    "$BALDSSL" genpkey "${args[@]}" -text >"$WORK/b-text.pem"
+    if cmp -s "$WORK/b-text.pem" \
+        <("$OPENSSL" pkey -in "$WORK/b-text.pem" -text); then
+        pass=$((pass + 1))
+    else
+        echo "FAIL $label -text: differs from OpenSSL's pkey -text"
+        diff <("$OPENSSL" pkey -in "$WORK/b-text.pem" -text) \
+            "$WORK/b-text.pem" || true
+        fail=$((fail + 1))
+    fi
 done
 
 # Error paths must fail in both (exit codes may differ: see README).
