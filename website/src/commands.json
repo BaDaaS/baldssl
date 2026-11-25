@@ -34,7 +34,7 @@
     {"name": "pkcs12", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "PKCS#12 file command", "status": "not-started", "note": ""},
     {"name": "pkcs7", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "PKCS#7 command", "status": "not-started", "note": ""},
     {"name": "pkcs8", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "PKCS#8 format private key conversion command", "status": "not-started", "note": ""},
-    {"name": "pkey", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "public or private key processing command", "status": "planned", "note": "PKCS#8, SEC1, SPKI in PEM and DER."},
+    {"name": "pkey", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "public or private key processing command", "status": "partial", "note": "EC (P-256, P-384, P-521) and Ed25519 keys: -in -inform -pubin -out -outform -pubout -noout -text -text_pub -check -pubcheck. RSA, encrypted keys and -traditional not yet."},
     {"name": "pkeyparam", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "public key algorithm parameter processing command", "status": "not-started", "note": ""},
     {"name": "pkeyutl", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "asymmetric key command", "status": "not-started", "note": ""},
     {"name": "prime", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "compute prime numbers", "status": "not-started", "note": ""},
