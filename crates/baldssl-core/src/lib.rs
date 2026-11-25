@@ -15,6 +15,7 @@ pub mod der;
 pub mod encoding;
 pub mod error;
 pub mod hex;
+pub mod num;
 pub mod pem;
 pub mod text;
 

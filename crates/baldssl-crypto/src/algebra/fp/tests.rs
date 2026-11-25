@@ -12,6 +12,7 @@
     clippy::eq_op
 )]
 
+use baldssl_core::num::{low_u64, u32_to_usize};
 use proptest::prelude::*;
 
 use super::{Fp, Modulus};
@@ -64,7 +65,7 @@ impl Nat {
         let digits: Vec<u8> = hex
             .bytes()
             .rev()
-            .map(|c| char::from(c).to_digit(16).unwrap() as u8)
+            .map(|c| u8::try_from(char::from(c).to_digit(16).unwrap()).unwrap())
             .collect();
         let limbs = digits
             .chunks(16)
@@ -117,7 +118,7 @@ impl Nat {
             let s = u128::from(*self.0.get(i).unwrap_or(&0))
                 + u128::from(*other.0.get(i).unwrap_or(&0))
                 + carry;
-            *slot = s as u64;
+            *slot = low_u64(s);
             carry = s >> 64;
         }
         Self::normalized(out)
@@ -133,7 +134,7 @@ impl Nat {
                 - i128::from(*other.0.get(i).unwrap_or(&0))
                 - borrow;
             borrow = i128::from(d < 0);
-            *slot = (d + (borrow << 64)) as u64;
+            *slot = u64::try_from(d + (borrow << 64)).unwrap();
         }
         Self::normalized(out)
     }
@@ -146,10 +147,10 @@ impl Nat {
                 let t = u128::from(out[i + j])
                     + u128::from(a) * u128::from(b)
                     + carry;
-                out[i + j] = t as u64;
+                out[i + j] = low_u64(t);
                 carry = t >> 64;
             }
-            out[i + other.0.len()] = carry as u64;
+            out[i + other.0.len()] = u64::try_from(carry).unwrap();
         }
         Self::normalized(out)
     }
@@ -160,7 +161,7 @@ impl Nat {
 
     fn bits(&self) -> usize {
         self.0.last().map_or(0, |l| {
-            (self.0.len() - 1) * 64 + 64 - l.leading_zeros() as usize
+            (self.0.len() - 1) * 64 + 64 - u32_to_usize(l.leading_zeros())
         })
     }
 

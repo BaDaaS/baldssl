@@ -208,7 +208,8 @@ const fn ecdsa_max_len(bits: u32) -> usize {
             .saturating_add(length_octets)
             .saturating_add(IDENTIFIER_OCTETS)
     }
-    let integer = (bits as usize / BITS_PER_OCTET).saturating_add(SIGN_OCTET);
+    let integer = (baldssl_core::num::u32_to_usize(bits) / BITS_PER_OCTET)
+        .saturating_add(SIGN_OCTET);
     tlv(tlv(integer).saturating_mul(2))
 }
 

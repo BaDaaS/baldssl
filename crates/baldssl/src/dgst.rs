@@ -564,7 +564,9 @@ fn prepare(command: &str, o: &Options, compat: Compat) -> Result<Operation> {
                     "{command}: {ZERO_SIGNATURE_BUFFER}"
                 )));
             }
-            other => other,
+            other @ (Operation::Digest | Operation::VerifyWhileSigning(_)) => {
+                other
+            }
         };
     }
     if o.xoflen {

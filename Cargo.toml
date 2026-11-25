@@ -59,6 +59,12 @@ todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
 dbg_macro = "deny"
+# Integer conversions go through From, TryFrom or baldssl_core::num, the
+# one module where `as` converts (AGENTS.md).
+as_conversions = "deny"
+# A match on an enum lists its variants, so that a new variant is a
+# compile error wherever it needs a decision (AGENTS.md).
+wildcard_enum_match_arm = "deny"
 
 [profile.release]
 lto = "thin"

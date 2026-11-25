@@ -1111,17 +1111,18 @@ where
     seen
 }
 
+/// A check of OpenSSL's signatures on one curve: how many it verified.
+type Check = fn(&str, &str) -> usize;
+
 #[test]
 fn openssl() {
     let mut seen = 0;
-    for (curve, f) in [
-        (
-            "P-256",
-            openssl_signatures::<P256, Sha256> as fn(&str, &str) -> usize,
-        ),
+    let checks: [(&str, Check); 3] = [
+        ("P-256", openssl_signatures::<P256, Sha256>),
         ("P-384", openssl_signatures::<P384, Sha256>),
         ("P-521", openssl_signatures::<P521, Sha256>),
-    ] {
+    ];
+    for (curve, f) in checks {
         seen += f(curve, "SHA-256");
     }
     seen += openssl_signatures::<P256, Sha224>("P-256", "SHA-224");

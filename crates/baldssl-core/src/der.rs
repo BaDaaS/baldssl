@@ -85,7 +85,10 @@ use self::{
     syntax::RawTlv,
 };
 
-use crate::Error;
+use crate::{
+    Error,
+    num::{u8_to_u32, u32_to_usize},
+};
 
 /// Why a DER encoding was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,7 +188,7 @@ impl Tag {
         Tag {
             class,
             constructed: b & 0x20 != 0,
-            number: (b & 0x1f) as u32,
+            number: u8_to_u32(b & 0x1f),
         }
     }
 }
@@ -502,7 +505,7 @@ impl Integer {
             None => 0,
             Some(&top) => {
                 let top_bits =
-                    8usize.saturating_sub(top.leading_zeros() as usize);
+                    8usize.saturating_sub(u32_to_usize(top.leading_zeros()));
                 self.magnitude
                     .len()
                     .saturating_sub(1)

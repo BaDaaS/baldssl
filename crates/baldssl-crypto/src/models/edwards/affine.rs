@@ -6,6 +6,8 @@
 
 use core::{marker::PhantomData, ops::Neg};
 
+use baldssl_core::num::u32_to_usize;
+
 use super::{d, extended::Extended};
 use crate::{
     algebra::{
@@ -160,7 +162,7 @@ fn encoding_len<C>() -> usize
 where
     C: TwistedEdwards,
 {
-    (C::Base::BITS as usize + 1).div_ceil(8)
+    (u32_to_usize(C::Base::BITS) + 1).div_ceil(8)
 }
 
 /// The encoding of [RFC 8032, section 5.1.2][rfc8032-5.1.2], **little-endian**

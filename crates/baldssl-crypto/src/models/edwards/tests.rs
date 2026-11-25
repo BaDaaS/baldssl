@@ -122,10 +122,10 @@ proptest! {
         let mut carry = 0u16;
         for i in 0..32 {
             let s = u16::from(a[i]) + u16::from(b[i]) + carry;
-            sum[i] = s as u8;
+            sum[i] = s.to_le_bytes()[0];
             carry = s >> 8;
         }
-        sum[32] = carry as u8;
+        sum[32] = u8::try_from(carry).unwrap();
         prop_assert_eq!(mul_le(&sum), p + q);
     }
 }

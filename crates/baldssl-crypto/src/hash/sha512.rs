@@ -11,6 +11,8 @@
     clippy::many_single_char_names
 )]
 
+use baldssl_core::num::usize_to_u64;
+
 use crate::Digest;
 
 const K: [u64; 80] = [
@@ -183,7 +185,7 @@ impl Engine {
     }
 
     fn update(&mut self, mut data: &[u8]) {
-        self.len = self.len.wrapping_add(data.len() as u128);
+        self.len = self.len.wrapping_add(u128::from(usize_to_u64(data.len())));
         if self.buf_len > 0 {
             let take = (128 - self.buf_len).min(data.len());
             self.buf[self.buf_len..self.buf_len + take]

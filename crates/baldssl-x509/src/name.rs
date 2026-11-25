@@ -17,6 +17,7 @@
 use baldssl_core::{
     Error, Result,
     der::{Oid, Reader, Tlv, syntax::RawTlv, tag},
+    num::low_u8,
 };
 
 use crate::objects;
@@ -199,28 +200,48 @@ fn oneline_value(value: &[u8], out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// The marker of a UTF-8 continuation byte, `10xxxxxx` ([RFC 3629]
+/// section 3).
+///
+/// [RFC 3629]: https://www.rfc-editor.org/rfc/rfc3629#section-3
+const CONTINUATION: u8 = 0x80;
+/// The six payload bits of a continuation byte.
+const CONTINUATION_BITS: u32 = 0x3f;
+/// The payload bits a continuation byte holds.
+const BITS_PER_CONTINUATION: u32 = 6;
+/// The marker of the lead byte of a two-byte sequence, `110xxxxx`.
+const LEAD_TWO: u8 = 0xc0;
+/// The marker of the lead byte of a three-byte sequence, `1110xxxx`.
+const LEAD_THREE: u8 = 0xe0;
+/// The marker of the lead byte of a four-byte sequence, `11110xxx`.
+const LEAD_FOUR: u8 = 0xf0;
+
+/// The continuation byte holding bits `6 * k` to `6 * k + 5` of `c`.
+fn continuation(c: u32, k: u32) -> u8 {
+    CONTINUATION
+        | low_u8((c >> (BITS_PER_CONTINUATION * k)) & CONTINUATION_BITS)
+}
+
 /// Appends the UTF-8 encoding of a code point the way OpenSSL's `UTF8_putc`
-/// does: surrogates are encoded like any other value below `0x10000`.
+/// does: surrogates are encoded like any other value below `0x10000`, which
+/// `char::encode_utf8` cannot do.
 fn push_utf8(c: u32, out: &mut Vec<u8>) -> Result<()> {
-    // The casts below keep the low 6 bits of a shifted code point, which is
-    // the definition of the UTF-8 encoding.
-    #[allow(clippy::cast_possible_truncation)]
     match c {
-        0..=0x7f => out.push(c as u8),
+        0..=0x7f => out.push(low_u8(c)),
         0x80..=0x7ff => {
-            out.push(0xc0 | (c >> 6) as u8);
-            out.push(0x80 | (c & 0x3f) as u8);
+            out.push(LEAD_TWO | low_u8(c >> BITS_PER_CONTINUATION));
+            out.push(continuation(c, 0));
         }
         0x800..=0xffff => {
-            out.push(0xe0 | (c >> 12) as u8);
-            out.push(0x80 | ((c >> 6) & 0x3f) as u8);
-            out.push(0x80 | (c & 0x3f) as u8);
+            out.push(LEAD_THREE | low_u8(c >> (2 * BITS_PER_CONTINUATION)));
+            out.push(continuation(c, 1));
+            out.push(continuation(c, 0));
         }
         0x1_0000..=0x10_ffff => {
-            out.push(0xf0 | (c >> 18) as u8);
-            out.push(0x80 | ((c >> 12) & 0x3f) as u8);
-            out.push(0x80 | ((c >> 6) & 0x3f) as u8);
-            out.push(0x80 | (c & 0x3f) as u8);
+            out.push(LEAD_FOUR | low_u8(c >> (3 * BITS_PER_CONTINUATION)));
+            out.push(continuation(c, 2));
+            out.push(continuation(c, 1));
+            out.push(continuation(c, 0));
         }
         _ => return Err(Error::unsupported("UniversalString above U+10FFFF")),
     }

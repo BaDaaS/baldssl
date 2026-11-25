@@ -158,7 +158,12 @@ fn is_printable(c: u32) -> bool {
 pub struct StringTypes(u8);
 
 impl StringTypes {
-    /// The bit of one type.
+    /// The bit of one type: the type's place in [`StringType`].
+    #[allow(
+        clippy::as_conversions,
+        reason = "an enum's discriminant is read only with `as`; it is the \
+                  bit index, below 8"
+    )]
     const fn of(t: StringType) -> u8 {
         1 << t as u8
     }

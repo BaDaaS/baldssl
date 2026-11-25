@@ -94,6 +94,11 @@ pub enum VerifyError {
 impl VerifyError {
     /// OpenSSL's error number, the discriminant.
     #[must_use]
+    #[allow(
+        clippy::as_conversions,
+        reason = "an enum's discriminant is read only with `as`, and the \
+                  discriminants are OpenSSL's numbers"
+    )]
     pub fn code(self) -> u32 {
         self as u32
     }
@@ -291,7 +296,15 @@ impl Certificate<'_> {
             ExtensionValue::BasicConstraints { ca, path_length } => {
                 Ok(Some(Constraints { ca, path_length }))
             }
-            _ => Err(Error::invalid("basicConstraints")),
+            // The decoding of a basicConstraints value gives no other kind.
+            ExtensionValue::SubjectKeyIdentifier(_)
+            | ExtensionValue::AuthorityKeyIdentifier(_)
+            | ExtensionValue::KeyUsage(_)
+            | ExtensionValue::SubjectAltName(_)
+            | ExtensionValue::ExtendedKeyUsage(_)
+            | ExtensionValue::Other { .. } => {
+                Err(Error::invalid("basicConstraints"))
+            }
         }
     }
 
@@ -302,7 +315,13 @@ impl Certificate<'_> {
         };
         match ExtensionValue::try_from(view)? {
             ExtensionValue::KeyUsage(usage) => Ok(Some(usage)),
-            _ => Err(Error::invalid("keyUsage")),
+            // The decoding of a keyUsage value gives no other kind.
+            ExtensionValue::SubjectKeyIdentifier(_)
+            | ExtensionValue::AuthorityKeyIdentifier(_)
+            | ExtensionValue::SubjectAltName(_)
+            | ExtensionValue::BasicConstraints { .. }
+            | ExtensionValue::ExtendedKeyUsage(_)
+            | ExtensionValue::Other { .. } => Err(Error::invalid("keyUsage")),
         }
     }
 

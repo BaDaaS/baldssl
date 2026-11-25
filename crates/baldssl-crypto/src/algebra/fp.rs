@@ -43,6 +43,10 @@ use core::{
     ops::{Add, Mul, Neg, Sub},
 };
 
+use baldssl_core::num::{
+    low_u32, low_u64, u8_to_u64, u32_to_usize, u64_to_u128,
+};
+
 use super::field::{Field, PrimeField};
 use crate::ct::{self, Choice, CtEq, CtSelect};
 
@@ -56,24 +60,22 @@ pub trait Modulus<const N: usize>: 'static {
 }
 
 /// `a + b + carry`, the sum and the carry out (0 or 1).
-#[allow(clippy::cast_possible_truncation)]
 const fn adc(a: u64, b: u64, carry: u64) -> (u64, u64) {
-    let t = (a as u128) + (b as u128) + (carry as u128);
-    (t as u64, (t >> 64) as u64)
+    let t = u64_to_u128(a) + u64_to_u128(b) + u64_to_u128(carry);
+    (low_u64(t), low_u64(t >> 64))
 }
 
 /// `a - b - borrow`, the difference and the borrow out (0 or 1).
-#[allow(clippy::cast_possible_truncation)]
 const fn sbb(a: u64, b: u64, borrow: u64) -> (u64, u64) {
-    let t = (a as u128).wrapping_sub((b as u128) + (borrow as u128));
-    (t as u64, (t >> 127) as u64)
+    let t = u64_to_u128(a).wrapping_sub(u64_to_u128(b) + u64_to_u128(borrow));
+    (low_u64(t), low_u64(t >> 127))
 }
 
 /// `a + b * c + carry`, the low word and the high word.
-#[allow(clippy::cast_possible_truncation)]
 const fn mac(a: u64, b: u64, c: u64, carry: u64) -> (u64, u64) {
-    let t = (a as u128) + (b as u128) * (c as u128) + (carry as u128);
-    (t as u64, (t >> 64) as u64)
+    let t =
+        u64_to_u128(a) + u64_to_u128(b) * u64_to_u128(c) + u64_to_u128(carry);
+    (low_u64(t), low_u64(t >> 64))
 }
 
 /// `a + b` over `N` limbs, and the carry out.
@@ -127,7 +129,7 @@ const fn limbs_from_hex<const N: usize>(hex: &str) -> [u64; N] {
             _ => panic!("modulus: not a hexadecimal digit"),
         };
         if i / 16 < N {
-            out[i / 16] |= (v as u64) << ((i % 16) * 4);
+            out[i / 16] |= u8_to_u64(v) << ((i % 16) * 4);
         } else if v != 0 {
             panic!("modulus: does not fit in N limbs");
         }
@@ -194,13 +196,12 @@ const fn neg_inv(p0: u64) -> u64 {
 }
 
 /// The number of significant bits.
-#[allow(clippy::cast_possible_truncation)]
 const fn bit_length<const N: usize>(a: &[u64; N]) -> u32 {
     let mut i = N;
     while i > 0 {
         i -= 1;
         if a[i] != 0 {
-            return (i as u32) * 64 + (64 - a[i].leading_zeros());
+            return low_u32(i) * 64 + (64 - a[i].leading_zeros());
         }
     }
     0
@@ -513,7 +514,7 @@ where
     M: Modulus<N>,
 {
     const BITS: u32 = Consts::<M, N>::BITS;
-    const BYTES: usize = (Consts::<M, N>::BITS as usize).div_ceil(8);
+    const BYTES: usize = u32_to_usize(Consts::<M, N>::BITS).div_ceil(8);
 
     fn from_u64(v: u64) -> Self {
         let mut x = [0u64; N];

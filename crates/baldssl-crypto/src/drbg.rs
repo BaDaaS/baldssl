@@ -15,6 +15,8 @@
 //!
 //! [NIST SP 800-90A Rev. 1]: https://csrc.nist.gov/pubs/sp/800/90/a/r1/final
 
+use baldssl_core::num::u32_to_usize;
+
 use crate::{
     hash::{Digest, Sha1, Sha224, Sha256, Sha384, Sha512},
     mac::{Hmac, Mac},
@@ -192,7 +194,7 @@ where
         check_entropy::<H>(entropy)?;
         let required = H::SECURITY_STRENGTH.bits() / 2;
         let bits = nonce.0.len().saturating_mul(8);
-        if bits < required as usize {
+        if bits < u32_to_usize(required) {
             return Err(DrbgError::NonceTooShort { bits, required });
         }
         let mut drbg = HmacDrbg {
@@ -241,7 +243,7 @@ where
 {
     let required = H::SECURITY_STRENGTH.bits();
     let bits = entropy.0.len().saturating_mul(8);
-    if bits < required as usize {
+    if bits < u32_to_usize(required) {
         return Err(DrbgError::EntropyTooShort { bits, required });
     }
     Ok(())

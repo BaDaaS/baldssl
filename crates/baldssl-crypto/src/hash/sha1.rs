@@ -13,6 +13,8 @@
     clippy::many_single_char_names
 )]
 
+use baldssl_core::num::usize_to_u64;
+
 use crate::Digest;
 
 const H: [u32; 5] = [
@@ -84,7 +86,7 @@ impl Digest for Sha1 {
     }
 
     fn update(&mut self, mut data: &[u8]) {
-        self.len = self.len.wrapping_add(data.len() as u64);
+        self.len = self.len.wrapping_add(usize_to_u64(data.len()));
         if self.buf_len > 0 {
             let take = (64 - self.buf_len).min(data.len());
             self.buf[self.buf_len..self.buf_len + take]

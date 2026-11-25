@@ -52,7 +52,13 @@ impl Error {
         match self {
             Error::NotFound { .. } => 2,
             Error::Reported { code, .. } => *code,
-            _ => 1,
+            Error::Io { .. }
+            | Error::Base64(_)
+            | Error::Pem(_)
+            | Error::Der(_)
+            | Error::Invalid(_)
+            | Error::Unsupported(_)
+            | Error::Usage(_) => 1,
         }
     }
 

@@ -237,7 +237,9 @@ impl AnyPrivateKey {
                 PemError::HeadersUnsupported => Error::unsupported(
                     "encrypted PEM keys (Proc-Type and DEK-Info headers)",
                 ),
-                other => Error::Pem(other),
+                other @ (PemError::NoBlock
+                | PemError::Unterminated
+                | PemError::Base64(_)) => Error::Pem(other),
             })?;
         Self::try_from(&block)
     }

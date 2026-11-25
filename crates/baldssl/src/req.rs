@@ -303,7 +303,10 @@ impl Default for Options {
 fn digest_opt(name: &str) -> Option<Digest> {
     match Digest::from_name_opt(name)? {
         Digest::Sha1 => None,
-        d => Some(d),
+        d @ (Digest::Sha224
+        | Digest::Sha256
+        | Digest::Sha384
+        | Digest::Sha512) => Some(d),
     }
 }
 

@@ -36,7 +36,10 @@
 
 use core::marker::PhantomData;
 
-use baldssl_core::der::syntax::{Natural, Sequence, Unsigned, decode, encode};
+use baldssl_core::{
+    der::syntax::{Natural, Sequence, Unsigned, decode, encode},
+    num::u32_to_usize,
+};
 
 use crate::{
     algebra::{
@@ -212,7 +215,7 @@ pub(crate) fn bits2int<C>(bytes: &[u8]) -> Vec<u8>
 where
     C: ShortWeierstrass,
 {
-    let qlen = C::Scalar::BITS as usize;
+    let qlen = u32_to_usize(C::Scalar::BITS);
     let rlen = C::Scalar::BYTES;
     let blen = bytes.len().saturating_mul(8);
     if blen <= qlen {
