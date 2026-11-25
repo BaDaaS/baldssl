@@ -22,24 +22,33 @@
 //! signature (printing "Certificate request self-signature ok" and its
 //! subject on standard error, as OpenSSL does) and signs a certificate for
 //! it with `-CA` and `-CAkey` (the key defaults to the `-CA` file, as in
-//! OpenSSL), with the extensions of the release line
-//! `BALDSSL_OPENSSL_COMPAT` names (see
-//! [`baldssl_x509::CertificateTemplate::issued`]). The serial number is
+//! OpenSSL). Its extensions are, in order: the request's that
+//! `-copy_extensions` copies (`none` by default, `copy`, `copyall`), then
+//! those of a section of `-extfile` (`-extensions`, or the `extensions`
+//! value of the default section, or the default section; each replacing
+//! one of its kind, which then comes after the others), then the key
+//! identifiers OpenSSL adds, by the release line `BALDSSL_OPENSSL_COMPAT`
+//! names (see [`baldssl_x509::CertificateTemplate::issued`]). The serial
+//! number is
 //! `-set_serial`, or the next one of the serial file (`-CAserial`, or with
 //! `-CAcreateserial` the `-CA` file name with `.srl`), or 159 random bits;
 //! the validity is `-days` (30 by default), `-not_before` and `-not_after`.
 //! The printing options then apply to the new certificate. Not supported:
-//! `-req` without `-CA` (`-key`, self-signing), `-CA` without `-req`,
-//! `-extfile`, `-extensions` and `-copy_extensions`.
+//! `-key` (self-signing), `-CA` without `-req`, and the configuration file
+//! syntax [`baldssl_x509::Config`] does not read.
 
-use std::{ffi::OsString, io::Write as _};
+use std::{
+    ffi::{OsStr, OsString},
+    io::Write as _,
+};
 
 use baldssl_core::{Error, Result, pem};
 use baldssl_crypto::Algorithm;
 use baldssl_fs::WriteText as _;
 use baldssl_x509::{
-    Certificate, CertificateTemplate, Compat, Format, certificate_der,
-    fingerprint_line, serial_line, time_rfc822,
+    Certificate, CertificateTemplate, Compat, Config, CopyExtensions,
+    Extensions, Format, IssuedExtensions, certificate_der, fingerprint_line,
+    serial_line, time_rfc822,
 };
 
 use crate::{
@@ -49,6 +58,7 @@ use crate::{
         Lifetime, SerialSource, default_serial_file, parse_serial, parse_time,
         signature_algorithm,
     },
+    keygen::utf8,
 };
 
 /// Every option `baldssl x509` accepts, besides `-<digest>`.
@@ -179,6 +189,21 @@ pub(crate) const SPECS: &[Spec] = &[
         help: "End of validity, overriding -days: as -not_before",
     },
     Spec {
+        name: "extfile",
+        kind: Kind::Value,
+        help: "Configuration file with the extensions to add",
+    },
+    Spec {
+        name: "extensions",
+        kind: Kind::Value,
+        help: "Section of -extfile with the extensions (default: default)",
+    },
+    Spec {
+        name: "copy_extensions",
+        kind: Kind::Value,
+        help: "Request extensions to copy: none (default), copy or copyall",
+    },
+    Spec {
         name: "key",
         kind: Kind::Value,
         help: "Self-sign with this key (not supported yet)",
@@ -216,6 +241,12 @@ struct Signing {
     lifetime: Lifetime,
     /// The `-<digest>` option, when one is given.
     digest: Option<Algorithm>,
+    /// `-extfile`.
+    extfile: Option<OsString>,
+    /// `-extensions`.
+    section: Option<String>,
+    /// `-copy_extensions`.
+    copy: CopyExtensions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -357,6 +388,12 @@ fn parse_options(raw: &[OsString]) -> Result<Options> {
                 o.signing.lifetime.not_after =
                     Some(parse_time("x509", "not_after", &value)?);
             }
+            "extfile" => o.signing.extfile = Some(value),
+            "extensions" => {
+                o.signing.section =
+                    Some(utf8("x509", "extensions", &value)?.to_string());
+            }
+            "copy_extensions" => o.signing.copy = copy_extensions(&value)?,
             "key" => return Err(Error::unsupported("x509 -key")),
             name => match Algorithm::from_name_opt(name) {
                 Some(alg) => {
@@ -399,6 +436,53 @@ fn serial_source(s: &Signing) -> SerialSource {
     }
 }
 
+/// `-copy_extensions` (see the `FromStr` of [`CopyExtensions`]).
+fn copy_extensions(value: &OsStr) -> Result<CopyExtensions> {
+    let text = utf8("x509", "copy_extensions", value)?;
+    text.parse().map_err(|_| {
+        Error::Usage(format!("x509: invalid -copy_extensions {text:?}"))
+    })
+}
+
+/// The extensions of `-extfile`'s section: `-extensions`, or the
+/// `extensions` value of the default section, or the default section, as
+/// OpenSSL finds it. Nothing without `-extfile`: there OpenSSL 3 warns that
+/// it ignores `-extensions`, and OpenSSL 4 looks for the section in its
+/// default configuration file, which baldssl does not read, so it fails as
+/// OpenSSL does for a missing section.
+fn extension_file(s: &Signing, compat: Compat) -> Result<Extensions> {
+    let Some(path) = &s.extfile else {
+        match (&s.section, compat) {
+            (Some(section), Compat::V4) => {
+                note(
+                    format!("Error checking extension section {section}")
+                        .as_bytes(),
+                );
+                return Err(Error::unsupported(
+                    "x509 -extensions without -extfile (the default configuration file)",
+                ));
+            }
+            (Some(_), _) => {
+                note(b"Warning: ignoring -extensions option without -extfile");
+            }
+            (None, _) => {}
+        }
+        return Ok(Extensions::new());
+    };
+    let bytes = read_input(Some(path))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| Error::Usage("x509 -extfile: not UTF-8".into()))?;
+    let config: Config = text.parse()?;
+    let section = s
+        .section
+        .as_deref()
+        .or_else(|| config.value_opt("default", "extensions"))
+        .unwrap_or("default");
+    config.extensions(section).inspect_err(|_| {
+        note(format!("Error checking extension section {section}").as_bytes());
+    })
+}
+
 /// Writes `line` and a newline on standard error.
 fn note(line: &[u8]) {
     let mut err = std::io::stderr();
@@ -410,6 +494,8 @@ fn note(line: &[u8]) {
 /// signed by the CA. Prints what OpenSSL prints on standard error.
 fn issue(o: &Options, compat: Compat) -> Result<Vec<u8>> {
     let s = &o.signing;
+    // OpenSSL checks the extension file before it reads the request.
+    let section = extension_file(s, compat)?;
     let request = read_request(o.input.as_deref(), o.inform)?;
     if !request.verify() {
         if compat != Compat::V30 {
@@ -449,6 +535,13 @@ fn issue(o: &Options, compat: Compat) -> Result<Vec<u8>> {
         &ca_key,
         serial_source(s).next("x509")?,
         s.lifetime.validity("x509")?,
+        &IssuedExtensions {
+            extensions: s
+                .copy
+                .apply(&Extensions::new(), &request)?
+                .override_with(&section),
+            from_file: s.extfile.is_some(),
+        },
         compat,
     )?
     .sign(&ca_key, signature_algorithm(&ca_key, s.digest))

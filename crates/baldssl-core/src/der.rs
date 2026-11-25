@@ -74,6 +74,8 @@ pub mod write;
 
 use core::fmt::Write as _;
 
+use self::syntax::RawTlv;
+
 use crate::Error;
 
 /// Why a DER encoding was rejected.
@@ -811,11 +813,11 @@ impl Time {
         }
     }
 
-    /// The DER TLV of the time: a UTCTime (`YYMMDDHHMMSSZ`, tag 23) or a
-    /// GeneralizedTime (`YYYYMMDDHHMMSS[.fff]Z`, tag 24), the inverse of
-    /// [`Time::parse`].
+    /// The DER of the time, one TLV: a UTCTime (`YYMMDDHHMMSSZ`, tag 23)
+    /// or a GeneralizedTime (`YYYYMMDDHHMMSS[.fff]Z`, tag 24), the inverse
+    /// of [`Time::parse`].
     #[must_use]
-    pub fn to_der(&self) -> Vec<u8> {
+    pub fn to_der(&self) -> RawTlv {
         let (tag, mut text) = match self.kind {
             TimeKind::Utc => (0x17, format!("{:02}", self.year % 100)),
             TimeKind::Generalized => (0x18, format!("{:04}", self.year)),
@@ -830,7 +832,7 @@ impl Time {
             text.push_str(&self.fraction);
         }
         text.push('Z');
-        write::tlv(tag, text.as_bytes())
+        RawTlv::from_tag_and_contents(tag, text.as_bytes())
     }
 
     /// Decodes a UTCTime (`YYMMDDHHMMSSZ`) or GeneralizedTime
@@ -1148,7 +1150,7 @@ mod tests {
             (u64::MAX, b"\x18\x0f99991231235959Z"),
         ] {
             assert_eq!(
-                Time::from_unix_seconds(seconds).to_der(),
+                Time::from_unix_seconds(seconds).to_der().as_bytes(),
                 utc_or_generalized,
                 "{seconds}"
             );
@@ -1160,7 +1162,8 @@ mod tests {
         #[test]
         fn times_round_trip(seconds in 0u64..=253_402_300_799) {
             let time = Time::from_unix_seconds(seconds);
-            let der = time.to_der();
+            let raw = time.to_der();
+            let der = raw.as_bytes();
             let kind = if der[0] == 0x17 { TimeKind::Utc } else { TimeKind::Generalized };
             prop_assert_eq!(Time::parse(kind, &der[2..]), Ok(time));
         }

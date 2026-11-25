@@ -30,7 +30,11 @@ use baldssl_core::{
     },
 };
 
-use crate::objects;
+use crate::{
+    cert::Extension as ExtensionView,
+    conf::{Config, replace_push},
+    objects,
+};
 
 /// `subjectKeyIdentifier`, 2.5.29.14.
 const ID_CE_SUBJECT_KEY_IDENTIFIER: ObjectId =
@@ -207,7 +211,12 @@ impl TryFrom<&ConfItem> for GeneralName {
     type Error = Error;
 
     fn try_from(item: &ConfItem) -> Result<Self> {
-        let kind = item.name.as_str();
+        // ossl_v3_name_cmp: "DNS" and "DNS.<anything>" both name DNS, which
+        // is how a section lists several (DNS.1, DNS.2).
+        let kind = item
+            .name
+            .split_once('.')
+            .map_or(item.name.as_str(), |(k, _)| k);
         let value = item.value.as_deref().ok_or_else(|| {
             Error::Usage(format!("subjectAltName: {kind} without a value"))
         })?;
@@ -269,6 +278,14 @@ pub enum ExtensionValue {
     ///
     /// [RFC 5280 section 4.2.1.12]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.12
     ExtendedKeyUsage(Vec<ObjectId>),
+    /// Any other extension, as its identifier and the DER of its value:
+    /// what copying a request's extensions carries without reading it.
+    Other {
+        /// `extnID`.
+        oid: ObjectId,
+        /// The contents of `extnValue`: the DER of the value, one TLV.
+        der: RawTlv,
+    },
 }
 
 impl ExtensionValue {
@@ -285,6 +302,7 @@ impl ExtensionValue {
             ExtensionValue::SubjectAltName(_) => ID_CE_SUBJECT_ALT_NAME,
             ExtensionValue::BasicConstraints { .. } => ID_CE_BASIC_CONSTRAINTS,
             ExtensionValue::ExtendedKeyUsage(_) => ID_CE_EXT_KEY_USAGE,
+            ExtensionValue::Other { oid, .. } => oid.clone(),
         }
     }
 
@@ -320,14 +338,15 @@ impl ExtensionValue {
             ExtensionValue::ExtendedKeyUsage(purposes) => {
                 RawTlv::encode(&SequenceOf(ObjectIdentifier), purposes)
             }
+            ExtensionValue::Other { der, .. } => der.clone(),
         }
     }
 
     /// `basicConstraints`: `CA:<bool>` and `pathlen:<n>`.
-    fn basic_constraints(items: &ConfList) -> Result<Self> {
+    fn basic_constraints(items: &[ConfItem]) -> Result<Self> {
         let mut ca = false;
         let mut path_length = None;
-        for item in &items.0 {
+        for item in items {
             let bad = || {
                 Error::Usage(format!(
                     "basicConstraints: bad item {}:{:?}",
@@ -379,47 +398,40 @@ impl Extension {
         }
     }
 
-    /// The DER `Extension`.
-    pub(crate) fn to_raw(&self) -> RawTlv {
-        let syntax: ExtensionSyntax = Sequence((
-            ObjectIdentifier,
-            (WithDefault::new(Boolean, false), (OctetString, ())),
-        ));
-        RawTlv::encode(
-            &syntax,
-            &(
-                self.value.oid(),
-                (self.critical, (self.value.to_raw().as_bytes().to_vec(), ())),
-            ),
-        )
-    }
-}
-
-/// The extension of a `name=value` line, as `openssl req -addext` and
-/// the extension sections of a configuration file write it:
-/// `subjectAltName`, `keyUsage`, `extendedKeyUsage` and
-/// `basicConstraints`, by short name only (`OBJ_sn2nid`); the names of
-/// usages and purposes may be short or long.
-///
-/// # Errors
-///
-/// [`Error::Usage`] for a malformed line, [`Error::Unsupported`] for
-/// another extension or value kind.
-impl FromStr for Extension {
-    type Err = Error;
-
-    fn from_str(line: &str) -> Result<Self> {
-        let (name, value) = line.split_once('=').ok_or_else(|| {
-            Error::Usage(format!("extension {line:?}: expected name=value"))
-        })?;
-        let (name, value) = (name.trim(), value.trim());
+    /// The extension `name = value`, as the `FromStr` of [`Extension`]
+    /// reads a line; a value `@section` lists the values of that section of
+    /// `config` instead of its own items, as OpenSSL's `X509V3_EXT_nconf`
+    /// reads them.
+    ///
+    /// # Errors
+    ///
+    /// As the `FromStr` of [`Extension`], and [`Error::Usage`] for an
+    /// `@section` without a configuration or with no such section.
+    pub(crate) fn from_name_value(
+        name: &str,
+        value: &str,
+        config: Option<&Config>,
+    ) -> Result<Self> {
         // v3_check_critical: exactly "critical,", then spaces.
         let (critical, value) = match value.strip_prefix("critical,") {
             Some(rest) => (true, rest.trim_start()),
             None => (false, value),
         };
-        let items: ConfList = value.parse()?;
-        let names = || items.0.iter().map(|item| item.name.as_str());
+        let items = match value.strip_prefix('@') {
+            Some(section) => config
+                .and_then(|c| c.section_opt(section))
+                .ok_or_else(|| {
+                    Error::Usage(format!("{name}: no section {section:?}"))
+                })?
+                .iter()
+                .map(|(n, v)| ConfItem {
+                    name: n.clone(),
+                    value: Some(v.clone()),
+                })
+                .collect::<Vec<_>>(),
+            None => value.parse::<ConfList>()?.0,
+        };
+        let names = || items.iter().map(|item| item.name.as_str());
         // OpenSSL looks the name up with OBJ_sn2nid: short names only.
         let dotted =
             objects::find_by_short_name_opt(name).ok_or_else(|| {
@@ -428,7 +440,6 @@ impl FromStr for Extension {
         let value = match dotted {
             "2.5.29.17" => ExtensionValue::SubjectAltName(
                 items
-                    .0
                     .iter()
                     .map(GeneralName::try_from)
                     .collect::<Result<_>>()?,
@@ -457,6 +468,64 @@ impl FromStr for Extension {
             }
         };
         Ok(Extension { critical, value })
+    }
+
+    /// The DER `Extension`.
+    pub(crate) fn to_raw(&self) -> RawTlv {
+        let syntax: ExtensionSyntax = Sequence((
+            ObjectIdentifier,
+            (WithDefault::new(Boolean, false), (OctetString, ())),
+        ));
+        RawTlv::encode(
+            &syntax,
+            &(
+                self.value.oid(),
+                (self.critical, (self.value.to_raw().as_bytes().to_vec(), ())),
+            ),
+        )
+    }
+}
+
+/// An extension as read from a certificate or a request, kept opaque
+/// ([`ExtensionValue::Other`]): what copying needs.
+///
+/// # Errors
+///
+/// An `extnValue` whose contents are not one DER TLV.
+impl TryFrom<&ExtensionView<'_>> for Extension {
+    type Error = Error;
+
+    fn try_from(view: &ExtensionView<'_>) -> Result<Self> {
+        let oid = ObjectId::from_dotted_opt(&view.oid.to_dotted()?)
+            .ok_or_else(|| Error::invalid("extension identifier"))?;
+        Ok(Extension {
+            critical: view.critical,
+            value: ExtensionValue::Other {
+                oid,
+                der: RawTlv::parse(view.value)?,
+            },
+        })
+    }
+}
+
+/// The extension of a `name=value` line, as `openssl req -addext` and
+/// the extension sections of a configuration file write it:
+/// `subjectAltName`, `keyUsage`, `extendedKeyUsage` and
+/// `basicConstraints`, by short name only (`OBJ_sn2nid`); the names of
+/// usages and purposes may be short or long.
+///
+/// # Errors
+///
+/// [`Error::Usage`] for a malformed line, [`Error::Unsupported`] for
+/// another extension or value kind.
+impl FromStr for Extension {
+    type Err = Error;
+
+    fn from_str(line: &str) -> Result<Self> {
+        let (name, value) = line.split_once('=').ok_or_else(|| {
+            Error::Usage(format!("extension {line:?}: expected name=value"))
+        })?;
+        Self::from_name_value(name.trim(), value.trim(), None)
     }
 }
 
@@ -501,17 +570,20 @@ impl Extensions {
     /// These extensions, overridden with `other` (see the type).
     #[must_use]
     pub fn override_with(&self, other: &Extensions) -> Extensions {
-        let replaced = |e: &&Extension| {
-            other.0.iter().any(|o| o.value.oid() == e.value.oid())
-        };
-        Extensions(
-            self.0
-                .iter()
-                .filter(|e| !replaced(e))
-                .chain(&other.0)
-                .cloned()
-                .collect(),
-        )
+        let mut out = self.0.clone();
+        for extension in &other.0 {
+            replace_push(&mut out, extension.clone(), |a, b| {
+                a.value.oid() == b.value.oid()
+            });
+        }
+        Extensions(out)
+    }
+
+    /// Whether there is an extension of the kind of `value`.
+    #[must_use]
+    pub fn contains_kind(&self, value: &ExtensionValue) -> bool {
+        let oid = value.oid();
+        self.0.iter().any(|e| e.value.oid() == oid)
     }
 
     /// The extensions, in order.

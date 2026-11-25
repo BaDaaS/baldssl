@@ -15,12 +15,14 @@ use baldssl_core::{
 use baldssl_pkey::{Algorithm, AnyPrivateKey, PublicKey};
 use baldssl_test_utils::{fixture, hex};
 
-use super::{CertificateTemplate, SerialNumber};
+use super::{
+    CertificateTemplate, CopyExtensions, IssuedExtensions, SerialNumber,
+};
 use crate::{
     Certificate, CertificationRequest, Compat, SignatureAlgorithm,
     cert::Validity,
     dn::{DistinguishedName, InputEncoding, UTF8_ONLY},
-    extension::ExtensionValue,
+    extension::{ExtensionValue, Extensions},
 };
 
 /// The parts of a DER certificate: what is signed, and the signature.
@@ -159,6 +161,7 @@ fn issued_matches_openssl() {
                 &ca_key,
                 SerialNumber::new_opt(&[1, 2]).unwrap(),
                 validity,
+                &IssuedExtensions::default(),
                 compat,
             )
             .unwrap()
@@ -209,10 +212,65 @@ fn issued_needs_the_ca_key() {
             &other,
             SerialNumber::new_opt(&[1]).unwrap(),
             Validity::from_unix_seconds(0, 1),
+            &IssuedExtensions::default(),
             Compat::V3,
         )
         .is_err()
     );
+}
+
+/// A CA certificate without a subject key identifier is refused: OpenSSL
+/// would name the issuer and serial in the authority key identifier.
+#[test]
+fn issued_needs_a_ca_key_identifier() {
+    let ca_key =
+        AnyPrivateKey::from_secret(Algorithm::Ed25519, &[5; 32]).unwrap();
+    let name = |subj: &[u8]| {
+        DistinguishedName::from_subj(
+            subj,
+            InputEncoding::Latin1,
+            true,
+            UTF8_ONLY,
+        )
+        .unwrap()
+        .0
+    };
+    let mut ca = CertificateTemplate::self_signed(
+        &name(b"/CN=CA"),
+        &PublicKey::from(&ca_key),
+        SerialNumber::new_opt(&[1]).unwrap(),
+        Validity::from_unix_seconds(0, 1),
+        Compat::V3,
+    );
+    ca.extensions = crate::extension::Extensions::new();
+    let ca_der = ca.sign(&ca_key, SignatureAlgorithm::Ed25519).unwrap();
+    let ca = Certificate::from_der(&ca_der).unwrap();
+    let leaf =
+        AnyPrivateKey::from_secret(Algorithm::Ed25519, &[6; 32]).unwrap();
+    let request = CertificationRequest::sign(
+        &name(b"/CN=leaf"),
+        &leaf,
+        SignatureAlgorithm::Ed25519,
+        &Extensions::new(),
+    )
+    .unwrap();
+    for compat in [Compat::V3, Compat::V4] {
+        assert!(
+            matches!(
+                CertificateTemplate::issued(
+                    &request,
+                    &ca,
+                    &ca_key,
+                    SerialNumber::new_opt(&[2]).unwrap(),
+                    Validity::from_unix_seconds(0, 1),
+                    &IssuedExtensions::default(),
+                    compat,
+                ),
+                Err(baldssl_core::Error::Unsupported(_))
+            ),
+            "{compat:?}"
+        );
+    }
 }
 
 #[test]
@@ -237,4 +295,20 @@ fn random_serials() {
         assert_ne!(bytes[0], 0);
         assert!(bytes.len() < 20 || bytes[0] < 0x80);
     }
+}
+
+/// `-copy_extensions` names, in any case, as OpenSSL's `set_ext_copy`.
+#[test]
+fn copy_extension_modes() {
+    for (name, mode) in [
+        ("none", CopyExtensions::None),
+        ("COPY", CopyExtensions::Copy),
+        ("CopyAll", CopyExtensions::CopyAll),
+    ] {
+        assert_eq!(name.parse::<CopyExtensions>(), Ok(mode), "{name}");
+    }
+    assert!(matches!(
+        "all".parse::<CopyExtensions>(),
+        Err(baldssl_core::Error::Usage(_))
+    ));
 }
