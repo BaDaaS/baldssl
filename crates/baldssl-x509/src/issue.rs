@@ -45,6 +45,8 @@
 //! [RFC 5280 section 4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
 //! [RFC 5280 section 4.2.1.2]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.2
 
+use std::str::FromStr;
+
 use baldssl_core::{
     Error, Result,
     der::{
@@ -154,6 +156,30 @@ pub enum CopyExtensions {
     /// All of them, each replacing the certificate's of its kind
     /// (`copyall`).
     CopyAll,
+}
+
+/// The mode `-copy_extensions` names, as OpenSSL's `set_ext_copy` reads
+/// it: `none`, `copy` or `copyall`, in any case.
+///
+/// # Errors
+///
+/// [`Error::Usage`] for any other name.
+impl FromStr for CopyExtensions {
+    type Err = Error;
+
+    fn from_str(name: &str) -> Result<Self> {
+        [
+            ("none", CopyExtensions::None),
+            ("copy", CopyExtensions::Copy),
+            ("copyall", CopyExtensions::CopyAll),
+        ]
+        .into_iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, mode)| mode)
+        .ok_or_else(|| {
+            Error::Usage(format!("unknown extension copy mode {name:?}"))
+        })
+    }
 }
 
 impl CopyExtensions {

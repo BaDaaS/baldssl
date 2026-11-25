@@ -15,7 +15,9 @@ use baldssl_core::{
 use baldssl_pkey::{Algorithm, AnyPrivateKey, PublicKey};
 use baldssl_test_utils::{fixture, hex};
 
-use super::{CertificateTemplate, IssuedExtensions, SerialNumber};
+use super::{
+    CertificateTemplate, CopyExtensions, IssuedExtensions, SerialNumber,
+};
 use crate::{
     Certificate, CertificationRequest, Compat, SignatureAlgorithm,
     cert::Validity,
@@ -293,4 +295,20 @@ fn random_serials() {
         assert_ne!(bytes[0], 0);
         assert!(bytes.len() < 20 || bytes[0] < 0x80);
     }
+}
+
+/// `-copy_extensions` names, in any case, as OpenSSL's `set_ext_copy`.
+#[test]
+fn copy_extension_modes() {
+    for (name, mode) in [
+        ("none", CopyExtensions::None),
+        ("COPY", CopyExtensions::Copy),
+        ("CopyAll", CopyExtensions::CopyAll),
+    ] {
+        assert_eq!(name.parse::<CopyExtensions>(), Ok(mode), "{name}");
+    }
+    assert!(matches!(
+        "all".parse::<CopyExtensions>(),
+        Err(baldssl_core::Error::Usage(_))
+    ));
 }
