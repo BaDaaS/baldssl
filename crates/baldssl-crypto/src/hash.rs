@@ -94,6 +94,21 @@ impl Algorithm {
         }
     }
 
+    /// The name OpenSSL 3 prints for this digest when it fetched it by
+    /// name (`EVP_MD_get0_name`, the names of
+    /// `providers/implementations/include/prov/names.h`): `-sha256` prints
+    /// as `SHA2-256`.
+    #[must_use]
+    pub fn fetched_name(self) -> &'static str {
+        match self {
+            Algorithm::Sha1 => "SHA1",
+            Algorithm::Sha224 => "SHA2-224",
+            Algorithm::Sha256 => "SHA2-256",
+            Algorithm::Sha384 => "SHA2-384",
+            Algorithm::Sha512 => "SHA2-512",
+        }
+    }
+
     /// Looks an algorithm up by its OpenSSL name, ignoring ASCII case.
     #[must_use]
     pub fn from_name_opt(name: &str) -> Option<Self> {
@@ -163,6 +178,19 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    /// The names OpenSSL 3 prints for fetched digests.
+    #[test]
+    fn fetched_names() {
+        let names: Vec<_> = Algorithm::ALL
+            .into_iter()
+            .map(Algorithm::fetched_name)
+            .collect();
+        assert_eq!(
+            names,
+            ["SHA1", "SHA2-224", "SHA2-256", "SHA2-384", "SHA2-512"]
+        );
+    }
 
     /// Known answers from the [FIPS 180-4 example documents][examples] (NIST CSRC,
     /// "Examples with Intermediate Values"): "abc", the empty string, the

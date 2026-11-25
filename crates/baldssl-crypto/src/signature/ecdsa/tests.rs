@@ -847,6 +847,48 @@ fn encoding() {
     assert_eq!(signature.encode(), expected);
 }
 
+/// The syntax and the range: zero and $n$ are signature values that do not
+/// decode, the malformed encodings are not signature values. OpenSSL fails
+/// verification for the first kind and errs for the second.
+#[test]
+fn syntax_and_range() {
+    let n = <C1 as Curve>::Scalar::modulus_be();
+    let one = [0x01];
+    let n_int = [&[0x00][..], &n].concat();
+    for out_of_range in [sig_value(&[0x00], &one), sig_value(&n_int, &one)] {
+        assert!(super::SigValue::decode(&out_of_range).is_ok());
+        assert_eq!(
+            Signature::<C1>::decode(&out_of_range),
+            Err(InvalidEncoding)
+        );
+    }
+    let mut trailing = sig_value(&one, &one);
+    trailing.push(0);
+    for malformed in [
+        sig_value(&[0xff], &one),
+        sig_value(&[0x00, 0x01], &one),
+        trailing,
+        vec![0x30, 0x81, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01],
+        Vec::new(),
+    ] {
+        assert!(
+            super::SigValue::decode(&malformed).is_err(),
+            "{malformed:02x?}"
+        );
+    }
+}
+
+proptest! {
+    /// What decodes is a signature value: decoding is the syntax, then
+    /// the range.
+    #[test]
+    fn decoding_refines_the_syntax(bytes in prop::collection::vec(any::<u8>(), 0..80)) {
+        if Signature::<C1>::decode(&bytes).is_ok() {
+            prop_assert!(super::SigValue::decode(&bytes).is_ok());
+        }
+    }
+}
+
 /// The records of one `[P-256,SHA-256]` section of a CAVP `.rsp` file, each
 /// field name with its value as text.
 fn cavp_records(text: &str, section: &str) -> Vec<Vec<(String, String)>> {

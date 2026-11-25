@@ -132,7 +132,7 @@ mod parse;
 mod sign;
 
 pub use parse::PublicKey;
-pub use sign::Signing;
+pub use sign::{SignatureCheck, Signing};
 
 use baldssl_core::{
     Error, Result,

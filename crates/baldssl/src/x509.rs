@@ -53,6 +53,7 @@ use baldssl_x509::{
 
 use crate::{
     args::{self, Kind, Spec},
+    digest::is_digest_option,
     input::{parse_format, read_input, read_key, read_request},
     issuing::{
         Lifetime, SerialSource, default_serial_file, parse_serial, parse_time,
@@ -276,27 +277,6 @@ struct Options {
     signing: Signing,
 }
 
-/// Digest names OpenSSL accepts that baldssl does not implement.
-fn is_unimplemented_digest(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "md5"
-            | "md4"
-            | "sha512-224"
-            | "sha512-256"
-            | "sha3-224"
-            | "sha3-256"
-            | "sha3-384"
-            | "sha3-512"
-            | "shake128"
-            | "shake256"
-            | "sm3"
-            | "ripemd160"
-            | "blake2b512"
-            | "blake2s256"
-    )
-}
-
 /// The `-fingerprint <digest>` extension: rewrites it to OpenSSL's
 /// `-fingerprint -<digest>`.
 fn expand_fingerprint_value(args: &[OsString]) -> Vec<OsString> {
@@ -320,9 +300,7 @@ fn expand_fingerprint_value(args: &[OsString]) -> Vec<OsString> {
 
 fn parse_options(raw: &[OsString]) -> Result<Options> {
     let raw = expand_fingerprint_value(raw);
-    let opts = args::parse("x509", &raw, SPECS, |n| {
-        Algorithm::from_name_opt(n).is_some() || is_unimplemented_digest(n)
-    })?;
+    let opts = args::parse("x509", &raw, SPECS, is_digest_option)?;
     let mut o = Options {
         input: None,
         output: None,
@@ -664,14 +642,6 @@ mod tests {
             prints(&["-dates", "-serial"]),
             [Print::StartDate, Print::EndDate, Print::Serial]
         );
-    }
-
-    #[test]
-    fn unimplemented_digests_are_named() {
-        assert!(is_unimplemented_digest("MD5"));
-        assert!(is_unimplemented_digest("sha3-256"));
-        assert!(!is_unimplemented_digest("sha256"));
-        assert!(!is_unimplemented_digest("text"));
     }
 
     #[test]

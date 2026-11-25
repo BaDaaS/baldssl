@@ -145,6 +145,33 @@ where
     }
 }
 
+/// An `ECDSA-Sig-Value` as its syntax gives it, whatever the values of $r$
+/// and $s$: two non-negative integers in canonical DER (minimal lengths,
+/// minimal integers, no trailing bytes). A [`Signature`] is one whose $r$
+/// and $s$ are in $[1, n - 1]$: decoding a `Signature` decodes this, then
+/// checks the range, so what decodes as a `Signature` decodes as a
+/// `SigValue`. OpenSSL draws the same line: it reports an error for bytes
+/// that are not a `SigValue`, and a verification failure for one out of
+/// range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SigValue {
+    /// $r$.
+    r: Natural,
+    /// $s$.
+    s: Natural,
+}
+
+/// Canonical DER only; anything else is [`InvalidEncoding`].
+impl Decodable for SigValue {
+    type Error = InvalidEncoding;
+
+    fn decode(der: &[u8]) -> Result<Self, InvalidEncoding> {
+        let (r, (s, ())) =
+            decode(&ECDSA_SIG_VALUE, der).map_err(|_| InvalidEncoding)?;
+        Ok(SigValue { r, s })
+    }
+}
+
 /// Canonical DER only (minimal lengths and integers, no trailing bytes),
 /// and $r$, $s$ in $[1, n - 1]$; anything else is [`InvalidEncoding`].
 impl<C> Decodable for Signature<C>
@@ -154,8 +181,7 @@ where
     type Error = InvalidEncoding;
 
     fn decode(der: &[u8]) -> Result<Self, InvalidEncoding> {
-        let (r, (s, ())) =
-            decode(&ECDSA_SIG_VALUE, der).map_err(|_| InvalidEncoding)?;
+        let SigValue { r, s } = SigValue::decode(der)?;
         Signature::new_opt(scalar_opt::<C>(&r)?, scalar_opt::<C>(&s)?)
             .ok_or(InvalidEncoding)
     }

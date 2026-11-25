@@ -80,7 +80,9 @@ pub(crate) fn parse(
 }
 
 /// As [`parse`], also taking arguments that are not options (the files of
-/// `verify`), returned in order.
+/// `verify` and `dgst`). As OpenSSL's `opt_rest`, the options end at the
+/// first argument that is not one, or after `--`: everything from there
+/// is an operand, even what looks like an option.
 ///
 /// # Errors
 ///
@@ -95,9 +97,14 @@ pub(crate) fn parse_with_operands(
     let mut operands = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
+        if arg == "--" {
+            operands.extend(it.cloned());
+            break;
+        }
         let Some((name, inline)) = split_option_opt(arg) else {
             operands.push(arg.clone());
-            continue;
+            operands.extend(it.cloned());
+            break;
         };
         match specs.iter().find(|s| s.name == name) {
             Some(spec) if spec.kind == Kind::Value => {
@@ -208,6 +215,25 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    /// The options end at the first operand, or after `--`.
+    #[test]
+    fn operands() {
+        let (o, rest) = parse_with_operands(
+            "x",
+            &os(&["-text", "a", "-in", "b"]),
+            SPECS,
+            |_| false,
+        )
+        .unwrap();
+        assert_eq!(o.len(), 1);
+        assert_eq!(rest, os(&["a", "-in", "b"]));
+        let (o, rest) =
+            parse_with_operands("x", &os(&["--", "-text"]), SPECS, |_| false)
+                .unwrap();
+        assert_eq!(o, []);
+        assert_eq!(rest, os(&["-text"]));
     }
 
     proptest! {

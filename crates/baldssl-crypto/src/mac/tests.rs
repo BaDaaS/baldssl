@@ -13,7 +13,7 @@ use proptest::prelude::*;
 use super::{Hmac, Mac, Tag};
 use crate::{
     ct::CtEq,
-    hash::{Digest, Sha1, Sha224, Sha256, Sha384, Sha512},
+    hash::{Algorithm, Digest, Sha1, Sha224, Sha256, Sha384, Sha512},
 };
 
 /// One test case: key, data, and the expected tag in hexadecimal. A
@@ -524,4 +524,25 @@ fn boundaries() {
         Hmac::<Sha512>::mac(&block, b"m"),
         Hmac::<Sha512>::mac(&Sha512::digest(&block), b"m")
     );
+}
+
+proptest! {
+    /// HMAC with a hash named at run time is HMAC with that hash's type:
+    /// `Algorithm::with` commutes with the construction.
+    #[test]
+    fn named_hmac_is_typed_hmac(
+        key in prop::collection::vec(any::<u8>(), 0..200),
+        message in prop::collection::vec(any::<u8>(), 0..300),
+    ) {
+        let typed = [
+            Hmac::<Sha1>::mac(&key, &message),
+            Hmac::<Sha224>::mac(&key, &message),
+            Hmac::<Sha256>::mac(&key, &message),
+            Hmac::<Sha384>::mac(&key, &message),
+            Hmac::<Sha512>::mac(&key, &message),
+        ];
+        for (algorithm, expected) in Algorithm::ALL.into_iter().zip(typed) {
+            prop_assert_eq!(algorithm.hmac(&key, &message), expected);
+        }
+    }
 }
