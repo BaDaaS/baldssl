@@ -21,7 +21,7 @@
     {"name": "errstr", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "lookup error codes", "status": "not-started", "note": ""},
     {"name": "fipsinstall", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "perform FIPS configuration installation", "status": "not-started", "note": ""},
     {"name": "gendsa", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "generate a DSA private key from a set of parameters", "status": "not-started", "note": ""},
-    {"name": "genpkey", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "generate a private key or key pair", "status": "partial", "note": "EC keys on P-256, P-384, P-521 and Ed25519 keys, PEM or DER. RSA, X25519, encryption and -text not yet."},
+    {"name": "genpkey", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "generate a private key or key pair", "status": "partial", "note": "EC keys on P-256, P-384, P-521 and Ed25519 keys, PEM or DER. RSA, X25519 and encryption not yet."},
     {"name": "genrsa", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "generate an RSA private key", "status": "not-started", "note": ""},
     {"name": "help", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "Display information about a command's options", "status": "partial", "note": "Lists the commands; per-command options via <command> -help."},
     {"name": "info", "kind": "standard", "openssl": ["3.5", "4.1"], "description": "print OpenSSL built-in information", "status": "not-started", "note": ""},
