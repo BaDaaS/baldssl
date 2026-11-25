@@ -2,84 +2,276 @@
 //!
 //! | Encoding | PEM label | Structure |
 //! | --- | --- | --- |
-//! | PKCS#8 | `PRIVATE KEY` | `OneAsymmetricKey` ([RFC 5958]), around [RFC 5915] for EC and [RFC 8410] for Ed25519 |
-//! | SEC 1 | `EC PRIVATE KEY` | `ECPrivateKey` ([RFC 5915]) |
-//! | SubjectPublicKeyInfo | `PUBLIC KEY` | [RFC 5480] for EC, [RFC 8410] for Ed25519 |
+//! | PKCS#8 | `PRIVATE KEY` | `OneAsymmetricKey` ([RFC 5958, section 2][rfc5958]), around [RFC 5915][rfc5915] for EC and [RFC 8410, section 7][rfc8410-7] for Ed25519 |
+//! | SEC 1 | `EC PRIVATE KEY` | `ECPrivateKey` ([RFC 5915, section 3][rfc5915]) |
+//! | SubjectPublicKeyInfo | `PUBLIC KEY` | [RFC 5480, section 2][rfc5480] for EC, [RFC 8410, section 4][rfc8410-4] for Ed25519 |
 //!
 //! The validation rules, and where they differ from OpenSSL, are in the
 //! crate documentation (section "Reading keys"), where callers see them.
 //!
-//! [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480
-//! [RFC 5915]: https://www.rfc-editor.org/rfc/rfc5915
-//! [RFC 5958]: https://www.rfc-editor.org/rfc/rfc5958
-//! [RFC 8410]: https://www.rfc-editor.org/rfc/rfc8410
+//! # The reader of private keys is lenient
+//!
+//! A SubjectPublicKeyInfo is read with its syntax description, the inverse
+//! of its writer. Private keys are read by the hand reader below instead of
+//! the `PRIVATE_KEY_INFO` and `EC_PRIVATE_KEY` descriptions, because it
+//! accepts more than the writer writes, as OpenSSL reads it: a
+//! `OneAsymmetricKey` of version 1 with its `[1]` public key, `[0]`
+//! attributes (skipped without being read, as baldssl uses none), `[0]`
+//! curve parameters inside PKCS#8, either structure where the other is
+//! expected in DER (told apart by their second field), and each rejection
+//! with the field it concerns. What it reads re-encodes to the one record
+//! the writer writes for the key; the tests show inputs where the two
+//! differ.
+//!
+//! [rfc5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2
+//! [rfc5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
+//! [rfc5958]: https://www.rfc-editor.org/rfc/rfc5958#section-2
+//! [rfc8410-4]: https://www.rfc-editor.org/rfc/rfc8410#section-4
+//! [rfc8410-7]: https://www.rfc-editor.org/rfc/rfc8410#section-7
 
 use baldssl_core::{
     Error, Result,
     der::{
         BitString as BitStringContents, Integer, Reader,
-        syntax::{ObjectIdentifier, RawTlv, decode},
+        syntax::{ObjectId, ObjectIdentifier, RawTlv, decode},
         tag,
     },
     encoding::{Decodable, Encodable},
     pem::{self, Pem, PemBlock, PemError},
 };
 use baldssl_crypto::{
-    algebra::curve::ShortWeierstrass,
     instances::{P256, P384, P521},
-    models::weierstrass::affine::Affine,
+    secret::SecretBytes,
+    signature::{
+        ecdsa::PublicKey as EcdsaPublicKey,
+        eddsa::{Ed25519, Ed25519Parameters, PublicKey as EddsaPublicKey},
+    },
 };
 
 use crate::{
-    Algorithm, AnyPrivateKey,
+    Algorithm, AnyPrivateKey, ED25519_KEY_LEN, PublicOf, ReadPublic, Signing,
     asn1::{
-        ALGORITHM_IDENTIFIER, AlgorithmIdentifierValue, ID_EC_PUBLIC_KEY,
-        ID_ED25519, SubjectPublicKeyInfo,
+        ALGORITHM_IDENTIFIER, AlgorithmIdentifierValue, EC_PRIVATE_KEY_VERSION,
+        ID_EC_PUBLIC_KEY, ID_ED25519, OTHER_ALGORITHMS, SubjectPublicKeyInfo,
     },
-    point_opt,
 };
 
 /// The PEM labels of private keys, as OpenSSL reads them.
-const PRIVATE_LABELS: &[&str] =
-    &["PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY"];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrivateKeyLabel {
+    /// `PRIVATE KEY`, PKCS#8 ([RFC 7468, section 10][rfc7468-10]).
+    ///
+    /// [rfc7468-10]: https://www.rfc-editor.org/rfc/rfc7468#section-10
+    Pkcs8,
+    /// `EC PRIVATE KEY`, SEC 1's `ECPrivateKey` ([RFC 5915, section
+    /// 4][rfc5915-4]).
+    ///
+    /// [rfc5915-4]: https://www.rfc-editor.org/rfc/rfc5915#section-4
+    Sec1,
+    /// `ENCRYPTED PRIVATE KEY`, PKCS#8's `EncryptedPrivateKeyInfo` ([RFC
+    /// 7468, section 11][rfc7468-11]).
+    ///
+    /// [rfc7468-11]: https://www.rfc-editor.org/rfc/rfc7468#section-11
+    Encrypted,
+}
 
-/// Other key algorithms, named in the unsupported error.
-const OTHER_ALGORITHMS: &[(&str, &str)] = &[
-    ("1.2.840.113549.1.1.1", "RSA"),
-    ("1.2.840.113549.1.1.10", "RSA-PSS"),
-    ("1.3.101.110", "X25519"),
-    ("1.3.101.111", "X448"),
-    ("1.3.101.113", "Ed448"),
-];
+impl PrivateKeyLabel {
+    /// Every label.
+    const ALL: [PrivateKeyLabel; 3] = [
+        PrivateKeyLabel::Pkcs8,
+        PrivateKeyLabel::Sec1,
+        PrivateKeyLabel::Encrypted,
+    ];
+
+    /// The label of the BEGIN and END lines.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            PrivateKeyLabel::Pkcs8 => "PRIVATE KEY",
+            PrivateKeyLabel::Sec1 => "EC PRIVATE KEY",
+            PrivateKeyLabel::Encrypted => "ENCRYPTED PRIVATE KEY",
+        }
+    }
+
+    /// The label a PEM block has, when it is one of a private key.
+    fn from_label_opt(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|l| l.label() == label)
+    }
+}
+
+/// The versions of `OneAsymmetricKey` ([RFC 5958, section 2][rfc5958]):
+/// `Version ::= INTEGER { v1(0), v2(1) }`.
+///
+/// [rfc5958]: https://www.rfc-editor.org/rfc/rfc5958#section-2
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+enum OneAsymmetricKeyVersion {
+    /// `v1(0)`: PKCS#8's `PrivateKeyInfo`, with no public key.
+    V1 = 0,
+    /// `v2(1)`: may carry the `[1]` public key.
+    V2 = 1,
+}
+
+/// A version number, when it is one of [RFC 5958].
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for any other number.
+///
+/// [RFC 5958]: https://www.rfc-editor.org/rfc/rfc5958#section-2
+impl TryFrom<u64> for OneAsymmetricKeyVersion {
+    type Error = Error;
+
+    fn try_from(version: u64) -> Result<Self> {
+        OneAsymmetricKeyVersion::ALL
+            .into_iter()
+            .find(|v| v.number() == version)
+            .ok_or_else(|| Error::invalid(format!("PKCS#8: version {version}")))
+    }
+}
+
+impl OneAsymmetricKeyVersion {
+    /// Every version.
+    const ALL: [OneAsymmetricKeyVersion; 2] =
+        [OneAsymmetricKeyVersion::V1, OneAsymmetricKeyVersion::V2];
+
+    /// The INTEGER the version is.
+    #[allow(
+        clippy::as_conversions,
+        reason = "reads the discriminant, which is the version's number"
+    )]
+    fn number(self) -> u64 {
+        self as u64
+    }
+}
+
+/// An Ed25519 public key as a SubjectPublicKeyInfo holds it: the
+/// [`ED25519_KEY_LEN`] bytes of [RFC 8032, section 5.1.2][rfc8032]
+/// (little-endian), not decoded, as OpenSSL reads it, so any 32 bytes are
+/// one. Verifying decodes them.
+///
+/// [rfc8032]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed25519PublicKey(Vec<u8>);
+
+impl Ed25519PublicKey {
+    /// The 32 bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// The encoding of a typed key: $b = 256$ bits, [`ED25519_KEY_LEN`] bytes,
+/// by RFC 8032 section 5.1.2, which the tests check of every key.
+impl From<&EddsaPublicKey<Ed25519Parameters>> for Ed25519PublicKey {
+    fn from(key: &EddsaPublicKey<Ed25519Parameters>) -> Self {
+        Ed25519PublicKey(key.as_bytes().to_vec())
+    }
+}
+
+/// Any [`ED25519_KEY_LEN`] bytes.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] for another length.
+impl TryFrom<&[u8]> for Ed25519PublicKey {
+    type Error = Error;
+
+    fn try_from(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() == ED25519_KEY_LEN {
+            Ok(Ed25519PublicKey(bytes.to_vec()))
+        } else {
+            Err(Error::invalid("Ed25519 public key: not 32 bytes"))
+        }
+    }
+}
+
+/// The 32 bytes.
+impl Encodable for Ed25519PublicKey {
+    type Bytes = Vec<u8>;
+
+    fn encode(&self) -> Vec<u8> {
+        self.0.clone()
+    }
+}
 
 /// A public key, read from a SubjectPublicKeyInfo: the point for the EC
-/// curves, whatever SEC 1 form it was read in, and the 32-byte encoding of
-/// [RFC 8032] section 5.1.2 for Ed25519 (which OpenSSL does not check
-/// further when it reads a key, so neither does baldssl).
-///
-/// [RFC 8032]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
+/// curves, whatever SEC 1 form it was read in, and the 32 bytes of an
+/// [`Ed25519PublicKey`] for Ed25519. Each variant holds the
+/// [`KeyAlgorithm::SubjectPublicKey`](crate::KeyAlgorithm::SubjectPublicKey)
+/// of its algorithm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PublicKey {
     /// A point of P-256 other than the identity.
-    P256(Affine<P256>),
+    P256(EcdsaPublicKey<P256>),
     /// A point of P-384 other than the identity.
-    P384(Affine<P384>),
+    P384(EcdsaPublicKey<P384>),
     /// A point of P-521 other than the identity.
-    P521(Affine<P521>),
+    P521(EcdsaPublicKey<P521>),
     /// An Ed25519 public key.
-    Ed25519([u8; 32]),
+    Ed25519(Ed25519PublicKey),
+}
+
+/// A computation generic over the key algorithm, which [`PublicKey::with`]
+/// runs on the typed public key it holds.
+pub(crate) trait WithPublicKey {
+    /// What the computation gives.
+    type Output;
+
+    /// The computation on a typed public key.
+    fn run<A>(self, key: &A::SubjectPublicKey) -> Self::Output
+    where
+        A: Signing;
+}
+
+/// The algorithm of a typed public key.
+struct AlgorithmOf;
+
+impl WithPublicKey for AlgorithmOf {
+    type Output = Algorithm;
+
+    fn run<A>(self, _key: &A::SubjectPublicKey) -> Algorithm
+    where
+        A: Signing,
+    {
+        A::ALGORITHM
+    }
+}
+
+/// The encoding of a typed public key.
+struct KeyBytes;
+
+impl WithPublicKey for KeyBytes {
+    type Output = Vec<u8>;
+
+    fn run<A>(self, key: &A::SubjectPublicKey) -> Vec<u8>
+    where
+        A: Signing,
+    {
+        key.encode()
+    }
 }
 
 impl PublicKey {
+    /// Runs `computation` on the typed public key this value holds: the only
+    /// place a run-time public key becomes a typed one, the inverse of
+    /// [`KeyAlgorithm::public_into_any`](crate::KeyAlgorithm::public_into_any).
+    pub(crate) fn with<W>(&self, computation: W) -> W::Output
+    where
+        W: WithPublicKey,
+    {
+        match self {
+            PublicKey::P256(q) => computation.run::<P256>(q),
+            PublicKey::P384(q) => computation.run::<P384>(q),
+            PublicKey::P521(q) => computation.run::<P521>(q),
+            PublicKey::Ed25519(key) => computation.run::<Ed25519>(key),
+        }
+    }
+
     /// The key type.
     #[must_use]
     pub fn algorithm(&self) -> Algorithm {
-        match self {
-            PublicKey::P256(_) => Algorithm::P256,
-            PublicKey::P384(_) => Algorithm::P384,
-            PublicKey::P521(_) => Algorithm::P521,
-            PublicKey::Ed25519(_) => Algorithm::Ed25519,
-        }
+        self.with(AlgorithmOf)
     }
 
     /// The key's own encoding: the point's (SEC 1 uncompressed, `04 || x ||
@@ -87,12 +279,7 @@ impl PublicKey {
     /// Ed25519 key.
     #[must_use]
     pub fn public_key_bytes(&self) -> Vec<u8> {
-        match self {
-            PublicKey::P256(p) => p.encode(),
-            PublicKey::P384(p) => p.encode(),
-            PublicKey::P521(p) => p.encode(),
-            PublicKey::Ed25519(key) => key.to_vec(),
-        }
+        self.with(KeyBytes)
     }
 
     /// Reads the first `PUBLIC KEY` block of a PEM input.
@@ -106,15 +293,6 @@ impl PublicKey {
     }
 }
 
-/// The point of `C` that `key` encodes, as [`point_opt`] reads it.
-fn point<C>(key: &[u8]) -> Result<Affine<C>>
-where
-    C: ShortWeierstrass,
-{
-    point_opt::<C>(key)
-        .ok_or_else(|| Error::invalid("public key: not a point of the curve"))
-}
-
 /// The checks that make a SubjectPublicKeyInfo a public key.
 ///
 /// # Errors
@@ -126,36 +304,14 @@ impl TryFrom<SubjectPublicKeyInfo> for PublicKey {
     type Error = Error;
 
     fn try_from(spki: SubjectPublicKeyInfo) -> Result<Self> {
-        Ok(match algorithm(&spki.algorithm)? {
-            Algorithm::P256 => PublicKey::P256(point(&spki.key)?),
-            Algorithm::P384 => PublicKey::P384(point(&spki.key)?),
-            Algorithm::P521 => PublicKey::P521(point(&spki.key)?),
-            Algorithm::Ed25519 => {
-                PublicKey::Ed25519(spki.key.try_into().map_err(|_| {
-                    Error::invalid("Ed25519 public key: not 32 bytes")
-                })?)
-            }
-        })
+        Algorithm::try_from(&spki.algorithm)?.with(ReadPublic(&spki.key))
     }
 }
 
 /// The public key of a private key.
 impl From<&AnyPrivateKey> for PublicKey {
     fn from(key: &AnyPrivateKey) -> Self {
-        match key {
-            AnyPrivateKey::P256(k) => PublicKey::P256(*k.key_pair().public()),
-            AnyPrivateKey::P384(k) => PublicKey::P384(*k.key_pair().public()),
-            AnyPrivateKey::P521(k) => PublicKey::P521(*k.key_pair().public()),
-            AnyPrivateKey::Ed25519(k) => {
-                // An Ed25519 public key is 32 bytes; zip copies without a
-                // length check that could panic.
-                let mut bytes = [0u8; 32];
-                for (b, p) in bytes.iter_mut().zip(k.key_pair().public()) {
-                    *b = *p;
-                }
-                PublicKey::Ed25519(bytes)
-            }
-        }
+        key.with(PublicOf)
     }
 }
 
@@ -164,7 +320,7 @@ impl From<&AnyPrivateKey> for PublicKey {
 impl From<&PublicKey> for SubjectPublicKeyInfo {
     fn from(key: &PublicKey) -> Self {
         SubjectPublicKeyInfo {
-            algorithm: algorithm_value(key.algorithm()),
+            algorithm: key.algorithm().algorithm_identifier(),
             key: key.public_key_bytes(),
         }
     }
@@ -232,19 +388,22 @@ impl AnyPrivateKey {
     /// [`Error::Unsupported`] for an encrypted key, and the errors of
     /// [`AnyPrivateKey::try_from`] a [`PemBlock`].
     pub fn from_pem(input: &[u8]) -> Result<Self> {
-        let block =
-            pem::decode_first(input, PRIVATE_LABELS).map_err(|e| match e {
-                PemError::HeadersUnsupported => Error::unsupported(
-                    "encrypted PEM keys (Proc-Type and DEK-Info headers)",
-                ),
-                other => Error::Pem(other),
-            })?;
+        let labels = PrivateKeyLabel::ALL.map(PrivateKeyLabel::label);
+        let block = pem::decode_first(input, &labels).map_err(|e| match e {
+            PemError::HeadersUnsupported => Error::unsupported(
+                "encrypted PEM keys (Proc-Type and DEK-Info headers)",
+            ),
+            other @ (PemError::NoBlock
+            | PemError::Unterminated
+            | PemError::Base64(_)) => Error::Pem(other),
+        })?;
         Self::try_from(&block)
     }
 }
 
 /// A DER private key: PKCS#8 (`PrivateKeyInfo` or `OneAsymmetricKey`) or
 /// SEC 1 (`ECPrivateKey`), told apart by their structure as OpenSSL does.
+/// The lenient reader (see the module documentation).
 ///
 /// # Errors
 ///
@@ -279,23 +438,27 @@ impl TryFrom<&PemBlock> for AnyPrivateKey {
     type Error = Error;
 
     fn try_from(block: &PemBlock) -> Result<Self> {
-        match block.label.as_str() {
-            "PRIVATE KEY" => {
+        let label =
+            PrivateKeyLabel::from_label_opt(&block.label).ok_or_else(|| {
+                Error::invalid(format!(
+                    "PEM: {} where a private key was expected",
+                    block.label
+                ))
+            })?;
+        match label {
+            PrivateKeyLabel::Pkcs8 => {
                 let mut seq = outer_sequence(&block.contents)?;
                 let version = small_integer(&mut seq, "version")?;
                 pkcs8(version, seq)
             }
-            "EC PRIVATE KEY" => {
+            PrivateKeyLabel::Sec1 => {
                 let mut seq = outer_sequence(&block.contents)?;
                 let version = small_integer(&mut seq, "version")?;
                 sec1(version, seq, None)
             }
-            "ENCRYPTED PRIVATE KEY" => Err(Error::unsupported(
+            PrivateKeyLabel::Encrypted => Err(Error::unsupported(
                 "encrypted private keys (ENCRYPTED PRIVATE KEY)",
             )),
-            other => Err(Error::invalid(format!(
-                "PEM: {other} where a private key was expected"
-            ))),
         }
     }
 }
@@ -310,48 +473,33 @@ fn outer_sequence(der: &[u8]) -> Result<Reader<'_>> {
 
 /// A small non-negative INTEGER.
 fn small_integer(r: &mut Reader<'_>, what: &str) -> Result<u64> {
-    let int = Integer::parse(r.expect(tag::INTEGER)?.value)?;
-    if int.negative {
+    let int = Integer::parse(r.expect(tag::INTEGER)?.value())?;
+    if int.is_negative() {
         return Err(Error::invalid(format!("{what}: negative")));
     }
     int.to_u64_opt()
         .ok_or_else(|| Error::invalid(format!("{what}: too large")))
 }
 
-/// The curve named by an OID.
-fn named_curve(oid: &str) -> Result<Algorithm> {
-    [Algorithm::P256, Algorithm::P384, Algorithm::P521]
+/// The EC curve named by an object identifier, compared as a value; the
+/// dotted form is for the error message only.
+fn named_curve(oid: &ObjectId) -> Result<Algorithm> {
+    match Algorithm::ALL
         .into_iter()
-        .find(|a| {
-            a.curve_oid_opt()
-                .and_then(|o| o.to_dotted().ok())
-                .as_deref()
-                == Some(oid)
-        })
-        .ok_or_else(|| Error::unsupported(format!("EC curve {oid}")))
-}
-
-/// ECParameters ([RFC 5480] section 2.1.1), one TLV: only a `namedCurve`.
-///
-/// [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2.1.1
-fn ec_parameters(params: &RawTlv) -> Result<Algorithm> {
-    match params.as_bytes().first() {
-        Some(&tag::OID) => named_curve(
-            &decode(&ObjectIdentifier, params.as_bytes())?.to_dotted()?,
-        ),
-        Some(&tag::SEQUENCE) => {
-            Err(Error::unsupported("explicit EC curve parameters"))
+        .find(|a| a.curve_oid_opt().as_ref() == Some(oid))
+    {
+        Some(algorithm) => Ok(algorithm),
+        None => {
+            Err(Error::unsupported(format!("EC curve {}", oid.to_dotted()?)))
         }
-        // NULL is implicitCA: the curve is inherited from elsewhere, which
-        // RFC 5480 forbids in certificates and keys.
-        _ => Err(Error::invalid("EC parameters: not a named curve")),
     }
 }
 
-/// The curve DER `ECParameters` ([RFC 5480] section 2.1.1) name, as
-/// `openssl ecparam` writes them (the contents of an `EC PARAMETERS` PEM
-/// block). A `TryFrom`, not a `From`: not every TLV names a curve baldssl
-/// implements.
+/// The curve DER `ECParameters` ([RFC 5480] section 2.1.1) name, only a
+/// `namedCurve`, as `openssl ecparam` writes them (the contents of an `EC
+/// PARAMETERS` PEM block) and as the AlgorithmIdentifier of an EC key and
+/// the `[0]` of an `ECPrivateKey` hold them. A `TryFrom`, not a `From`: not
+/// every TLV names a curve baldssl implements.
 ///
 /// # Errors
 ///
@@ -363,7 +511,17 @@ impl TryFrom<&RawTlv> for Algorithm {
     type Error = Error;
 
     fn try_from(params: &RawTlv) -> Result<Self> {
-        ec_parameters(params)
+        match params.as_bytes().first() {
+            Some(&tag::OID) => {
+                named_curve(&decode(&ObjectIdentifier, params.as_bytes())?)
+            }
+            Some(&tag::SEQUENCE) => {
+                Err(Error::unsupported("explicit EC curve parameters"))
+            }
+            // NULL is implicitCA: the curve is inherited from elsewhere,
+            // which RFC 5480 forbids in certificates and keys.
+            _ => Err(Error::invalid("EC parameters: not a named curve")),
+        }
     }
 }
 
@@ -371,99 +529,108 @@ impl TryFrom<&RawTlv> for Algorithm {
 /// checked: for EC ([RFC 5480] section 2.1.1) only a `namedCurve`; for
 /// Ed25519 ([RFC 8410] section 3) no parameters.
 ///
+/// # Errors
+///
+/// [`Error::Invalid`] for parameters the algorithm does not take, and
+/// [`Error::Unsupported`] for another algorithm.
+///
 /// [RFC 5480]: https://www.rfc-editor.org/rfc/rfc5480#section-2.1.1
 /// [RFC 8410]: https://www.rfc-editor.org/rfc/rfc8410#section-3
-fn algorithm(
-    (oid, (params, ())): &AlgorithmIdentifierValue,
-) -> Result<Algorithm> {
-    if *oid == ID_EC_PUBLIC_KEY {
-        return match params {
-            Some(params) => ec_parameters(params),
-            None => Err(Error::invalid("EC parameters: not a named curve")),
+impl TryFrom<&AlgorithmIdentifierValue> for Algorithm {
+    type Error = Error;
+
+    fn try_from(
+        (oid, (params, ())): &AlgorithmIdentifierValue,
+    ) -> Result<Self> {
+        if *oid == ID_EC_PUBLIC_KEY {
+            return match params {
+                Some(params) => Algorithm::try_from(params),
+                None => Err(Error::invalid("EC parameters: not a named curve")),
+            };
+        }
+        if *oid == ID_ED25519 {
+            return match params {
+                None => Ok(Algorithm::Ed25519),
+                Some(_) => {
+                    Err(Error::invalid("Ed25519: parameters must be absent"))
+                }
+            };
+        }
+        let name = match OTHER_ALGORITHMS.iter().find(|(o, _)| o == oid) {
+            Some((_, name)) => (*name).to_owned(),
+            None => oid.to_dotted()?,
         };
+        Err(Error::unsupported(format!("{name} keys")))
     }
-    if *oid == ID_ED25519 {
-        return match params {
-            None => Ok(Algorithm::Ed25519),
-            Some(_) => {
-                Err(Error::invalid("Ed25519: parameters must be absent"))
-            }
-        };
-    }
-    let dotted = oid.to_dotted()?;
-    let name = OTHER_ALGORITHMS
-        .iter()
-        .find(|(o, _)| *o == dotted)
-        .map_or(dotted.as_str(), |(_, n)| n);
-    Err(Error::unsupported(format!("{name} keys")))
 }
 
 /// The AlgorithmIdentifier that comes next in `r`, read with its
 /// description.
 fn algorithm_identifier(r: &mut Reader<'_>) -> Result<Algorithm> {
     let tlv = r.read()?;
-    algorithm(&decode(&ALGORITHM_IDENTIFIER, tlv.encoded)?)
-}
-
-/// The AlgorithmIdentifier of a key type, as written by OpenSSL.
-fn algorithm_value(algorithm: Algorithm) -> AlgorithmIdentifierValue {
-    match algorithm.curve_oid_opt() {
-        Some(curve) => (
-            ID_EC_PUBLIC_KEY,
-            (Some(RawTlv::encode(&ObjectIdentifier, &curve)), ()),
-        ),
-        None => (ID_ED25519, (None, ())),
-    }
+    Algorithm::try_from(&decode(&ALGORITHM_IDENTIFIER, tlv.encoded())?)
 }
 
 /// The scalar of an OCTET STRING of any length, at the full length of the
-/// group order: leading zero bytes removed, then left-padded. `None` when
-/// it is longer than the order once leading zeros are removed.
-fn full_length_opt(bytes: &[u8], len: usize) -> Option<Vec<u8>> {
+/// group order: leading zero bytes removed, then left-padded, in memory
+/// that is wiped. `None` when it is longer than the order once leading
+/// zeros are removed.
+fn full_length_opt(bytes: &[u8], len: usize) -> Option<SecretBytes> {
     let first = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
     let digits = bytes.get(first..)?;
     let pad = len.checked_sub(digits.len())?;
-    let mut out = vec![0u8; pad];
-    out.extend_from_slice(digits);
+    let mut out = SecretBytes::filled(0, len);
+    // `pad + digits.len() == len`, so the tail is exactly as long as the
+    // digits and `copy_from_slice` cannot fail.
+    out.expose_mut().get_mut(pad..)?.copy_from_slice(digits);
     Some(out)
 }
 
 /// OneAsymmetricKey ([RFC 5958] section 2), after its version:
 /// AlgorithmIdentifier, OCTET STRING privateKey, `[0]` attributes
-/// (ignored), `[1]` publicKey (version 1, called v2, only).
+/// (skipped), `[1]` publicKey (version v2 only).
 ///
-/// [RFC 5958]: https://www.rfc-editor.org/rfc/rfc5958
+/// [RFC 5958]: https://www.rfc-editor.org/rfc/rfc5958#section-2
 fn pkcs8(version: u64, mut seq: Reader<'_>) -> Result<AnyPrivateKey> {
-    if version > 1 {
-        return Err(Error::invalid(format!("PKCS#8: version {version}")));
-    }
+    let version = OneAsymmetricKeyVersion::try_from(version)?;
     let algorithm = algorithm_identifier(&mut seq)?;
-    let private = seq.expect(tag::OCTET_STRING)?.value;
+    let private = seq.expect(tag::OCTET_STRING)?.value();
     seq.optional(tag::context_constructed(0))?;
     let public = seq.optional(tag::context(1))?;
     seq.finish()?;
-    if public.is_some() && version == 0 {
-        return Err(Error::invalid("PKCS#8: a public key needs version 1"));
-    }
-    let key = if algorithm == Algorithm::Ed25519 {
-        // CurvePrivateKey ::= OCTET STRING (RFC 8410 section 7).
-        let mut inner = Reader::new(private);
-        let seed = inner.expect(tag::OCTET_STRING)?.value;
-        inner.finish()?;
-        if seed.len() != 32 {
-            return Err(Error::invalid("Ed25519 private key: not 32 bytes"));
+    let public = match (version, public) {
+        (OneAsymmetricKeyVersion::V1, Some(_)) => {
+            return Err(Error::invalid("PKCS#8: a public key needs version 1"));
         }
-        AnyPrivateKey::from_secret(Algorithm::Ed25519, seed)?
-    } else {
-        let mut inner = Reader::new(private);
-        let mut ec = inner.sequence()?;
-        inner.finish()?;
-        let ec_version = small_integer(&mut ec, "ECPrivateKey version")?;
-        sec1(ec_version, ec, Some(algorithm))?
+        (OneAsymmetricKeyVersion::V1 | OneAsymmetricKeyVersion::V2, None) => {
+            None
+        }
+        (OneAsymmetricKeyVersion::V2, Some(public)) => Some(public),
+    };
+    let key = match algorithm {
+        Algorithm::Ed25519 => {
+            // CurvePrivateKey ::= OCTET STRING (RFC 8410 section 7).
+            let mut inner = Reader::new(private);
+            let seed = inner.expect(tag::OCTET_STRING)?.value();
+            inner.finish()?;
+            if seed.len() != ED25519_KEY_LEN {
+                return Err(Error::invalid(
+                    "Ed25519 private key: not 32 bytes",
+                ));
+            }
+            AnyPrivateKey::from_secret(Algorithm::Ed25519, seed)?
+        }
+        Algorithm::P256 | Algorithm::P384 | Algorithm::P521 => {
+            let mut inner = Reader::new(private);
+            let mut ec = inner.sequence()?;
+            inner.finish()?;
+            let ec_version = small_integer(&mut ec, "ECPrivateKey version")?;
+            sec1(ec_version, ec, Some(algorithm))?
+        }
     };
     if let Some(public) = public {
-        let bits = BitStringContents::parse(public.value)?;
-        if bits.unused != 0 || !matches_public(&key, bits.bytes) {
+        let bits = BitStringContents::parse(public.value())?;
+        if bits.unused() != 0 || !matches_public(&key, bits.bytes()) {
             return Err(Error::invalid(
                 "the public key does not match the private key",
             ));
@@ -476,32 +643,35 @@ fn pkcs8(version: u64, mut seq: Reader<'_>) -> Result<AnyPrivateKey> {
 /// privateKey, `[0]` parameters, `[1]` publicKey. `curve` is the curve of
 /// the enclosing PKCS#8 AlgorithmIdentifier; standalone, `[0]` names it.
 ///
-/// [RFC 5915]: https://www.rfc-editor.org/rfc/rfc5915
+/// [RFC 5915]: https://www.rfc-editor.org/rfc/rfc5915#section-3
 fn sec1(
     version: u64,
     mut seq: Reader<'_>,
     curve: Option<Algorithm>,
 ) -> Result<AnyPrivateKey> {
-    if version != 1 {
+    if version != EC_PRIVATE_KEY_VERSION {
         return Err(Error::invalid(format!("ECPrivateKey: version {version}")));
     }
-    let scalar = seq.expect(tag::OCTET_STRING)?.value;
+    let scalar = seq.expect(tag::OCTET_STRING)?.value();
     let parameters = match seq.optional(tag::context_constructed(0))? {
-        Some(params) => Some(ec_parameters(&RawTlv::parse(params.value)?)?),
+        Some(params) => {
+            Some(Algorithm::try_from(&RawTlv::parse(params.value())?)?)
+        }
         None => None,
     };
     let public = match seq.optional(tag::context_constructed(1))? {
         Some(public) => {
-            let mut inner = Reader::new(public.value);
-            let bits =
-                BitStringContents::parse(inner.expect(tag::BIT_STRING)?.value)?;
+            let mut inner = Reader::new(public.value());
+            let bits = BitStringContents::parse(
+                inner.expect(tag::BIT_STRING)?.value(),
+            )?;
             inner.finish()?;
-            if bits.unused != 0 {
+            if bits.unused() != 0 {
                 return Err(Error::invalid(
                     "public key: not a whole number of bytes",
                 ));
             }
-            Some(bits.bytes)
+            Some(bits.bytes())
         }
         None => None,
     };
@@ -518,7 +688,7 @@ fn sec1(
     };
     let secret = full_length_opt(scalar, algorithm.secret_len())
         .ok_or_else(|| Error::invalid("private scalar not in [1, n - 1]"))?;
-    let key = AnyPrivateKey::from_secret(algorithm, &secret)?;
+    let key = AnyPrivateKey::from_secret(algorithm, secret.expose())?;
     if let Some(public) = public
         && !matches_public(&key, public)
     {
@@ -530,14 +700,11 @@ fn sec1(
 }
 
 /// Whether `encoded` (any SEC 1 form, or Ed25519 bytes) is the public key
-/// of `key`.
+/// of `key`: read as a public key of its algorithm and compared as a value.
 fn matches_public(key: &AnyPrivateKey, encoded: &[u8]) -> bool {
-    let public = key.public_key_bytes();
-    match key.algorithm().curve_opt() {
-        Some(curve) => curve.decode_point_opt(encoded) == Some(public),
-        // A seed has exactly one public key, the one the pair holds.
-        None => encoded == public.as_slice(),
-    }
+    key.algorithm()
+        .with(ReadPublic(encoded))
+        .is_ok_and(|public| public == PublicKey::from(key))
 }
 
 #[cfg(test)]

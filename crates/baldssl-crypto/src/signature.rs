@@ -3,7 +3,9 @@
 //! A signature scheme is a triple of algorithms $\Sigma = (\mathrm{Gen},
 //! \mathrm{Sign}, \mathrm{Vrfy})$ with the correctness law
 //! $\mathrm{Vrfy}(pk, m, \mathrm{Sign}(sk, m)) = 1$ (Goldwasser, Micali and
-//! Rivest; Katz and Lindell, *Introduction to Modern Cryptography*,
+//! Rivest, [*A digital signature scheme secure against adaptive
+//! chosen-message attacks*][gmr], SIAM J. Comput. 17 (1988); Katz and
+//! Lindell, [*Introduction to Modern Cryptography*][katz-lindell],
 //! definition 12.1). The schemes here are discrete-logarithm schemes over a
 //! group $G$ of prime order: a secret key determines a scalar $s$, and the
 //! public key is $s G$, so key generation is the composition of a key
@@ -20,7 +22,12 @@
 //! Signing and verifying are separate traits over a [`SignatureScheme`]
 //! that names the key and signature types: [`Signer`] holds the secret
 //! operation, [`Verifier`] the public one, with the correctness law
-//! `verify(pk, m, sign(sk, m))` for the public key `pk` of `sk`.
+//! `verify(pk, m, sign(sk, m))` for the public key `pk` of `sk`. The
+//! traits are sealed: the schemes are those of this
+//! crate.
+//!
+//! [gmr]: https://people.csail.mit.edu/silvio/Selected%20Scientific%20Papers/Digital%20Signatures/A_Digital_Signature_Scheme_Secure_Against_Adaptive_Chosen-Message_Attack.pdf
+//! [katz-lindell]: https://www.cs.umd.edu/~jkatz/imc.html
 
 pub mod ecdsa;
 pub mod eddsa;
@@ -32,20 +39,19 @@ use crate::{
         encoding::{Decodable, Encodable},
         model::{CurveModel, ProjectiveModel},
     },
+    secret::SecretBytes,
 };
 
 /// A discrete-logarithm signature scheme over a group of prime order.
-pub trait DigitalSignature {
+pub trait DigitalSignature: crate::sealed::Sealed {
     /// The group of the public keys, in a model with complete formulas.
     type Group: ProjectiveModel;
     /// A secret key.
     type SecretKey;
-    /// The secret scalar, as a big-endian integer.
-    type Scalar: AsRef<[u8]>;
 
-    /// The secret scalar $s$ of a secret key: the discrete logarithm of its
-    /// public key. Secret.
-    fn secret_scalar(secret_key: &Self::SecretKey) -> Self::Scalar;
+    /// The secret scalar $s$ of a secret key, the discrete logarithm of its
+    /// public key, as a big-endian integer, wiped when dropped.
+    fn secret_scalar(secret_key: &Self::SecretKey) -> SecretBytes;
 
     /// The public key: $s G$ in the standard encoding of points, the affine
     /// chart's (not the projective coordinates). Its byte order is the
@@ -56,7 +62,7 @@ pub trait DigitalSignature {
         let s = Self::secret_scalar(secret_key);
         <<Self::Group as CurveModel>::Curve as Curve>::scalar_mul_bytes(
             &Self::Group::generator(),
-            s.as_ref(),
+            s.expose(),
         )
         .to_affine()
         .encode()
@@ -65,7 +71,7 @@ pub trait DigitalSignature {
 
 /// The types of a signature scheme: what signs, what verifies, and what a
 /// signature is.
-pub trait SignatureScheme {
+pub trait SignatureScheme: crate::sealed::Sealed {
     /// What signs: a secret key, with its public key.
     type SigningKey;
     /// What verifies: a public key, valid by construction.

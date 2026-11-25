@@ -43,11 +43,15 @@ use core::{
     ops::{Add, Mul, Neg, Sub},
 };
 
+use baldssl_core::num::{
+    low_u32, low_u64, u8_to_u64, u32_to_usize, u64_to_u128,
+};
+
 use super::field::{Field, PrimeField};
-use crate::ct::{self, Choice, CtEq, CtSelect};
+use crate::ct::{self, Choice, CtEq, CtOption, CtSelect};
 
 /// A prime modulus with `N` limbs.
-pub trait Modulus<const N: usize>: 'static {
+pub trait Modulus<const N: usize>: crate::sealed::Sealed + 'static {
     /// The prime in big-endian hexadecimal, as `openssl ecparam -text`
     /// prints it (leading zero digits allowed).
     const HEX: &'static str;
@@ -56,24 +60,22 @@ pub trait Modulus<const N: usize>: 'static {
 }
 
 /// `a + b + carry`, the sum and the carry out (0 or 1).
-#[allow(clippy::cast_possible_truncation)]
 const fn adc(a: u64, b: u64, carry: u64) -> (u64, u64) {
-    let t = (a as u128) + (b as u128) + (carry as u128);
-    (t as u64, (t >> 64) as u64)
+    let t = u64_to_u128(a) + u64_to_u128(b) + u64_to_u128(carry);
+    (low_u64(t), low_u64(t >> 64))
 }
 
 /// `a - b - borrow`, the difference and the borrow out (0 or 1).
-#[allow(clippy::cast_possible_truncation)]
 const fn sbb(a: u64, b: u64, borrow: u64) -> (u64, u64) {
-    let t = (a as u128).wrapping_sub((b as u128) + (borrow as u128));
-    (t as u64, (t >> 127) as u64)
+    let t = u64_to_u128(a).wrapping_sub(u64_to_u128(b) + u64_to_u128(borrow));
+    (low_u64(t), low_u64(t >> 127))
 }
 
 /// `a + b * c + carry`, the low word and the high word.
-#[allow(clippy::cast_possible_truncation)]
 const fn mac(a: u64, b: u64, c: u64, carry: u64) -> (u64, u64) {
-    let t = (a as u128) + (b as u128) * (c as u128) + (carry as u128);
-    (t as u64, (t >> 64) as u64)
+    let t =
+        u64_to_u128(a) + u64_to_u128(b) * u64_to_u128(c) + u64_to_u128(carry);
+    (low_u64(t), low_u64(t >> 64))
 }
 
 /// `a + b` over `N` limbs, and the carry out.
@@ -127,7 +129,7 @@ const fn limbs_from_hex<const N: usize>(hex: &str) -> [u64; N] {
             _ => panic!("modulus: not a hexadecimal digit"),
         };
         if i / 16 < N {
-            out[i / 16] |= (v as u64) << ((i % 16) * 4);
+            out[i / 16] |= u8_to_u64(v) << ((i % 16) * 4);
         } else if v != 0 {
             panic!("modulus: does not fit in N limbs");
         }
@@ -158,9 +160,6 @@ const fn pow2_mod<const N: usize>(k: usize, p: &[u64; N]) -> [u64; N] {
     x
 }
 
-/// $-p_0^{-1} \bmod 2^{64}$ by Newton's iteration, which doubles the number
-/// of correct low bits each step: $x \equiv p_0^{-1}$ holds modulo 2 from
-/// $x = 1$ (as $p_0$ is odd), then modulo $2^{2^k}$ after $k$ steps.
 /// `a >> k` for `0 < k < 64`, little-endian limbs.
 fn shr<const N: usize>(a: &[u64; N], k: u32) -> [u64; N] {
     let mut out = [0u64; N];
@@ -183,10 +182,16 @@ fn add_one<const N: usize>(a: &[u64; N]) -> [u64; N] {
     out
 }
 
+/// The number of Newton steps in [`neg_inv`]: $2^6 = 64$ correct bits.
+const NEWTON_STEPS: u32 = 6;
+
+/// $-p_0^{-1} \bmod 2^{64}$ by Newton's iteration, which doubles the number
+/// of correct low bits each step: $x \equiv p_0^{-1}$ holds modulo 2 from
+/// $x = 1$ (as $p_0$ is odd), then modulo $2^{2^k}$ after $k$ steps.
 const fn neg_inv(p0: u64) -> u64 {
     let mut x: u64 = 1;
     let mut i = 0;
-    while i < 6 {
+    while i < NEWTON_STEPS {
         x = x.wrapping_mul(2u64.wrapping_sub(p0.wrapping_mul(x)));
         i += 1;
     }
@@ -194,13 +199,12 @@ const fn neg_inv(p0: u64) -> u64 {
 }
 
 /// The number of significant bits.
-#[allow(clippy::cast_possible_truncation)]
 const fn bit_length<const N: usize>(a: &[u64; N]) -> u32 {
     let mut i = N;
     while i > 0 {
         i -= 1;
         if a[i] != 0 {
-            return (i as u32) * 64 + (64 - a[i].leading_zeros());
+            return low_u32(i) * 64 + (64 - a[i].leading_zeros());
         }
     }
     0
@@ -320,9 +324,9 @@ where
     ///
     /// The caller guarantees $p \equiv 3 \pmod 4$; the instance tests check
     /// it.
-    pub(crate) fn sqrt_3_mod_4(&self) -> (Self, Choice) {
+    pub(crate) fn sqrt_3_mod_4(&self) -> CtOption<Self> {
         let r = self.pow_vartime(&add_one(&shr(&Self::modulus(), 2)));
-        (r, r.square().ct_eq(self))
+        CtOption::new(r, r.square().ct_eq(self))
     }
 
     /// A square root for $p \equiv 5 \pmod 8$ (Atkin's case, as in
@@ -337,7 +341,7 @@ where
     /// it.
     ///
     /// [rfc8032-5.1.3]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.3
-    pub(crate) fn sqrt_5_mod_8(&self) -> (Self, Choice) {
+    pub(crate) fn sqrt_5_mod_8(&self) -> CtOption<Self> {
         let p = Self::modulus();
         // (p - 5) / 8 + 1 = (p >> 3) + 1, and (p - 1) / 4 = p >> 2, as p = 5
         // modulo 8.
@@ -346,7 +350,7 @@ where
         let r = self.pow_vartime(&root_exp);
         let direct = r.square().ct_eq(self);
         let r = Self::select(&(r * sqrt_minus_one), &r, direct);
-        (r, r.square().ct_eq(self))
+        CtOption::new(r, r.square().ct_eq(self))
     }
 
     /// $a^e$ for a public exponent, little-endian limbs. Constant time in
@@ -481,6 +485,8 @@ where
     }
 }
 
+impl<M, const N: usize> crate::sealed::Sealed for Fp<M, N> where M: Modulus<N> {}
+
 impl<M, const N: usize> CtEq for Fp<M, N>
 where
     M: Modulus<N>,
@@ -513,7 +519,7 @@ where
     M: Modulus<N>,
 {
     const BITS: u32 = Consts::<M, N>::BITS;
-    const BYTES: usize = (Consts::<M, N>::BITS as usize).div_ceil(8);
+    const BYTES: usize = u32_to_usize(Consts::<M, N>::BITS).div_ceil(8);
 
     fn from_u64(v: u64) -> Self {
         let mut x = [0u64; N];
@@ -523,9 +529,9 @@ where
         Self::from_mont(Self::mont_mul(&x, &Consts::<M, N>::R2))
     }
 
-    fn from_bytes_be(bytes: &[u8]) -> (Self, Choice) {
+    fn from_bytes_be(bytes: &[u8]) -> CtOption<Self> {
         if bytes.len() != <Self as PrimeField>::BYTES {
-            return (<Self as Field>::ZERO, Choice::FALSE);
+            return CtOption::new(<Self as Field>::ZERO, Choice::FALSE);
         }
         let mut x = [0u64; N];
         for (i, &byte) in bytes.iter().rev().enumerate() {
@@ -538,7 +544,7 @@ where
         for i in 0..N {
             out[i] = ct::select(0, mont[i], valid);
         }
-        (Self::from_mont(out), valid)
+        CtOption::new(Self::from_mont(out), valid)
     }
 
     fn to_bytes_be(&self) -> Vec<u8> {

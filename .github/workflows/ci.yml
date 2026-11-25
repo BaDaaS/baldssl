@@ -314,7 +314,13 @@ jobs:
             tree="pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r)/All"
             PKG_PATH="https://cdn.NetBSD.org/$tree;https://ftp.jaist.ac.jp/$tree"
             export PKG_PATH
-            /usr/sbin/pkg_add -u rust gmake
+            # A mirror that times out makes pkg_add report "no pkg found",
+            # so a failed install is tried again before the job fails.
+            for attempt in 1 2 3; do
+              /usr/sbin/pkg_add -u rust gmake && break
+              [ "$attempt" = 3 ] && exit 1
+              sleep 60
+            done
           run: gmake test-os-rng-system-rust
       - name: Test os_rng on OpenBSD
         if: matrix.os == 'openbsd'

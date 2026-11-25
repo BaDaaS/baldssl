@@ -4,7 +4,7 @@ use std::ffi::OsString;
 
 use baldssl_core::Error;
 
-use super::{Text, Written, parse_options};
+use super::{Check, Text, Written, parse_options};
 
 fn os(v: &[&str]) -> Vec<OsString> {
     v.iter().map(OsString::from).collect()
@@ -19,7 +19,7 @@ fn defaults() {
     let o = options(&[]);
     assert_eq!(
         (o.written, o.text, o.check),
-        (Written::AsRead, Text::Nothing, false)
+        (Written::AsRead, Text::Nothing, Check::Skipped)
     );
 }
 
@@ -28,12 +28,39 @@ fn defaults() {
 #[test]
 fn implications() {
     assert_eq!(options(&["-pubout"]).written, Written::Public);
-    assert_eq!(options(&["-pubout", "-noout"]).written, Written::Nothing);
     let o = options(&["-pubin", "-text"]);
     assert_eq!((o.written, o.text), (Written::Public, Text::Public));
-    assert_eq!(options(&["-text_pub"]).text, Text::Public);
-    assert_eq!(options(&["-text_pub", "-text"]).text, Text::Public);
-    assert!(options(&["-pubcheck"]).check);
+    assert_eq!(options(&["-pubin", "-noout"]).written, Written::Nothing);
+    assert_eq!(options(&["-pubin"]).text, Text::Nothing);
+    assert_eq!(options(&["-pubcheck"]).check, Check::Reported);
+}
+
+/// The sticky options give the same result in every order: the maximum of
+/// what each asks for.
+#[test]
+fn option_orders() {
+    for (orders, written, text) in [
+        (
+            [["-pubout", "-noout"], ["-noout", "-pubout"]],
+            Written::Nothing,
+            Text::Nothing,
+        ),
+        (
+            [["-text", "-text_pub"], ["-text_pub", "-text"]],
+            Written::AsRead,
+            Text::Public,
+        ),
+        (
+            [["-text", "-pubout"], ["-pubout", "-text"]],
+            Written::Public,
+            Text::AsRead,
+        ),
+    ] {
+        for order in orders {
+            let o = options(&order);
+            assert_eq!((o.written, o.text), (written, text), "{order:?}");
+        }
+    }
 }
 
 #[test]

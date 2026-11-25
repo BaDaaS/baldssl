@@ -3,11 +3,14 @@
 //!
 //! The values are those of `openssl ecparam -name prime256v1 -param_enc
 //! explicit -noout -text` (OpenSSL 3.5.9), the source the output of baldssl is
-//! compared against; they are those of [FIPS 186-5] and [SEC 2]. The tests
-//! recompute each modulus from its defining formula, and check that the
-//! generator is on the curve and has order $n$.
+//! compared against; they are those of [NIST SP 800-186] (Recommendations for
+//! Discrete Logarithm-based Cryptography: Elliptic Curve Domain Parameters),
+//! section 3.2.1.3, and of [SEC 2] (Standards for Efficient Cryptography 2,
+//! Recommended Elliptic Curve Domain Parameters), section 2.4.2, `secp256r1`.
+//! The tests recompute each modulus from its defining formula, and check that
+//! the generator is on the curve and has order $n$.
 //!
-//! [FIPS 186-5]: https://csrc.nist.gov/pubs/fips/186-5/final
+//! [NIST SP 800-186]: https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-186.pdf
 //! [SEC 2]: https://www.secg.org/sec2-v2.pdf
 
 use crate::{
@@ -17,11 +20,12 @@ use crate::{
         fp::{Fp, Modulus},
         model::ProjectiveModel,
     },
-    ct::Choice,
+    ct::{Choice, CtOption},
 };
 
 /// The base field of P-256, $p = 2^{256} - 2^{224} + 2^{192} + 2^{96} - 1$.
 pub enum P256Base {}
+impl crate::sealed::Sealed for P256Base {}
 impl Modulus<4> for P256Base {
     const HEX: &'static str =
         "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff";
@@ -32,6 +36,7 @@ pub type FieldP256 = Fp<P256Base, 4>;
 
 /// The scalar field of P-256, its group order $n$.
 pub enum P256Scalar {}
+impl crate::sealed::Sealed for P256Scalar {}
 impl Modulus<4> for P256Scalar {
     const HEX: &'static str =
         "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551";
@@ -42,8 +47,10 @@ pub type ScalarP256 = Fp<P256Scalar, 4>;
 
 /// NIST P-256 (`prime256v1`, `secp256r1`).
 pub enum P256 {}
+impl crate::sealed::Sealed for P256 {}
 
-/// Its group of points has prime order: the cofactor is 1 ([SEC 2]).
+/// Its group of points has prime order: the cofactor is 1 ([SEC 2],
+/// section 2.4.2).
 ///
 /// [SEC 2]: https://www.secg.org/sec2-v2.pdf
 impl Curve for P256 {
@@ -73,7 +80,7 @@ impl ShortWeierstrass for P256 {
 
 /// $p \equiv 3 \pmod 4$: the root is $a^{(p + 1)/4}$.
 impl Sqrt for FieldP256 {
-    fn sqrt(&self) -> (Self, Choice) {
+    fn sqrt(&self) -> CtOption<Self> {
         self.sqrt_3_mod_4()
     }
 }

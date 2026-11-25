@@ -52,11 +52,12 @@ use baldssl_core::{
     der::{
         Time,
         syntax::{
-            Any, BitString, Explicit, Natural, RawTlv, Sequence, SequenceOf,
-            Small, Unsigned, encode,
+            Any, BitString, Explicit, Natural, Optional, RawTlv, Sequence,
+            SequenceOf, Unsigned, encode,
         },
     },
     encoding::Encodable,
+    hex::{self, Case},
 };
 use baldssl_crypto::{
     Digest, hash::Sha1, os_rng, signature::SignatureAlgorithm,
@@ -65,11 +66,27 @@ use baldssl_pkey::{AnyPrivateKey, PublicKey};
 
 use crate::{
     Certificate, CertificationRequest, Compat,
-    algorithm::{ALGORITHM_IDENTIFIER, identifier},
+    algorithm::{AlgorithmIdentifier, algorithm_identifier},
     cert::Validity,
     dn::DistinguishedName,
     extension::{Extension, ExtensionValue, Extensions},
+    text::{DefaultKeyIdentifiers, SelfSignedAuthorityKeyId},
+    version::{Version, version_field},
 };
+
+/// The most octets a serial number takes once encoded
+/// ([RFC 5280 section 4.1.2.2]: "Conforming CAs MUST NOT use serialNumber
+/// values longer than 20 octets").
+///
+/// [RFC 5280 section 4.1.2.2]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.2
+const MAX_SERIAL_OCTETS: usize = 20;
+
+/// The sign bit of the first octet of a DER INTEGER ([X.690] 8.3.3): a
+/// positive value whose first magnitude octet has it set takes a leading
+/// zero octet.
+///
+/// [X.690]: https://www.itu.int/rec/T-REC-X.690
+const SIGN_BIT: u8 = 0x80;
 
 /// A certificate serial number: a positive integer of at most 20 octets
 /// ([RFC 5280 section 4.1.2.2]).
@@ -86,9 +103,10 @@ impl SerialNumber {
         let n = Natural::from_be_bytes(be);
         let digits = n.as_be_bytes();
         let octets = digits.len().saturating_add(usize::from(
-            digits.first().is_some_and(|&b| b >= 0x80),
+            digits.first().is_some_and(|&b| b & SIGN_BIT != 0),
         ));
-        (!digits.is_empty() && octets <= 20).then_some(SerialNumber(n))
+        (!digits.is_empty() && octets <= MAX_SERIAL_OCTETS)
+            .then_some(SerialNumber(n))
     }
 
     /// A random serial number of 159 bits, as OpenSSL's `rand_serial`
@@ -99,13 +117,15 @@ impl SerialNumber {
     /// The operating system's randomness failing.
     pub fn random() -> Result<Self> {
         loop {
-            let mut bytes = [0u8; 20];
+            let mut bytes = [0u8; MAX_SERIAL_OCTETS];
             os_rng::fill(&mut bytes).map_err(|e| baldssl_core::Error::Io {
                 context: "drawing a serial number".into(),
                 message: e.to_string(),
             })?;
+            // Clearing the sign bit leaves 159 random bits and a positive
+            // value that fits in 20 octets.
             if let Some(first) = bytes.first_mut() {
-                *first &= 0x7f;
+                *first &= !SIGN_BIT;
             }
             if let Some(serial) = Self::new_opt(&bytes) {
                 return Ok(serial);
@@ -118,11 +138,116 @@ impl SerialNumber {
     pub fn as_be_bytes(&self) -> &[u8] {
         self.0.as_be_bytes()
     }
+
+    /// The serial number following the one a serial file holds, as
+    /// OpenSSL's `x509` takes it (`load_serial` in `apps/lib/apps.c`): the
+    /// file's hexadecimal digits, upper or lower case, as
+    /// `a2i_ASN1_INTEGER` reads them, plus one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Usage`] when the file holds no hexadecimal number, and
+    /// [`Error::Unsupported`] when the successor is longer than 20 octets.
+    pub fn following_file(text: &str) -> Result<Self> {
+        let digits = text.trim();
+        let held = (!digits.is_empty())
+            .then(|| digits_be_opt(digits, HEX))
+            .flatten()
+            .ok_or_else(|| Error::Usage("unable to load number".into()))?;
+        Self::checked(digits, &increment(&held))
+    }
+
+    /// The contents of a serial file holding this number, as `save_serial`
+    /// in `apps/lib/apps.c` writes it: upper-case hexadecimal digits, an
+    /// even number of them, and a newline.
+    #[must_use]
+    pub fn to_serial_file(&self) -> String {
+        let mut text = hex::plain(self.as_be_bytes(), Case::Upper);
+        text.push('\n');
+        text
+    }
+
+    /// The serial number of `bytes`, written `text`, or the error saying
+    /// why it cannot be one.
+    fn checked(text: &str, bytes: &[u8]) -> Result<Self> {
+        Self::new_opt(bytes).ok_or_else(|| {
+            Error::unsupported(format!(
+                "serial {text}: a serial must be positive and at most 20 \
+                 octets"
+            ))
+        })
+    }
+}
+
+/// The radix of decimal digits.
+const DECIMAL: u16 = 10;
+/// The radix of hexadecimal digits.
+const HEX: u16 = 16;
+/// The prefixes that mark hexadecimal digits in `-set_serial`, as
+/// `s2i_ASN1_INTEGER` (`crypto/x509/v3_utl.c`) reads them.
+const HEX_PREFIXES: [&str; 2] = ["0x", "0X"];
+
+/// Big-endian bytes of the number written with `digits` in `radix` (10 or
+/// 16), without leading zeros; `None` on a character that is not a digit.
+fn digits_be_opt(digits: &str, radix: u16) -> Option<Vec<u8>> {
+    let mut bytes: Vec<u8> = Vec::new();
+    for c in digits.chars() {
+        let mut carry = u16::try_from(c.to_digit(radix.into())?).ok()?;
+        for byte in bytes.iter_mut().rev() {
+            let v = u16::from(*byte).checked_mul(radix)?.checked_add(carry)?;
+            *byte = v.to_be_bytes()[1];
+            carry = v >> 8;
+        }
+        if carry != 0 {
+            bytes.insert(0, carry.to_be_bytes()[1]);
+        }
+    }
+    Some(bytes)
+}
+
+/// One more than the big-endian `bytes`.
+fn increment(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    for byte in out.iter_mut().rev() {
+        let (v, overflow) = byte.overflowing_add(1);
+        *byte = v;
+        if !overflow {
+            return out;
+        }
+    }
+    out.insert(0, 1);
+    out
+}
+
+/// The serial number of `-set_serial`: decimal digits, or hexadecimal ones
+/// after `0x`, as OpenSSL's `s2i_ASN1_INTEGER` reads them.
+///
+/// # Errors
+///
+/// [`Error::Usage`] on anything else; [`Error::Unsupported`] for zero,
+/// negative numbers and serials longer than 20 octets.
+impl FromStr for SerialNumber {
+    type Err = Error;
+
+    fn from_str(text: &str) -> Result<Self> {
+        let invalid = || Error::Usage(format!("invalid serial number {text}"));
+        let (digits, radix) = HEX_PREFIXES
+            .iter()
+            .find_map(|p| text.strip_prefix(p))
+            .map_or((text, DECIMAL), |hex| (hex, HEX));
+        if digits.is_empty() {
+            return Err(invalid());
+        }
+        let bytes = digits_be_opt(digits, radix).ok_or_else(invalid)?;
+        Self::checked(text, &bytes)
+    }
 }
 
 impl Validity {
     /// From `not_before` to `not_after`, seconds after the Unix epoch, each
-    /// encoded as RFC 5280 requires.
+    /// encoded as [RFC 5280 section 4.1.2.5] requires.
+    ///
+    /// [RFC 5280 section 4.1.2.5]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
     #[must_use]
     pub fn from_unix_seconds(not_before: u64, not_after: u64) -> Self {
         Validity {
@@ -130,6 +255,16 @@ impl Validity {
             not_after: Time::from_unix_seconds(not_after),
         }
     }
+}
+
+/// Whether `openssl x509 -req` was given an extension file (`-extfile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExtensionFile {
+    /// No extension file.
+    #[default]
+    Absent,
+    /// An extension file gave some of the extensions.
+    Given,
 }
 
 /// The extensions a CA is asked to write, and where they come from:
@@ -140,8 +275,8 @@ impl Validity {
 pub struct IssuedExtensions {
     /// The extensions, in order.
     pub extensions: Extensions,
-    /// Whether an extension file gave some of them (`-extfile`).
-    pub from_file: bool,
+    /// Whether an extension file gave some of them.
+    pub extension_file: ExtensionFile,
 }
 
 /// Which of a request's extensions a CA copies into the certificate
@@ -199,8 +334,9 @@ impl CopyExtensions {
         if self == CopyExtensions::None {
             return Ok(out);
         }
-        for view in request.requested_extensions()? {
-            let extension = Extension::try_from(&view)?;
+        let requested = request.requested_extensions()?;
+        for view in &requested.views()? {
+            let extension = Extension::try_from(view)?;
             if self == CopyExtensions::Copy
                 && out.contains_kind(&extension.value)
             {
@@ -228,11 +364,11 @@ pub struct CertificateTemplate {
     /// `serialNumber`.
     pub serial: SerialNumber,
     /// `issuer`, a DER `Name`.
-    pub issuer: Vec<u8>,
+    pub issuer: RawTlv,
     /// `validity`.
     pub validity: Validity,
     /// `subject`, a DER `Name`.
-    pub subject: Vec<u8>,
+    pub subject: RawTlv,
     /// `subjectPublicKeyInfo`.
     pub public_key: PublicKey,
     /// `extensions`, in order.
@@ -252,17 +388,16 @@ impl CertificateTemplate {
         validity: Validity,
         compat: Compat,
     ) -> Self {
-        let name = subject.encode();
+        let name = subject.to_raw();
         let id = key_identifier(key);
         let mut extensions = vec![Extension::new(
             ExtensionValue::SubjectKeyIdentifier(id.clone()),
         )];
-        // OpenSSL 4's `v3_ca` asks for an authority key identifier only
-        // when the certificate is not self-signed (`keyid:nonss`).
-        if compat != Compat::V4 {
-            extensions.push(Extension::new(
-                ExtensionValue::AuthorityKeyIdentifier(id),
-            ));
+        match compat.self_signed_authority_key_id() {
+            SelfSignedAuthorityKeyId::Written => extensions.push(
+                Extension::new(ExtensionValue::AuthorityKeyIdentifier(id)),
+            ),
+            SelfSignedAuthorityKeyId::Omitted => {}
         }
         extensions.push(Extension::critical(
             ExtensionValue::BasicConstraints {
@@ -323,7 +458,7 @@ impl CertificateTemplate {
         };
         let akid = || {
             ca.subject_key_identifier_opt()
-                .map(|id| ExtensionValue::AuthorityKeyIdentifier(id.to_vec()))
+                .map(ExtensionValue::AuthorityKeyIdentifier)
                 .ok_or_else(|| {
                     Error::unsupported(
                         "a CA certificate without a subject key identifier",
@@ -331,86 +466,71 @@ impl CertificateTemplate {
                 })
         };
         let given = &extensions.extensions;
-        let all = match compat {
-            Compat::V4 if extensions.from_file => given.clone(),
-            Compat::V4 => given.override_with(
-                &[Extension::new(ski()), Extension::new(akid()?)]
-                    .into_iter()
-                    .collect(),
-            ),
-            Compat::V30 if given.is_empty() => Extensions::new(),
-            Compat::V30 | Compat::V3 | Compat::V36 => {
-                let mut defaults = Vec::new();
-                if !given.contains_kind(&ski()) {
-                    defaults.push(Extension::new(ski()));
-                }
-                if subject_key != &ca_public {
-                    let akid = akid()?;
-                    if !given.contains_kind(&akid) {
-                        defaults.push(Extension::new(akid));
-                    }
-                }
-                given.as_slice().iter().cloned().chain(defaults).collect()
+        let at_signing = || -> Result<Extensions> {
+            let mut defaults = Vec::new();
+            if !given.contains_kind(&ski()) {
+                defaults.push(Extension::new(ski()));
             }
+            if subject_key != &ca_public {
+                let akid = akid()?;
+                if !given.contains_kind(&akid) {
+                    defaults.push(Extension::new(akid));
+                }
+            }
+            Ok(given.as_slice().iter().cloned().chain(defaults).collect())
+        };
+        let all = match compat.default_key_identifiers() {
+            DefaultKeyIdentifiers::FromConfiguration => {
+                match extensions.extension_file {
+                    ExtensionFile::Given => given.clone(),
+                    ExtensionFile::Absent => given.override_with(
+                        &[Extension::new(ski()), Extension::new(akid()?)]
+                            .into_iter()
+                            .collect(),
+                    ),
+                }
+            }
+            DefaultKeyIdentifiers::AtSigningWithExtensions
+                if given.is_empty() =>
+            {
+                Extensions::new()
+            }
+            DefaultKeyIdentifiers::AtSigningWithExtensions
+            | DefaultKeyIdentifiers::AtSigning => at_signing()?,
         };
         Ok(CertificateTemplate {
             serial,
-            issuer: ca.subject_der.to_vec(),
+            issuer: RawTlv::parse(ca.subject_der)?,
             validity,
-            subject: request.subject_der().to_vec(),
+            subject: request.subject().clone(),
             public_key: subject_key.clone(),
             extensions: all,
         })
     }
 
-    /// The DER `TBSCertificate`, signed with `algorithm`.
+    /// The DER `TBSCertificate`, signed with `algorithm`: version 3 with
+    /// its extensions, or version 1, without a version field (its default)
+    /// and without extensions, when there are none, as OpenSSL sets it.
     fn tbs(&self, algorithm: SignatureAlgorithm) -> Result<Vec<u8>> {
-        let raw = |der: &[u8]| RawTlv::parse(der);
-        let extensions: Vec<RawTlv> =
-            self.extensions.iter().map(Extension::to_raw).collect();
-        let validity = Sequence((Any, (Any, ())));
         let tbs = Sequence((
-            Explicit::<0, _>(Small),
+            version_field(),
             (
                 Unsigned,
                 (
-                    ALGORITHM_IDENTIFIER,
+                    algorithm_identifier(),
                     (
                         Any,
                         (
-                            validity,
+                            Sequence((Any, (Any, ()))),
                             (
                                 Any,
-                                (Any, (Explicit::<3, _>(SequenceOf(Any)), ())),
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        ));
-        if self.extensions.is_empty() {
-            return self.tbs_v1(algorithm);
-        }
-        Ok(encode(
-            &tbs,
-            &(
-                2,
-                (
-                    self.serial.0.clone(),
-                    (
-                        identifier(algorithm),
-                        (
-                            raw(&self.issuer)?,
-                            (
                                 (
-                                    self.validity.not_before.to_der(),
-                                    (self.validity.not_after.to_der(), ()),
-                                ),
-                                (
-                                    raw(&self.subject)?,
+                                    Any,
                                     (
-                                        raw(&self.public_key.encode())?,
-                                        (extensions, ()),
+                                        Optional(Explicit::<3, _>(SequenceOf(
+                                            Any,
+                                        ))),
+                                        (),
                                     ),
                                 ),
                             ),
@@ -418,36 +538,39 @@ impl CertificateTemplate {
                     ),
                 ),
             ),
-        ))
-    }
-
-    /// The DER `TBSCertificate` of a version 1 certificate (no version
-    /// field, no extensions).
-    fn tbs_v1(&self, algorithm: SignatureAlgorithm) -> Result<Vec<u8>> {
-        let raw = |der: &[u8]| RawTlv::parse(der);
-        let tbs = Sequence((
-            Unsigned,
-            (
-                ALGORITHM_IDENTIFIER,
-                (Any, (Sequence((Any, (Any, ()))), (Any, (Any, ())))),
-            ),
         ));
+        let (version, extensions) = if self.extensions.is_empty() {
+            (None, None)
+        } else {
+            (
+                Some(Version::v3()),
+                Some(self.extensions.iter().map(Extension::to_raw).collect()),
+            )
+        };
         Ok(encode(
             &tbs,
             &(
-                self.serial.0.clone(),
+                version,
                 (
-                    identifier(algorithm),
+                    self.serial.0.clone(),
                     (
-                        raw(&self.issuer)?,
+                        AlgorithmIdentifier::from(algorithm),
                         (
+                            self.issuer.clone(),
                             (
-                                self.validity.not_before.to_der(),
-                                (self.validity.not_after.to_der(), ()),
-                            ),
-                            (
-                                raw(&self.subject)?,
-                                (raw(&self.public_key.encode())?, ()),
+                                (
+                                    self.validity.not_before.to_der(),
+                                    (self.validity.not_after.to_der(), ()),
+                                ),
+                                (
+                                    self.subject.clone(),
+                                    (
+                                        RawTlv::parse(
+                                            &self.public_key.encode(),
+                                        )?,
+                                        (extensions, ()),
+                                    ),
+                                ),
                             ),
                         ),
                     ),
@@ -470,12 +593,12 @@ impl CertificateTemplate {
         let tbs = self.tbs(algorithm)?;
         let signature = issuer_key.sign(algorithm, &tbs)?;
         let certificate =
-            Sequence((Any, (ALGORITHM_IDENTIFIER, (BitString, ()))));
+            Sequence((Any, (algorithm_identifier(), (BitString, ()))));
         Ok(encode(
             &certificate,
             &(
                 RawTlv::parse(&tbs)?,
-                (identifier(algorithm), (signature, ())),
+                (AlgorithmIdentifier::from(algorithm), (signature, ())),
             ),
         ))
     }

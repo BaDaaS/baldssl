@@ -6,6 +6,8 @@
 
 use core::{marker::PhantomData, ops::Neg};
 
+use baldssl_core::num::u32_to_usize;
+
 use super::{d, extended::Extended};
 use crate::{
     algebra::{
@@ -14,7 +16,7 @@ use crate::{
         field::{Field, PrimeField, Sqrt},
         model::{AffineModel, Base, CurveModel},
     },
-    ct::{Choice, CtEq, CtSelect},
+    ct::{Choice, CtEq, CtOption, CtSelect},
 };
 
 /// A point of the curve `C` in affine coordinates.
@@ -58,6 +60,8 @@ where
         _curve: PhantomData,
     }
 }
+
+impl<C> crate::sealed::Sealed for Affine<C> where C: TwistedEdwards {}
 
 impl<C> CtEq for Affine<C>
 where
@@ -138,12 +142,12 @@ where
         self.x.is_zero() & self.y.ct_eq(&C::Base::ONE)
     }
 
-    /// The point $(x, y)$, and whether it is on the curve. When it is not,
-    /// the identity is returned with a false [`Choice`].
-    fn from_coordinates(x: Base<Self>, y: Base<Self>) -> (Self, Choice) {
+    /// The point $(x, y)$, present when it is on the curve; the
+    /// placeholder is the identity.
+    fn from_coordinates(x: Base<Self>, y: Base<Self>) -> CtOption<Self> {
         let candidate = point(x, y);
         let on_curve = candidate.is_on_curve();
-        (
+        CtOption::new(
             Self::select(&Self::identity(), &candidate, on_curve),
             on_curve,
         )
@@ -155,12 +159,19 @@ where
     }
 }
 
+/// The top bit of the last byte of an encoding, which holds the least
+/// significant bit of $x$ ([RFC 8032, section 5.1.2][rfc8032-5.1.2]); the
+/// bits below it hold $y$.
+///
+/// [rfc8032-5.1.2]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
+const SIGN_BIT: u8 = 0x80;
+
 /// $b / 8$, the length of an encoding: the bits of $y$ and one sign bit.
 fn encoding_len<C>() -> usize
 where
     C: TwistedEdwards,
 {
-    (C::Base::BITS as usize + 1).div_ceil(8)
+    (u32_to_usize(C::Base::BITS) + 1).div_ceil(8)
 }
 
 /// The encoding of [RFC 8032, section 5.1.2][rfc8032-5.1.2], **little-endian**
@@ -180,9 +191,12 @@ where
         // the resize only appends zeros.
         let mut out = self.y.to_bytes_le();
         out.resize(encoding_len::<C>(), 0);
-        let sign = u8::try_from(self.x.is_odd().mask() & 0x80).unwrap_or(0);
+        // The mask is all ones or all zeros: its low byte, masked, is the
+        // sign bit or nothing, without a branch.
+        let [mask, ..] = self.x.is_odd().mask().to_le_bytes();
+        // The encoding is at least one byte long, so there is a last byte.
         if let Some(last) = out.last_mut() {
-            *last |= sign;
+            *last |= mask & SIGN_BIT;
         }
         out
     }
@@ -244,20 +258,24 @@ where
         }
         let mut le = bytes.to_vec();
         let top = le.last_mut().ok_or(InvalidEncoding)?;
-        let x_0 = Choice::from_bit(u64::from(*top >> 7));
-        *top &= 0x7f;
+        let x_0 = Choice::from_bit(u64::from((*top & SIGN_BIT) != 0));
+        *top &= !SIGN_BIT;
         // The bytes above the field's width, if any, must be zero.
         let (low, high) =
             le.split_at_checked(C::Base::BYTES).ok_or(InvalidEncoding)?;
         if high.iter().any(|&b| b != 0) {
             return Err(InvalidEncoding);
         }
-        let (_, canonical) = C::Base::from_bytes_le(low);
+        let canonical = C::Base::from_bytes_le(low).is_some();
         let y = C::Base::from_le_bytes_mod_order(low);
         let y2 = y.square();
         let u = y2 - C::Base::ONE;
         let v = d::<C>() * y2 + C::Base::ONE;
-        let (x, is_square) = (u * v.invert()).sqrt();
+        let root = (u * v.invert()).sqrt();
+        let is_square = root.is_some();
+        // The placeholder of a non-square is never used: is_square is in
+        // both rules below.
+        let x = root.unwrap_or_ct(&C::Base::ZERO);
         let flip = x.is_odd() ^ x_0;
         let x = C::Base::select(&x, &-x, flip);
         let bad_sign = x.is_zero() & x_0;

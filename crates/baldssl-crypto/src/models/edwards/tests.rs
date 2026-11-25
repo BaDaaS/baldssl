@@ -50,7 +50,7 @@ fn reference_add(p: &Affine, q: &Affine) -> Affine {
     let t = d::<Edwards25519>() * x1 * x2 * y1 * y2;
     let x3 = (x1 * y2 + y1 * x2) * (Field25519::ONE + t).invert();
     let y3 = (y1 * y2 + x1 * x2) * (Field25519::ONE - t).invert();
-    let (r, on_curve) = Affine::from_coordinates(x3, y3);
+    let (r, on_curve) = Affine::from_coordinates(x3, y3).into_parts();
     assert!(on_curve.to_bool_vartime(), "reference left the curve");
     r
 }
@@ -67,7 +67,11 @@ fn constants() {
         "x even"
     );
     assert!(b.is_on_curve().to_bool_vartime());
-    assert!(!Affine::from_coordinates(f(1), f(1)).1.to_bool_vartime());
+    assert!(
+        !Affine::from_coordinates(f(1), f(1))
+            .is_some()
+            .to_bool_vartime()
+    );
     let lb = Edwards25519::scalar_mul_bytes(
         &Extended::generator(),
         &ScalarEd25519::modulus_be(),
@@ -122,10 +126,10 @@ proptest! {
         let mut carry = 0u16;
         for i in 0..32 {
             let s = u16::from(a[i]) + u16::from(b[i]) + carry;
-            sum[i] = s as u8;
+            sum[i] = s.to_le_bytes()[0];
             carry = s >> 8;
         }
-        sum[32] = carry as u8;
+        sum[32] = u8::try_from(carry).unwrap();
         prop_assert_eq!(mul_le(&sum), p + q);
     }
 }
@@ -137,7 +141,7 @@ fn scalar_opt(bytes: &[u8]) -> Option<ScalarEd25519> {
     if let Some(top) = be.first_mut() {
         *top &= 0x0f;
     }
-    let (s, ok) = ScalarEd25519::from_bytes_be(&be);
+    let (s, ok) = ScalarEd25519::from_bytes_be(&be).into_parts();
     ok.to_bool_vartime().then_some(s)
 }
 
@@ -161,8 +165,9 @@ fn sqrt_minus_one() -> Field25519 {
 fn torsion_is_on_the_curve_but_not_in_the_subgroup() {
     let i = sqrt_minus_one();
     assert_eq!(i.square(), -Field25519::ONE);
-    let order_2 = Affine::from_coordinates(Field25519::ZERO, -Field25519::ONE);
-    let order_4 = Affine::from_coordinates(i, Field25519::ZERO);
+    let order_2 = Affine::from_coordinates(Field25519::ZERO, -Field25519::ONE)
+        .into_parts();
+    let order_4 = Affine::from_coordinates(i, Field25519::ZERO).into_parts();
     for (name, (t, on_curve)) in [("order 2", order_2), ("order 4", order_4)] {
         assert!(on_curve.to_bool_vartime(), "{name} on the curve");
         assert!(!t.is_identity().to_bool_vartime());
@@ -256,7 +261,7 @@ proptest! {
         laws::projective_model(&p);
         laws::projective_model(&(p + q));
         prop_assert!(p.is_in_prime_subgroup().to_bool_vartime());
-        let (t, _) = Affine::from_coordinates(Field25519::ZERO, -Field25519::ONE);
+        let (t, _) = Affine::from_coordinates(Field25519::ZERO, -Field25519::ONE).into_parts();
         let shifted = p + Extended::from(t);
         laws::group(shifted, q, r);
         laws::projective_model(&shifted);
@@ -291,7 +296,7 @@ fn square_roots() {
     ];
     for v in 0..200u64 {
         let a = f(v);
-        let (r, is_square) = a.sqrt();
+        let (r, is_square) = a.sqrt().into_parts();
         let euler_square = a.is_zero().to_bool_vartime()
             || a.pow_vartime(&half) == Field25519::ONE;
         assert_eq!(is_square.to_bool_vartime(), euler_square, "{v}");
@@ -300,7 +305,7 @@ fn square_roots() {
         }
     }
     assert_eq!(sqrt_minus_one().square(), -Field25519::ONE);
-    let (r, ok) = (-Field25519::ONE).sqrt();
+    let (r, ok) = (-Field25519::ONE).sqrt().into_parts();
     assert!(ok.to_bool_vartime());
     assert_eq!(r.square(), -Field25519::ONE);
 }

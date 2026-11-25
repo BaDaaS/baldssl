@@ -10,6 +10,7 @@ use crate::{
         curve::Curve,
         encoding::{Decodable, Encodable, InvalidEncoding},
         field::PrimeField,
+        laws::canonical,
         model::{CurveModel, ProjectiveModel},
     },
     instances::Edwards25519,
@@ -71,6 +72,7 @@ fn clamping() {
     for byte in [0u8, 0x55, 0xff] {
         // Big-endian: the low byte is the last.
         let s = Ed25519::secret_scalar(&[byte; 32]);
+        let s = s.expose();
         assert_eq!(s.len(), 32);
         assert_eq!(s[31] & 7, 0);
         assert_eq!(s[0] & 0x80, 0);
@@ -89,7 +91,7 @@ fn public_key_is_the_exponential_of_the_secret_scalar() {
         let s = Ed25519::secret_scalar(&seed);
         let a = Edwards25519::scalar_mul_bytes(
             &Extended::<Edwards25519>::generator(),
-            &s,
+            s.expose(),
         );
         assert!(a.is_in_prime_subgroup().to_bool_vartime());
         assert_eq!(Ed25519::public_key(&seed), a.to_affine().encode());
@@ -206,7 +208,12 @@ fn rfc8032_signatures() {
     for case in RFC8032 {
         let pair =
             EdDsaKeyPair::<Ed25519Parameters>::from_seed(array(case.secret));
-        assert_eq!(pair.public(), hex(case.public).as_slice(), "{}", case.name);
+        assert_eq!(
+            pair.public().as_bytes(),
+            hex(case.public).as_slice(),
+            "{}",
+            case.name
+        );
         let message = hex(case.message);
         let signature = Ed25519::sign(&pair, &message).unwrap();
         assert_eq!(
@@ -233,7 +240,8 @@ fn rfc8032_signatures() {
 /// any one bit of the message, of $R$, of $S$ or of the key changes.
 fn laws(seed: [u8; 32], message: &[u8], bit: usize) {
     let pair = EdDsaKeyPair::<Ed25519Parameters>::from_seed(seed);
-    let key = PublicKey::<Ed25519Parameters>::decode(pair.public()).unwrap();
+    let key = PublicKey::<Ed25519Parameters>::decode(pair.public().as_bytes())
+        .unwrap();
     let signature = Ed25519::sign(&pair, message).unwrap();
     assert!(Ed25519::verify(&key, message, &signature));
     assert_eq!(Ed25519::sign(&pair, message).unwrap(), signature);
@@ -251,7 +259,7 @@ fn laws(seed: [u8; 32], message: &[u8], bit: usize) {
         other[i] ^= 1 << (bit % 8);
     }
     assert!(!Ed25519::verify(&key, &other, &signature), "message bit");
-    let mut key_bytes = pair.public().to_vec();
+    let mut key_bytes = pair.public().as_bytes().to_vec();
     key_bytes[(bit / 8) % 32] ^= 1 << (bit % 8);
     if let Ok(other_key) = PublicKey::<Ed25519Parameters>::decode(&key_bytes) {
         assert!(!Ed25519::verify(&other_key, message, &signature), "key bit");
@@ -268,6 +276,35 @@ proptest! {
         bit in any::<usize>(),
     ) {
         laws(seed, &message, bit);
+    }
+
+    /// The decoders of signatures and of public keys are canonical: on
+    /// arbitrary bytes, and on valid encodings with one bit flipped,
+    /// whatever decodes re-encodes to the same bytes. (A public key keeps
+    /// the bytes it was read from, the ones the challenge hash covers.)
+    #[test]
+    fn decoders_are_canonical(
+        bytes in prop::collection::vec(any::<u8>(), 0..80),
+        seed in any::<[u8; 32]>(),
+        message in prop::collection::vec(any::<u8>(), 0..64),
+        bit in any::<usize>(),
+    ) {
+        canonical::<Signature<Ed25519Parameters>>(&bytes);
+        canonical::<PublicKey<Ed25519Parameters>>(&bytes);
+        let pair = EdDsaKeyPair::<Ed25519Parameters>::from_seed(seed);
+        let valid = [
+            Ed25519::sign(&pair, &message).unwrap().encode(),
+            pair.public().as_bytes().to_vec(),
+        ];
+        for encoding in valid {
+            canonical::<Signature<Ed25519Parameters>>(&encoding);
+            canonical::<PublicKey<Ed25519Parameters>>(&encoding);
+            let mut flipped = encoding.clone();
+            let i = (bit / 8) % flipped.len();
+            flipped[i] ^= 1 << (bit % 8);
+            canonical::<Signature<Ed25519Parameters>>(&flipped);
+            canonical::<PublicKey<Ed25519Parameters>>(&flipped);
+        }
     }
 }
 

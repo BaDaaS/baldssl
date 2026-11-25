@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// A curve: its fields, its base point and its cofactor.
-pub trait Curve: 'static {
+pub trait Curve: crate::sealed::Sealed + 'static {
     /// The base field $\mathbb{F}_p$ of the coordinates.
     type Base: PrimeField;
     /// The scalar field $\mathbb{F}_\ell$, $\ell$ the order of the base point.
@@ -70,6 +70,8 @@ pub trait Curve: 'static {
         P: ProjectiveModel<Curve = Self>;
 }
 
+/// Sealed through [`Curve`].
+///
 /// A short Weierstrass curve $y^2 = x^3 + a x + b$ with $a = -3$, as all the
 /// NIST curves are; the models' formulas assume it. Its base field has square
 /// roots, for decoding compressed points. A curve with another
@@ -79,6 +81,8 @@ pub trait ShortWeierstrass: Curve<Base: Sqrt> {
     const B: &'static str;
 }
 
+/// Sealed through [`Curve`].
+///
 /// A twisted Edwards curve $a x^2 + y^2 = 1 + d x^2 y^2$ with $a = -1$, as
 /// edwards25519 is; the models' formulas assume it.
 pub trait TwistedEdwards: Curve<Base: Sqrt> {
@@ -103,8 +107,7 @@ where
         let s = core::str::from_utf8(pair).ok()?;
         bytes.push(u8::from_str_radix(s, 16).ok()?);
     }
-    let (value, valid) = F::from_bytes_be(&bytes);
-    valid.to_bool_vartime().then_some(value)
+    F::from_bytes_be(&bytes).into_vartime_opt()
 }
 
 /// [`element_opt`], with zero for a constant that is not canonical (which the
@@ -113,5 +116,6 @@ pub(crate) fn constant<F>(hex: &str) -> F
 where
     F: PrimeField,
 {
+    // The instances' tests check every constant, so zero is never taken.
     element_opt(hex).unwrap_or(F::ZERO)
 }

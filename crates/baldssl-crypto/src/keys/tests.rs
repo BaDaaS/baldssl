@@ -51,10 +51,15 @@ where
 {
     let d = C::Scalar::from_u64(k);
     let pair = EcKeyPair::<C>::from_secret_opt(d).unwrap();
-    assert_eq!(pair.secret(), &d);
+    assert_eq!(pair.secret().expose(), &d);
     let q = C::scalar_mul(&Projective::<C>::generator(), &d).to_affine();
-    assert_eq!(pair.public(), &q);
-    assert!(pair.public().is_in_prime_subgroup().to_bool_vartime());
+    assert_eq!(pair.public().point(), &q);
+    assert!(
+        pair.public()
+            .point()
+            .is_in_prime_subgroup()
+            .to_bool_vartime()
+    );
 }
 
 #[test]
@@ -80,7 +85,10 @@ fn rejections() {
     ))
     .unwrap();
     assert_eq!(count.get(), 3, "two rejections, then the valid draw");
-    assert_eq!(pair.secret(), &<P256 as Curve>::Scalar::from_u64(7));
+    assert_eq!(
+        pair.secret().expose(),
+        &<P256 as Curve>::Scalar::from_u64(7)
+    );
     // A fill that fails: its error comes back.
     let failing = |_: &mut [u8]| Err::<(), _>("no randomness");
     assert_eq!(
@@ -98,7 +106,7 @@ fn p521_secrets_use_both_top_byte_values() {
     let mut tops = [false; 2];
     for _ in 0..64 {
         let pair = EcKeyPair::<P521>::generate(os_rng::fill).unwrap();
-        let top = pair.secret().to_bytes_be()[0];
+        let top = pair.secret().expose().to_bytes_be()[0];
         assert!(top <= 1, "top byte {top}");
         tops[usize::from(top)] = true;
     }
@@ -113,7 +121,7 @@ proptest! {
     ) {
         let count = Cell::new(0);
         if let Ok(pair) = EcKeyPair::<P256>::generate(scripted(draws, &count)) {
-            prop_assert!(!pair.secret().is_zero().to_bool_vartime());
+            prop_assert!(!pair.secret().expose().is_zero().to_bool_vartime());
         }
     }
 }
@@ -122,7 +130,10 @@ proptest! {
 fn ed25519_pairs() {
     let seed = [7u8; 32];
     let pair = EdDsaKeyPair::<Ed25519Parameters>::from_seed(seed);
-    assert_eq!(pair.public(), Ed25519::public_key(&seed).as_slice());
+    assert_eq!(
+        pair.public().as_bytes(),
+        Ed25519::public_key(&seed).as_slice()
+    );
     assert_eq!(pair.seed(), &seed);
     let count = Cell::new(0);
     let generated = EdDsaKeyPair::<Ed25519Parameters>::generate(scripted(

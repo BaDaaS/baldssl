@@ -130,6 +130,10 @@ pub fn decode(input: &[u8]) -> Result<Vec<u8>, Base64Error> {
 pub fn encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
+        // A final group of one or two octets is completed with zeros: "bits
+        // with value zero are added (on the right) to form an integral
+        // number of 6-bit groups" (RFC 4648 section 4), so a missing octet
+        // reads as 0, and the sextets it alone fills become '=' below.
         let b0 = chunk.first().copied().unwrap_or(0);
         let b1 = chunk.get(1).copied().unwrap_or(0);
         let b2 = chunk.get(2).copied().unwrap_or(0);

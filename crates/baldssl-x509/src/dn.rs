@@ -29,15 +29,19 @@
 //! [X.690]: https://www.itu.int/rec/T-REC-X.690
 
 use baldssl_core::{
-    der::syntax::{
-        Any, ObjectId, ObjectIdentifier, RawTlv, Sequence, SequenceOf, SetOf,
-        encode,
+    der::{
+        syntax::{
+            Any, ObjectId, ObjectIdentifier, RawTlv, Sequence, SequenceOf,
+            SetOf,
+        },
+        tag,
     },
     encoding::Encodable,
 };
 
-use crate::objects::find_by_name_opt;
+use crate::objects::{self, find_by_name_opt};
 
+use MaskRule::{Fixed, Narrowed};
 use StringType::{Bmp, Ia5, Numeric, Printable, Utf8};
 
 /// How the bytes of `-subj` are read: `req`'s default (Latin-1, one byte
@@ -81,58 +85,55 @@ impl StringType {
         StringType::Utf8,
     ];
 
-    /// The universal tag.
+    /// The universal tag ([X.680] clause 8.4, table 1).
+    ///
+    /// [X.680]: https://www.itu.int/rec/T-REC-X.680
     #[must_use]
     pub fn tag(self) -> u8 {
         match self {
-            StringType::Numeric => 0x12,
-            StringType::Printable => 0x13,
-            StringType::Ia5 => 0x16,
-            StringType::T61 => 0x14,
-            StringType::Bmp => 0x1e,
-            StringType::Universal => 0x1c,
-            StringType::Utf8 => 0x0c,
+            StringType::Numeric => tag::NUMERIC_STRING,
+            StringType::Printable => tag::PRINTABLE_STRING,
+            StringType::Ia5 => tag::IA5_STRING,
+            StringType::T61 => tag::T61_STRING,
+            StringType::Bmp => tag::BMP_STRING,
+            StringType::Universal => tag::UNIVERSAL_STRING,
+            StringType::Utf8 => tag::UTF8_STRING,
         }
     }
 
     /// Whether the type can hold the character `c` (OpenSSL's `type_str`).
-    fn holds(self, c: u32) -> bool {
+    fn holds(self, c: char) -> bool {
         match self {
-            StringType::Numeric => c == u32::from(b' ') || is_ascii_digit(c),
-            StringType::Printable => is_printable(c),
-            StringType::Ia5 => c < 0x80,
-            StringType::T61 => c <= 0xff,
-            StringType::Bmp => c <= 0xffff,
-            StringType::Universal | StringType::Utf8 => {
-                char::from_u32(c).is_some()
+            StringType::Numeric => c == ' ' || c.is_ascii_digit(),
+            StringType::Printable => {
+                c.is_ascii_alphanumeric() || PRINTABLE_PUNCTUATION.contains(c)
             }
+            StringType::Ia5 => c.is_ascii(),
+            StringType::T61 => u32::from(c) <= LATIN1_MAX,
+            StringType::Bmp => u32::from(c) <= BMP_MAX,
+            StringType::Universal | StringType::Utf8 => true,
         }
     }
 
-    /// The contents of a string of this type holding `chars`.
-    fn encode(self, chars: &[u32]) -> Vec<u8> {
+    /// The contents of a string of this type holding `chars`, each of which
+    /// the type holds: one octet per character for the 8-bit types, UCS-2
+    /// or UCS-4 big-endian, or UTF-8.
+    fn encode(self, chars: &[char]) -> Vec<u8> {
         let mut out = Vec::new();
         for &c in chars {
+            let [_, _, high, low] = u32::from(c).to_be_bytes();
             match self {
                 StringType::Numeric
                 | StringType::Printable
                 | StringType::Ia5
-                | StringType::T61 => {
-                    out.push(c.to_be_bytes()[3]);
-                }
-                StringType::Bmp => {
-                    out.extend_from_slice(&c.to_be_bytes()[2..]);
-                }
+                | StringType::T61 => out.push(low),
+                StringType::Bmp => out.extend_from_slice(&[high, low]),
                 StringType::Universal => {
-                    out.extend_from_slice(&c.to_be_bytes());
+                    out.extend_from_slice(&u32::from(c).to_be_bytes());
                 }
                 StringType::Utf8 => {
-                    if let Some(ch) = char::from_u32(c) {
-                        let mut buf = [0u8; 4];
-                        out.extend_from_slice(
-                            ch.encode_utf8(&mut buf).as_bytes(),
-                        );
-                    }
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
                 }
             }
         }
@@ -140,25 +141,29 @@ impl StringType {
     }
 }
 
-/// `0` to `9`.
-fn is_ascii_digit(c: u32) -> bool {
-    (u32::from(b'0')..=u32::from(b'9')).contains(&c)
-}
-
-/// X.680's PrintableString alphabet, which is OpenSSL's `ossl_isasn1print`:
-/// letters, digits, space and `'()+,-./:=?`.
-fn is_printable(c: u32) -> bool {
-    char::from_u32(c).is_some_and(|ch| {
-        ch.is_ascii_alphanumeric() || " '()+,-./:=?".contains(ch)
-    })
-}
+/// The punctuation of X.680's PrintableString alphabet, besides letters and
+/// digits ([X.680] clause 41.4, table 10), which is OpenSSL's
+/// `ossl_isasn1print`.
+///
+/// [X.680]: https://www.itu.int/rec/T-REC-X.680
+const PRINTABLE_PUNCTUATION: &str = " '()+,-./:=?";
+/// The largest code point of Latin-1, which OpenSSL takes T61String to be.
+const LATIN1_MAX: u32 = 0xff;
+/// The largest code point of the Basic Multilingual Plane, which UCS-2
+/// (BMPString) holds.
+const BMP_MAX: u32 = 0xffff;
 
 /// A set of string types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StringTypes(u8);
 
 impl StringTypes {
-    /// The bit of one type.
+    /// The bit of one type: the type's place in [`StringType`].
+    #[allow(
+        clippy::as_conversions,
+        reason = "an enum's discriminant is read only with `as`; it is the \
+                  bit index, below 8"
+    )]
     const fn of(t: StringType) -> u8 {
         1 << t as u8
     }
@@ -198,6 +203,16 @@ impl StringTypes {
 /// (also OpenSSL's value without a configuration).
 pub const UTF8_ONLY: StringTypes = StringTypes::only(StringType::Utf8);
 
+/// Whether an attribute's string types are narrowed by the global mask: the
+/// `STABLE_NO_MASK` flag of `tbl_standard.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaskRule {
+    /// The types are narrowed by the global mask.
+    Narrowed,
+    /// The types are used as they are (`STABLE_NO_MASK`).
+    Fixed,
+}
+
 /// What OpenSSL allows for one attribute: an entry of `tbl_standard.h`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AttributeRule {
@@ -209,9 +224,8 @@ pub(crate) struct AttributeRule {
     pub(crate) max: Option<usize>,
     /// The string types the attribute allows.
     pub(crate) types: StringTypes,
-    /// Whether the types are used as they are (`STABLE_NO_MASK`), not
-    /// narrowed by the global mask.
-    pub(crate) fixed: bool,
+    /// Whether the global mask narrows the types.
+    pub(crate) mask: MaskRule,
 }
 
 /// The rule of a `tbl_standard.h` entry.
@@ -220,14 +234,14 @@ const fn rule(
     min: Option<usize>,
     max: Option<usize>,
     types: StringTypes,
-    fixed: bool,
+    mask: MaskRule,
 ) -> AttributeRule {
     AttributeRule {
         short_name,
         min,
         max,
         types,
-        fixed,
+        mask,
     }
 }
 
@@ -239,81 +253,99 @@ const fn rule(
 /// is no bound here. Attributes without an entry allow `DIRSTRING_TYPE`
 /// narrowed by the global mask, without bounds.
 pub(crate) const RULES: &[AttributeRule] = &[
-    rule("CN", Some(1), Some(64), StringTypes::DIRECTORY, false),
-    rule("C", Some(2), Some(2), StringTypes::only(Printable), true),
-    rule("L", Some(1), Some(128), StringTypes::DIRECTORY, false),
-    rule("ST", Some(1), Some(128), StringTypes::DIRECTORY, false),
-    rule("O", Some(1), Some(64), StringTypes::DIRECTORY, false),
-    rule("OU", Some(1), Some(64), StringTypes::DIRECTORY, false),
+    rule("CN", Some(1), Some(64), StringTypes::DIRECTORY, Narrowed),
+    rule("C", Some(2), Some(2), StringTypes::only(Printable), Fixed),
+    rule("L", Some(1), Some(128), StringTypes::DIRECTORY, Narrowed),
+    rule("ST", Some(1), Some(128), StringTypes::DIRECTORY, Narrowed),
+    rule("O", Some(1), Some(64), StringTypes::DIRECTORY, Narrowed),
+    rule("OU", Some(1), Some(64), StringTypes::DIRECTORY, Narrowed),
     rule(
         "emailAddress",
         Some(1),
         Some(128),
         StringTypes::only(Ia5),
-        true,
+        Fixed,
     ),
-    rule("unstructuredName", Some(1), None, StringTypes::PKCS9, false),
+    rule(
+        "unstructuredName",
+        Some(1),
+        None,
+        StringTypes::PKCS9,
+        Narrowed,
+    ),
     rule(
         "challengePassword",
         Some(1),
         None,
         StringTypes::PKCS9,
-        false,
+        Narrowed,
     ),
     rule(
         "unstructuredAddress",
         Some(1),
         None,
         StringTypes::DIRECTORY,
-        false,
+        Narrowed,
     ),
-    rule("GN", Some(1), Some(32768), StringTypes::DIRECTORY, false),
-    rule("SN", Some(1), Some(32768), StringTypes::DIRECTORY, false),
+    rule("GN", Some(1), Some(32768), StringTypes::DIRECTORY, Narrowed),
+    rule("SN", Some(1), Some(32768), StringTypes::DIRECTORY, Narrowed),
     rule(
         "initials",
         Some(1),
         Some(32768),
         StringTypes::DIRECTORY,
-        false,
+        Narrowed,
     ),
     rule(
         "serialNumber",
         Some(1),
         Some(64),
         StringTypes::only(Printable),
-        true,
+        Fixed,
     ),
-    rule("friendlyName", None, None, StringTypes::only(Bmp), true),
-    rule("name", Some(1), Some(32768), StringTypes::DIRECTORY, false),
+    rule("friendlyName", None, None, StringTypes::only(Bmp), Fixed),
+    rule(
+        "name",
+        Some(1),
+        Some(32768),
+        StringTypes::DIRECTORY,
+        Narrowed,
+    ),
     rule(
         "dnQualifier",
         None,
         None,
         StringTypes::only(Printable),
-        true,
+        Fixed,
     ),
-    rule("DC", Some(1), None, StringTypes::only(Ia5), true),
-    rule("CSPName", None, None, StringTypes::only(Bmp), true),
-    rule("mail", Some(1), Some(256), StringTypes::only(Ia5), true),
+    rule("DC", Some(1), None, StringTypes::only(Ia5), Fixed),
+    rule("CSPName", None, None, StringTypes::only(Bmp), Fixed),
+    rule("mail", Some(1), Some(256), StringTypes::only(Ia5), Fixed),
     rule(
         "jurisdictionC",
         Some(2),
         Some(2),
         StringTypes::only(Printable),
-        true,
+        Fixed,
     ),
-    rule("INN", Some(1), Some(12), StringTypes::only(Numeric), true),
-    rule("OGRN", Some(1), Some(13), StringTypes::only(Numeric), true),
-    rule("SNILS", Some(1), Some(11), StringTypes::only(Numeric), true),
-    rule("c3", Some(3), Some(3), StringTypes::only(Printable), true),
-    rule("n3", Some(3), Some(3), StringTypes::only(Numeric), true),
-    rule("dnsName", None, None, StringTypes::only(Utf8), true),
+    rule("INN", Some(1), Some(12), StringTypes::only(Numeric), Fixed),
+    rule("OGRN", Some(1), Some(13), StringTypes::only(Numeric), Fixed),
+    rule(
+        "SNILS",
+        Some(1),
+        Some(11),
+        StringTypes::only(Numeric),
+        Fixed,
+    ),
+    rule("c3", Some(3), Some(3), StringTypes::only(Printable), Fixed),
+    rule("n3", Some(3), Some(3), StringTypes::only(Numeric), Fixed),
+    rule("dnsName", None, None, StringTypes::only(Utf8), Fixed),
     rule(
         "id-on-SmtpUTF8Mailbox",
         Some(1),
         Some(128),
         StringTypes::only(Utf8),
-        true,
+        Fixed,
     ),
 ];
 
@@ -336,15 +368,46 @@ pub struct RelativeDistinguishedName(pub Vec<AttributeTypeAndValue>);
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DistinguishedName(pub Vec<RelativeDistinguishedName>);
 
+/// Whether an unescaped `+` in `-subj` starts a further member of the same
+/// RDN (`req -multivalue-rdn`, which OpenSSL 3 always applies) or is part
+/// of the value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RdnMode {
+    /// A `+` is part of the value: every RDN has one member.
+    SingleValued,
+    /// A `+` starts a further member of the RDN.
+    MultiValued,
+}
+
+impl RdnMode {
+    /// Whether an unescaped `+` starts a further member of the RDN.
+    fn plus_starts_member(self) -> bool {
+        match self {
+            RdnMode::SingleValued => false,
+            RdnMode::MultiValued => true,
+        }
+    }
+}
+
+/// Where an attribute of `-subj` stands in its RDN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RdnPosition {
+    /// The first member, after a `/`.
+    First,
+    /// A further member of a multi-valued RDN, after a `+`.
+    Further,
+}
+
 /// What `-subj` parsing skips, as OpenSSL warns about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubjWarning {
-    /// An attribute OpenSSL does not know; `multi` when it followed a `+`.
+    /// An attribute OpenSSL does not know; OpenSSL adds a hint about `+`
+    /// when it was a further member of an RDN.
     UnknownAttribute {
         /// The attribute as written.
         name: String,
-        /// Whether it was a further member of a multi-valued RDN.
-        multi: bool,
+        /// Where it stood in its RDN.
+        position: RdnPosition,
     },
     /// An attribute with an empty value.
     EmptyValue {
@@ -383,6 +446,14 @@ pub enum SubjError {
         /// The attribute as written.
         name: String,
     },
+    /// An attribute OpenSSL knows but cannot encode: the roots of the
+    /// object identifier tree (`ISO`), which have one arc.
+    NotEncodable {
+        /// The attribute as written.
+        name: String,
+        /// Its value, as written.
+        value: String,
+    },
 }
 
 impl core::fmt::Display for SubjError {
@@ -412,21 +483,35 @@ impl core::fmt::Display for SubjError {
             SubjError::IllegalCharacters { name } => {
                 write!(f, "illegal characters in {name}")
             }
+            SubjError::NotEncodable { name, value } => write!(
+                f,
+                "Error adding subject name attribute \"/{name}={value}\""
+            ),
         }
     }
 }
 
-/// The characters of `bytes` under `encoding`.
+/// The name `-subj` gives, and the attributes it skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedSubject {
+    /// The name.
+    pub name: DistinguishedName,
+    /// What was skipped, in order, as OpenSSL warns about it.
+    pub warnings: Vec<SubjWarning>,
+}
+
+/// The characters of `bytes` under `encoding`: under Latin-1 each byte is
+/// the code point of its value.
 fn characters(
     bytes: &[u8],
     encoding: InputEncoding,
-) -> Result<Vec<u32>, SubjError> {
+) -> Result<Vec<char>, SubjError> {
     match encoding {
         InputEncoding::Latin1 => {
-            Ok(bytes.iter().map(|&b| u32::from(b)).collect())
+            Ok(bytes.iter().map(|&b| char::from(b)).collect())
         }
         InputEncoding::Utf8 => core::str::from_utf8(bytes)
-            .map(|s| s.chars().map(u32::from).collect())
+            .map(|s| s.chars().collect())
             .map_err(|_| SubjError::InvalidUtf8),
     }
 }
@@ -436,17 +521,19 @@ fn characters(
 /// `mask`.
 fn attribute_value(
     name: &str,
-    dotted: &str,
+    attribute: ObjectId,
     value: &[u8],
     encoding: InputEncoding,
     mask: StringTypes,
 ) -> Result<AttributeTypeAndValue, SubjError> {
-    let rule = RULES
-        .iter()
-        .find(|r| find_by_name_opt(r.short_name).is_some_and(|d| d == dotted));
+    let rule = RULES.iter().find(|r| {
+        find_by_name_opt(r.short_name).is_some_and(|id| id == attribute)
+    });
     let (types, min, max) = match rule {
-        Some(r) if r.fixed => (r.types, r.min, r.max),
-        Some(r) => (r.types.and(mask), r.min, r.max),
+        Some(r) => match r.mask {
+            MaskRule::Fixed => (r.types, r.min, r.max),
+            MaskRule::Narrowed => (r.types.and(mask), r.min, r.max),
+        },
         None => (StringTypes::DIRECTORY.and(mask), None, None),
     };
     let chars = characters(value, encoding)?;
@@ -470,11 +557,7 @@ fn attribute_value(
             name: name.to_owned(),
         })?;
     Ok(AttributeTypeAndValue {
-        attribute: ObjectId::from_dotted_opt(dotted).ok_or_else(|| {
-            SubjError::IllegalCharacters {
-                name: name.to_owned(),
-            }
-        })?,
+        attribute,
         string_type,
         contents: string_type.encode(&chars),
     })
@@ -484,7 +567,7 @@ impl DistinguishedName {
     /// The name `-subj` gives, as OpenSSL's `parse_name` reads it
     /// (`apps/lib/apps.c`): `/type=value` pairs, `\` escaping the next
     /// character, an unescaped `+` starting a further member of the same
-    /// RDN when `multi` is set. Unknown attributes and empty values are
+    /// RDN under [`RdnMode::MultiValued`]. Unknown attributes and empty values are
     /// skipped with a warning, as OpenSSL does. Values are typed as in the
     /// module documentation, under the global mask `mask` (usually
     /// [`UTF8_ONLY`]).
@@ -496,9 +579,9 @@ impl DistinguishedName {
     pub fn from_subj(
         text: &[u8],
         encoding: InputEncoding,
-        multi: bool,
+        rdn_mode: RdnMode,
         mask: StringTypes,
-    ) -> Result<(Self, Vec<SubjWarning>), SubjError> {
+    ) -> Result<ParsedSubject, SubjError> {
         let Some(mut rest) = text.strip_prefix(b"/") else {
             return Err(SubjError::NotAName(
                 String::from_utf8_lossy(text).into_owned(),
@@ -506,27 +589,27 @@ impl DistinguishedName {
         };
         let mut name = DistinguishedName::default();
         let mut warnings = Vec::new();
-        let mut next_is_multi = false;
+        let mut next_position = RdnPosition::First;
         while !rest.is_empty() {
-            let is_multi = next_is_multi;
-            next_is_multi = false;
-            let Some(eq) = rest.iter().position(|&b| b == b'=') else {
+            let position = next_position;
+            next_position = RdnPosition::First;
+            let mut parts = rest.splitn(2, |&b| b == b'=');
+            let (Some(type_bytes), Some(after)) = (parts.next(), parts.next())
+            else {
                 return Err(SubjError::MissingEquals(
                     String::from_utf8_lossy(rest).into_owned(),
                 ));
             };
-            let typestr =
-                String::from_utf8_lossy(rest.get(..eq).unwrap_or_default())
-                    .into_owned();
-            rest = rest.get(eq.saturating_add(1)..).unwrap_or_default();
+            let typestr = String::from_utf8_lossy(type_bytes).into_owned();
+            rest = after;
             let mut value = Vec::new();
             while let Some((&b, after)) = rest.split_first() {
                 if b == b'/' {
                     rest = after;
                     break;
                 }
-                if multi && b == b'+' {
-                    next_is_multi = true;
+                if b == b'+' && rdn_mode.plus_starts_member() {
+                    next_position = RdnPosition::Further;
                     rest = after;
                     break;
                 }
@@ -542,43 +625,56 @@ impl DistinguishedName {
                     rest = after;
                 }
             }
-            let Some(dotted) = find_by_name_opt(&typestr) else {
+            if !objects::is_name(&typestr) {
                 warnings.push(SubjWarning::UnknownAttribute {
                     name: typestr,
-                    multi: is_multi,
+                    position,
                 });
                 continue;
-            };
+            }
             if value.is_empty() {
                 warnings.push(SubjWarning::EmptyValue { name: typestr });
                 continue;
             }
+            let Some(attribute) = find_by_name_opt(&typestr) else {
+                return Err(SubjError::NotEncodable {
+                    value: String::from_utf8_lossy(&value).into_owned(),
+                    name: typestr,
+                });
+            };
             let atv =
-                attribute_value(&typestr, dotted, &value, encoding, mask)?;
-            match name.0.last_mut() {
-                Some(last) if is_multi => last.0.push(atv),
-                _ => name.0.push(RelativeDistinguishedName(vec![atv])),
+                attribute_value(&typestr, attribute, &value, encoding, mask)?;
+            match (position, name.0.last_mut()) {
+                (RdnPosition::Further, Some(last)) => last.0.push(atv),
+                (RdnPosition::First, _) | (RdnPosition::Further, None) => {
+                    name.0.push(RelativeDistinguishedName(vec![atv]));
+                }
             }
         }
-        Ok((name, warnings))
+        Ok(ParsedSubject { name, warnings })
     }
 }
 
 /// `Name ::= SEQUENCE OF RelativeDistinguishedName`, with
 /// `RelativeDistinguishedName ::= SET OF AttributeTypeAndValue` and
 /// `AttributeTypeAndValue ::= SEQUENCE { type OBJECT IDENTIFIER, value ANY
-/// }` (RFC 5280 section 4.1.2.4).
-type NameSyntax = SequenceOf<SetOf<Sequence<(ObjectIdentifier, (Any, ()))>>>;
+/// }` ([RFC 5280 section 4.1.2.4]). It writes and reads DER only, a SET OF
+/// in sorted order; [`crate::Name`] is the lenient reader of names read
+/// from certificates and requests.
+///
+/// [RFC 5280 section 4.1.2.4]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.4
+pub(crate) type NameSyntax =
+    SequenceOf<SetOf<Sequence<(ObjectIdentifier, (Any, ()))>>>;
 
 /// The description of [`NameSyntax`].
-const NAME: NameSyntax =
+pub(crate) const NAME: NameSyntax =
     SequenceOf(SetOf(Sequence((ObjectIdentifier, (Any, ())))));
 
-/// The DER `Name`, each RDN's members sorted as DER requires.
-impl Encodable for DistinguishedName {
-    type Bytes = Vec<u8>;
-
-    fn encode(&self) -> Vec<u8> {
+impl DistinguishedName {
+    /// The DER `Name`, each RDN's members sorted as DER requires. Total: the
+    /// description writes one TLV for every name.
+    #[must_use]
+    pub fn to_raw(&self) -> RawTlv {
         let value: Vec<Vec<(ObjectId, (RawTlv, ()))>> = self
             .0
             .iter()
@@ -600,7 +696,16 @@ impl Encodable for DistinguishedName {
                     .collect()
             })
             .collect();
-        encode(&NAME, &value)
+        RawTlv::encode(&NAME, &value)
+    }
+}
+
+/// The DER `Name` ([`DistinguishedName::to_raw`]).
+impl Encodable for DistinguishedName {
+    type Bytes = Vec<u8>;
+
+    fn encode(&self) -> Vec<u8> {
+        self.to_raw().as_bytes().to_vec()
     }
 }
 

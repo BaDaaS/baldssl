@@ -43,9 +43,10 @@ pub fn dotted_oid() -> impl Strategy<Value = String> {
 /// zeros, of up to `max - 1` octets, never a negative zero: the form of a
 /// parsed DER INTEGER.
 pub fn sign_magnitude(max: usize) -> impl Strategy<Value = (bool, Vec<u8>)> {
-    (any::<bool>(), bytes(max)).prop_map(|(negative, m)| {
-        let first = m.iter().position(|&b| b != 0).unwrap_or(m.len());
-        let magnitude = m.get(first..).unwrap_or_default().to_vec();
+    (any::<bool>(), bytes(max)).prop_map(|(negative, mut magnitude)| {
+        while magnitude.first() == Some(&0) {
+            magnitude.remove(0);
+        }
         (negative && !magnitude.is_empty(), magnitude)
     })
 }

@@ -12,11 +12,14 @@
 //! * OpenSSL 3.0: `XN_FLAG_ONELINE`, ` = ` with spaces, bytes above `0x7F`
 //!   and control characters escaped as `\XX`, and a value containing an RFC
 //!   2253 special character (`,+<>;`, or a leading `#` or space, or a
-//!   trailing space) wrapped in double quotes.
+//!   trailing space, [RFC 2253 section 2.4]) wrapped in double quotes.
+//!
+//! [RFC 2253 section 2.4]: https://www.rfc-editor.org/rfc/rfc2253#section-2.4
 
 use baldssl_core::{
     Error, Result,
     der::{Oid, Reader, Tlv, syntax::RawTlv, tag},
+    num::low_u8,
 };
 
 use crate::objects;
@@ -53,10 +56,19 @@ impl<'a> Name<'a> {
     ///
     /// On malformed DER or an empty RDN.
     pub(crate) fn read(r: &mut Reader<'a>) -> Result<Self> {
-        Self::from_contents(r.expect(tag::SEQUENCE)?.value)
+        Self::from_contents(r.expect(tag::SEQUENCE)?.value())
     }
 
     /// Decodes a Name from the contents of its SEQUENCE.
+    ///
+    /// This is the lenient reader of names, beside the description
+    /// [`crate::dn::NAME`] that writes them: it borrows the input, keeps
+    /// the attributes of each RDN in encoding order, and accepts a SET OF
+    /// that is not in DER order ([X.690] 11.6), which the description
+    /// refuses, since OpenSSL reads such a name and prints its attributes
+    /// in encoding order. Each attribute value may be any TLV.
+    ///
+    /// [X.690]: https://www.itu.int/rec/T-REC-X.690
     ///
     /// # Errors
     ///
@@ -65,11 +77,11 @@ impl<'a> Name<'a> {
         let mut seq = Reader::new(value);
         let mut rdns = Vec::new();
         while !seq.is_empty() {
-            let mut set = Reader::new(seq.expect(tag::SET)?.value);
+            let mut set = Reader::new(seq.expect(tag::SET)?.value());
             let mut rdn = Vec::new();
             while !set.is_empty() {
                 let mut atv = set.sequence()?;
-                let oid = Oid::parse(atv.expect(tag::OID)?.value)?;
+                let oid = Oid::parse(atv.expect(tag::OID)?.value())?;
                 let value = atv.read()?;
                 atv.finish()?;
                 rdn.push(Attribute { oid, value });
@@ -101,17 +113,20 @@ impl<'a> Name<'a> {
                 let mut entries = rdn
                     .iter()
                     .map(|a| {
-                        let value =
-                            if CANONICAL_STRINGS.contains(&a.value.octet()) {
-                                let mut utf8 = Vec::new();
-                                string_to_utf8(&a.value, &mut utf8)?;
-                                RawTlv::from_tag_and_contents(
-                                    tag::UTF8_STRING,
-                                    &canonical_text(&utf8),
-                                )
-                            } else {
-                                RawTlv::parse(a.value.encoded)?
-                            };
+                        let value = if a
+                            .value
+                            .octet_opt()
+                            .is_some_and(|o| CANONICAL_STRINGS.contains(&o))
+                        {
+                            let mut utf8 = Vec::new();
+                            string_to_utf8(&a.value, &mut utf8)?;
+                            RawTlv::from_tag_and_contents(
+                                tag::UTF8_STRING,
+                                &canonical_text(&utf8),
+                            )
+                        } else {
+                            RawTlv::parse(a.value.encoded())?
+                        };
                         let mut entry = RawTlv::from_tag_and_contents(
                             tag::OID,
                             a.oid.as_bytes(),
@@ -136,7 +151,7 @@ impl<'a> Name<'a> {
     ///
     /// [`Error::Unsupported`] for value types OpenSSL would not print as
     /// text, and, in the [`NameStyle::Oneline`] style, for values containing
-    /// `"` or `\\`, whose escaping baldssl does not reproduce yet.
+    /// `"` or `\\`, whose escaping baldssl does not reproduce.
     pub fn to_openssl(&self, style: NameStyle) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         for (i, rdn) in self.rdns.iter().enumerate() {
@@ -171,9 +186,9 @@ impl<'a> Name<'a> {
 /// Escapes a value as `XN_FLAG_ONELINE` does (`do_buf` and `do_esc_char`
 /// with `ASN1_STRFLGS_RFC2253 | ASN1_STRFLGS_ESC_QUOTE`): `\\XX` for bytes
 /// above `0x7E` and control characters, and double quotes around a value
-/// that contains an [RFC 2253][rfc2253] special character.
+/// that contains an [RFC 2253 section 2.4] special character.
 ///
-/// [rfc2253]: https://www.rfc-editor.org/rfc/rfc2253
+/// [RFC 2253 section 2.4]: https://www.rfc-editor.org/rfc/rfc2253#section-2.4
 fn oneline_value(value: &[u8], out: &mut Vec<u8>) -> Result<()> {
     if value.iter().any(|&b| b == b'"' || b == b'\\') {
         return Err(Error::unsupported(
@@ -199,28 +214,48 @@ fn oneline_value(value: &[u8], out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// The marker of a UTF-8 continuation byte, `10xxxxxx` ([RFC 3629]
+/// section 3).
+///
+/// [RFC 3629]: https://www.rfc-editor.org/rfc/rfc3629#section-3
+const CONTINUATION: u8 = 0x80;
+/// The six payload bits of a continuation byte.
+const CONTINUATION_BITS: u32 = 0x3f;
+/// The payload bits a continuation byte holds.
+const BITS_PER_CONTINUATION: u32 = 6;
+/// The marker of the lead byte of a two-byte sequence, `110xxxxx`.
+const LEAD_TWO: u8 = 0xc0;
+/// The marker of the lead byte of a three-byte sequence, `1110xxxx`.
+const LEAD_THREE: u8 = 0xe0;
+/// The marker of the lead byte of a four-byte sequence, `11110xxx`.
+const LEAD_FOUR: u8 = 0xf0;
+
+/// The continuation byte holding bits `6 * k` to `6 * k + 5` of `c`.
+fn continuation(c: u32, k: u32) -> u8 {
+    CONTINUATION
+        | low_u8((c >> (BITS_PER_CONTINUATION * k)) & CONTINUATION_BITS)
+}
+
 /// Appends the UTF-8 encoding of a code point the way OpenSSL's `UTF8_putc`
-/// does: surrogates are encoded like any other value below `0x10000`.
+/// does: surrogates are encoded like any other value below `0x10000`, which
+/// `char::encode_utf8` cannot do.
 fn push_utf8(c: u32, out: &mut Vec<u8>) -> Result<()> {
-    // The casts below keep the low 6 bits of a shifted code point, which is
-    // the definition of the UTF-8 encoding.
-    #[allow(clippy::cast_possible_truncation)]
     match c {
-        0..=0x7f => out.push(c as u8),
+        0..=0x7f => out.push(low_u8(c)),
         0x80..=0x7ff => {
-            out.push(0xc0 | (c >> 6) as u8);
-            out.push(0x80 | (c & 0x3f) as u8);
+            out.push(LEAD_TWO | low_u8(c >> BITS_PER_CONTINUATION));
+            out.push(continuation(c, 0));
         }
         0x800..=0xffff => {
-            out.push(0xe0 | (c >> 12) as u8);
-            out.push(0x80 | ((c >> 6) & 0x3f) as u8);
-            out.push(0x80 | (c & 0x3f) as u8);
+            out.push(LEAD_THREE | low_u8(c >> (2 * BITS_PER_CONTINUATION)));
+            out.push(continuation(c, 1));
+            out.push(continuation(c, 0));
         }
         0x1_0000..=0x10_ffff => {
-            out.push(0xf0 | (c >> 18) as u8);
-            out.push(0x80 | ((c >> 12) & 0x3f) as u8);
-            out.push(0x80 | ((c >> 6) & 0x3f) as u8);
-            out.push(0x80 | (c & 0x3f) as u8);
+            out.push(LEAD_FOUR | low_u8(c >> (3 * BITS_PER_CONTINUATION)));
+            out.push(continuation(c, 2));
+            out.push(continuation(c, 1));
+            out.push(continuation(c, 0));
         }
         _ => return Err(Error::unsupported("UniversalString above U+10FFFF")),
     }
@@ -262,6 +297,8 @@ fn canonical_text(text: &[u8]) -> Vec<u8> {
         .map_or(start, |i| i.saturating_add(1));
     let mut out = Vec::with_capacity(end.saturating_sub(start));
     let mut in_space = false;
+    // `start <= end <= text.len()` by construction, so the range is in
+    // bounds and the empty fallback is never taken.
     for b in text.get(start..end).unwrap_or_default() {
         if space(b) {
             if !in_space {
@@ -284,21 +321,23 @@ fn canonical_text(text: &[u8]) -> Vec<u8> {
 /// [`Error::Unsupported`] for non-string types, [`Error::Invalid`] for a
 /// BMPString or UniversalString of bad length.
 pub(crate) fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
-    match value.octet() {
+    match value.octet_opt() {
         // UTF8String is copied byte for byte, even when it is not UTF-8.
-        tag::UTF8_STRING => out.extend_from_slice(value.value),
+        Some(tag::UTF8_STRING) => out.extend_from_slice(value.value()),
         // One byte per character, read as Latin-1, then UTF-8 encoded.
-        tag::NUMERIC_STRING
-        | tag::PRINTABLE_STRING
-        | tag::T61_STRING
-        | tag::IA5_STRING
-        | tag::VISIBLE_STRING => {
-            for &b in value.value {
+        Some(
+            tag::NUMERIC_STRING
+            | tag::PRINTABLE_STRING
+            | tag::T61_STRING
+            | tag::IA5_STRING
+            | tag::VISIBLE_STRING,
+        ) => {
+            for &b in value.value() {
                 push_utf8(u32::from(b), out)?;
             }
         }
-        tag::BMP_STRING => {
-            let (units, rest) = value.value.as_chunks::<2>();
+        Some(tag::BMP_STRING) => {
+            let (units, rest) = value.value().as_chunks::<2>();
             if !rest.is_empty() {
                 return Err(Error::invalid("BMPString of odd length"));
             }
@@ -306,8 +345,8 @@ pub(crate) fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
                 push_utf8(u32::from(u16::from_be_bytes(*unit)), out)?;
             }
         }
-        tag::UNIVERSAL_STRING => {
-            let (chars, rest) = value.value.as_chunks::<4>();
+        Some(tag::UNIVERSAL_STRING) => {
+            let (chars, rest) = value.value().as_chunks::<4>();
             if !rest.is_empty() {
                 return Err(Error::invalid("UniversalString length"));
             }
@@ -315,10 +354,15 @@ pub(crate) fn string_to_utf8(value: &Tlv<'_>, out: &mut Vec<u8>) -> Result<()> {
                 push_utf8(u32::from_be_bytes(*c), out)?;
             }
         }
-        other => {
+        Some(other) => {
             return Err(Error::unsupported(format!(
                 "name attribute value of ASN.1 type 0x{other:02x}"
             )));
+        }
+        None => {
+            return Err(Error::unsupported(
+                "name attribute value with a high tag number",
+            ));
         }
     }
     Ok(())
@@ -419,7 +463,7 @@ mod tests {
         };
         let canonical = |der: &[u8]| {
             Name::from_contents(
-                Reader::new(der).expect(tag::SEQUENCE).unwrap().value,
+                Reader::new(der).expect(tag::SEQUENCE).unwrap().value(),
             )
             .unwrap()
             .canonical()

@@ -15,6 +15,8 @@
 //!
 //! [NIST SP 800-90A Rev. 1]: https://csrc.nist.gov/pubs/sp/800/90/a/r1/final
 
+use baldssl_core::num::u32_to_usize;
+
 use crate::{
     hash::{Digest, Sha1, Sha224, Sha256, Sha384, Sha512},
     mac::{Hmac, Mac},
@@ -40,6 +42,7 @@ impl SecurityStrength {
 }
 
 /// The highest security strength HMAC_DRBG supports with a hash (table 2).
+/// Sealed through [`Digest`].
 pub trait DrbgHash: Digest {
     /// The strength of HMAC_DRBG with this hash.
     const SECURITY_STRENGTH: SecurityStrength;
@@ -133,7 +136,7 @@ impl core::fmt::Display for DrbgError {
 
 /// A deterministic random bit generator (section 9): seeded once, then
 /// asked for bits, and reseeded with fresh entropy.
-pub trait Drbg {
+pub trait Drbg: crate::sealed::Sealed {
     /// Mixes fresh entropy (and optional additional input) into the state,
     /// and restarts the request count (section 9.2).
     ///
@@ -191,8 +194,9 @@ where
     ) -> Result<Self, DrbgError> {
         check_entropy::<H>(entropy)?;
         let required = H::SECURITY_STRENGTH.bits() / 2;
+        // Saturating: a length too large to count in bits is long enough.
         let bits = nonce.0.len().saturating_mul(8);
-        if bits < required as usize {
+        if bits < u32_to_usize(required) {
             return Err(DrbgError::NonceTooShort { bits, required });
         }
         let mut drbg = HmacDrbg {
@@ -205,13 +209,14 @@ where
         Ok(drbg)
     }
 
-    /// `HMAC(K, data_1 || data_2 || ...)`.
+    /// `HMAC(K, data_1 || data_2 || ...)`, as a secret: it becomes `K` or
+    /// `V`.
     fn hmac(&self, data: &[&[u8]]) -> SecretBytes {
         let mut m = Hmac::<H>::new(self.key.expose());
         for d in data {
             m.update(d);
         }
-        SecretBytes::new(m.finalize().as_bytes().to_vec())
+        m.finalize().into_secret()
     }
 
     /// The update function (section 10.1.2.2), with `provided_data` the
@@ -240,12 +245,15 @@ where
     H: DrbgHash,
 {
     let required = H::SECURITY_STRENGTH.bits();
+    // Saturating: a length too large to count in bits is long enough.
     let bits = entropy.0.len().saturating_mul(8);
-    if bits < required as usize {
+    if bits < u32_to_usize(required) {
         return Err(DrbgError::EntropyTooShort { bits, required });
     }
     Ok(())
 }
+
+impl<H> crate::sealed::Sealed for HmacDrbg<H> where H: DrbgHash {}
 
 impl<H> Drbg for HmacDrbg<H>
 where
@@ -282,10 +290,15 @@ where
         }
         for chunk in out.chunks_mut(H::OUTPUT_LEN) {
             self.value = self.hmac(&[self.value.expose()]);
-            let block = self.value.expose();
-            chunk.copy_from_slice(block.get(..chunk.len()).unwrap_or(block));
+            // A chunk is at most OUTPUT_LEN bytes, the length of V, so the
+            // zip fills all of it.
+            for (dst, src) in chunk.iter_mut().zip(self.value.expose()) {
+                *dst = *src;
+            }
         }
         self.update(&[additional.0]);
+        // Saturating: the counter stops far above RESEED_INTERVAL, which
+        // already refuses every request.
         self.reseed_counter = self.reseed_counter.saturating_add(1);
         Ok(())
     }

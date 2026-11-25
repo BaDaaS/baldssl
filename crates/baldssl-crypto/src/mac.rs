@@ -34,7 +34,7 @@ const OPAD: u8 = 0x5c;
 /// Laws, checked for [`Hmac`] over every hash: feeding `a` then `b` gives
 /// the tag of `a || b`; [`Mac::mac`] is [`Mac::new`], one
 /// [`Mac::update`], then [`Mac::finalize`].
-pub trait Mac: Sized {
+pub trait Mac: crate::sealed::Sealed + Sized {
     /// A computation keyed with `key`.
     #[must_use]
     fn new(key: &[u8]) -> Self;
@@ -71,11 +71,19 @@ impl Tag {
     /// Whether `candidate` is this tag, in time that depends only on the
     /// lengths. A truncated tag (RFC 2104 section 5) is checked by
     /// comparing with a prefix of this one.
-    #[must_use]
     pub fn verify_ct(&self, candidate: &[u8]) -> Choice {
         self.0.as_slice().ct_eq(candidate)
     }
+
+    /// The tag, as a secret: for a tag used as a key (HMAC_DRBG's `K` and
+    /// `V`), so that it is wiped when dropped. The bytes are moved, not
+    /// copied.
+    pub(crate) fn into_secret(self) -> SecretBytes {
+        SecretBytes::new(self.0)
+    }
 }
+
+impl crate::sealed::Sealed for Tag {}
 
 impl CtEq for Tag {
     fn ct_eq(&self, other: &Self) -> Choice {
@@ -122,14 +130,23 @@ where
 {
     /// `K'`: the key, hashed first when longer than the block, then padded
     /// with zeros to the block length (RFC 2104 section 2, steps 1 and 2).
+    /// Built in place in a buffer of the block length, so that no copy of
+    /// the key is left in a reallocated vector.
     fn block_key(key: &[u8]) -> SecretBytes {
-        let mut k = if key.len() > H::BLOCK_LEN {
-            H::digest(key)
+        let mut k = SecretBytes::filled(0, H::BLOCK_LEN);
+        let hashed;
+        let source = if key.len() > H::BLOCK_LEN {
+            hashed = SecretBytes::new(H::digest(key));
+            hashed.expose()
         } else {
-            key.to_vec()
+            key
         };
-        k.resize(H::BLOCK_LEN, 0);
-        SecretBytes::new(k)
+        // The source is at most BLOCK_LEN bytes (a digest is shorter than a
+        // block), so the zip copies all of it.
+        for (dst, src) in k.expose_mut().iter_mut().zip(source) {
+            *dst = *src;
+        }
+        k
     }
 
     /// `K' xor pad`, byte by byte.
@@ -137,6 +154,8 @@ where
         SecretBytes::new(block_key.expose().iter().map(|b| b ^ pad).collect())
     }
 }
+
+impl<H> crate::sealed::Sealed for Hmac<H> where H: Digest {}
 
 impl<H> Mac for Hmac<H>
 where
@@ -157,10 +176,10 @@ where
     }
 
     fn finalize(self) -> Tag {
-        let inner = self.inner.finalize();
+        let inner = SecretBytes::new(self.inner.finalize());
         let mut outer = H::new();
         outer.update(self.outer_pad.expose());
-        outer.update(&inner);
+        outer.update(inner.expose());
         Tag(outer.finalize())
     }
 }

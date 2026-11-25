@@ -11,17 +11,16 @@
 //! the run-time keys ([`AnyPrivateKey::sign`], [`PublicKey::verify`]) go
 //! through `choice_opt` once.
 //!
-//! Signing is deterministic: ECDSA nonces follow [RFC 6979], and Ed25519
-//! ([RFC 8032] section 5.1.6) has no nonce to draw.
+//! Signing is deterministic: ECDSA nonces follow [RFC 6979] section 3.2,
+//! and Ed25519 ([RFC 8032] section 5.1.6) has no nonce to draw.
 //!
-//! [RFC 6979]: https://www.rfc-editor.org/rfc/rfc6979
+//! [RFC 6979]: https://www.rfc-editor.org/rfc/rfc6979#section-3.2
 //! [RFC 8032]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.6
 
 use baldssl_core::{Error, Result};
 use baldssl_crypto::{
     algebra::{curve::Curve, encoding::Decodable, field::PrimeField as _},
     hash::Algorithm as Hash,
-    instances::{P256, P384, P521},
     signature::{
         SignEncoded, SignatureAlgorithm, VerifyEncoded,
         ecdsa::{SigValue, sign_with_hash, verify_with_hash},
@@ -29,10 +28,15 @@ use baldssl_crypto::{
     },
 };
 
-use crate::{AnyPrivateKey, KeyAlgorithm, NamedCurve, PrivateKey, PublicKey};
+use crate::{
+    AnyPrivateKey, Ed25519PublicKey, KeyAlgorithm, NamedCurve, PrivateKey,
+    PublicKey, WithPrivateKey, parse::WithPublicKey,
+};
 
 /// How keys of an algorithm sign: the choice a key leaves open, and the
 /// signature algorithms it signs with.
+///
+/// Sealed, as [`KeyAlgorithm`] is, which it refines.
 ///
 /// Laws, tested for every implementation: `choice_opt(algorithm(c)) ==
 /// Some(c)` (so `algorithm` is injective), and what `sign` gives verifies
@@ -74,9 +78,10 @@ pub trait Signing: KeyAlgorithm {
     /// [`Signing::verify`] accepts is a signature.
     fn is_signature(signature: &[u8]) -> bool;
 
-    /// Whether the encoded `signature` of `message` verifies under `key`.
+    /// Whether the encoded `signature` of `message` verifies under `key`,
+    /// as a SubjectPublicKeyInfo holds it.
     fn verify(
-        key: &Self::PublicKey,
+        key: &Self::SubjectPublicKey,
         choice: Self::Choice,
         message: &[u8],
         signature: &[u8],
@@ -119,7 +124,7 @@ where
     }
 
     fn verify(
-        key: &Self::PublicKey,
+        key: &Self::SubjectPublicKey,
         hash: Hash,
         message: &[u8],
         signature: &[u8],
@@ -142,7 +147,10 @@ impl Signing for Ed25519 {
     }
 
     fn choice_opt(algorithm: SignatureAlgorithm) -> Option<()> {
-        (algorithm == SignatureAlgorithm::Ed25519).then_some(())
+        match algorithm {
+            SignatureAlgorithm::Ed25519 => Some(()),
+            SignatureAlgorithm::Ecdsa(_) => None,
+        }
     }
 
     fn sign(pair: &Self::KeyPair, (): (), message: &[u8]) -> Result<Vec<u8>> {
@@ -158,8 +166,13 @@ impl Signing for Ed25519 {
         true
     }
 
-    fn verify(key: &[u8], (): (), message: &[u8], signature: &[u8]) -> bool {
-        EddsaPublicKey::<Ed25519Parameters>::decode(key)
+    fn verify(
+        key: &Ed25519PublicKey,
+        (): (),
+        message: &[u8],
+        signature: &[u8],
+    ) -> bool {
+        EddsaPublicKey::<Ed25519Parameters>::decode(key.as_bytes())
             .is_ok_and(|key| Ed25519::verify_encoded(&key, message, signature))
     }
 }
@@ -208,7 +221,8 @@ const fn ecdsa_max_len(bits: u32) -> usize {
             .saturating_add(length_octets)
             .saturating_add(IDENTIFIER_OCTETS)
     }
-    let integer = (bits as usize / BITS_PER_OCTET).saturating_add(SIGN_OCTET);
+    let integer = (baldssl_core::num::u32_to_usize(bits) / BITS_PER_OCTET)
+        .saturating_add(SIGN_OCTET);
     tlv(tlv(integer).saturating_mul(2))
 }
 
@@ -240,17 +254,54 @@ fn mismatch() -> Error {
 
 /// Whether `signature` verifies under a typed key and a run-time
 /// algorithm: false when the algorithm is not one of the key's.
-fn verify_as<A>(
-    key: &A::PublicKey,
+struct Verify<'a> {
     algorithm: SignatureAlgorithm,
-    message: &[u8],
-    signature: &[u8],
-) -> bool
-where
-    A: Signing,
-{
-    A::choice_opt(algorithm)
-        .is_some_and(|choice| A::verify(key, choice, message, signature))
+    message: &'a [u8],
+    signature: &'a [u8],
+}
+
+impl WithPublicKey for Verify<'_> {
+    type Output = bool;
+
+    fn run<A>(self, key: &A::SubjectPublicKey) -> bool
+    where
+        A: Signing,
+    {
+        A::choice_opt(self.algorithm).is_some_and(|choice| {
+            A::verify(key, choice, self.message, self.signature)
+        })
+    }
+}
+
+/// [`Signing::DEFAULT`], as a signature algorithm.
+struct DefaultAlgorithm;
+
+impl WithPrivateKey for DefaultAlgorithm {
+    type Output = SignatureAlgorithm;
+
+    fn run<A>(self, _key: &PrivateKey<A>) -> SignatureAlgorithm
+    where
+        A: Signing,
+    {
+        A::algorithm(A::DEFAULT)
+    }
+}
+
+/// The signature of a run-time algorithm, when it is one of the key's.
+struct Sign<'a> {
+    algorithm: SignatureAlgorithm,
+    message: &'a [u8],
+}
+
+impl WithPrivateKey for Sign<'_> {
+    type Output = Result<Vec<u8>>;
+
+    fn run<A>(self, key: &PrivateKey<A>) -> Result<Vec<u8>>
+    where
+        A: Signing,
+    {
+        key.sign_as(self.algorithm, self.message)
+    }
 }
 
 impl AnyPrivateKey {
@@ -258,12 +309,7 @@ impl AnyPrivateKey {
     /// curve, Ed25519 for an Ed25519 key.
     #[must_use]
     pub fn default_signature_algorithm(&self) -> SignatureAlgorithm {
-        match self {
-            AnyPrivateKey::P256(_) => P256::algorithm(P256::DEFAULT),
-            AnyPrivateKey::P384(_) => P384::algorithm(P384::DEFAULT),
-            AnyPrivateKey::P521(_) => P521::algorithm(P521::DEFAULT),
-            AnyPrivateKey::Ed25519(_) => Ed25519::algorithm(Ed25519::DEFAULT),
-        }
+        self.with(DefaultAlgorithm)
     }
 
     /// The encoded signature of `message` with `algorithm`.
@@ -278,12 +324,7 @@ impl AnyPrivateKey {
         algorithm: SignatureAlgorithm,
         message: &[u8],
     ) -> Result<Vec<u8>> {
-        match self {
-            AnyPrivateKey::P256(k) => k.sign_as(algorithm, message),
-            AnyPrivateKey::P384(k) => k.sign_as(algorithm, message),
-            AnyPrivateKey::P521(k) => k.sign_as(algorithm, message),
-            AnyPrivateKey::Ed25519(k) => k.sign_as(algorithm, message),
-        }
+        self.with(Sign { algorithm, message })
     }
 }
 
@@ -301,24 +342,43 @@ pub enum SignatureCheck {
 }
 
 /// What checking `signature` under a typed key and a run-time algorithm
-/// says.
-fn check_as<A>(
-    key: &A::PublicKey,
+/// says: an error when the algorithm is not one of the key's.
+struct CheckSignature<'a> {
     algorithm: SignatureAlgorithm,
-    message: &[u8],
-    signature: &[u8],
-) -> Result<SignatureCheck>
-where
-    A: Signing,
-{
-    let choice = A::choice_opt(algorithm).ok_or_else(mismatch)?;
-    Ok(if !A::is_signature(signature) {
-        SignatureCheck::Malformed
-    } else if A::verify(key, choice, message, signature) {
-        SignatureCheck::Verified
-    } else {
-        SignatureCheck::Failed
-    })
+    message: &'a [u8],
+    signature: &'a [u8],
+}
+
+impl WithPublicKey for CheckSignature<'_> {
+    type Output = Result<SignatureCheck>;
+
+    fn run<A>(self, key: &A::SubjectPublicKey) -> Result<SignatureCheck>
+    where
+        A: Signing,
+    {
+        let choice = A::choice_opt(self.algorithm).ok_or_else(mismatch)?;
+        Ok(if !A::is_signature(self.signature) {
+            SignatureCheck::Malformed
+        } else if A::verify(key, choice, self.message, self.signature) {
+            SignatureCheck::Verified
+        } else {
+            SignatureCheck::Failed
+        })
+    }
+}
+
+/// [`Signing::MAX_SIGNATURE_LEN`] of a typed key.
+struct MaxSignatureLen;
+
+impl WithPublicKey for MaxSignatureLen {
+    type Output = usize;
+
+    fn run<A>(self, _key: &A::SubjectPublicKey) -> usize
+    where
+        A: Signing,
+    {
+        A::MAX_SIGNATURE_LEN
+    }
 }
 
 impl PublicKey {
@@ -326,12 +386,7 @@ impl PublicKey {
     /// ([`Signing::MAX_SIGNATURE_LEN`]).
     #[must_use]
     pub fn max_signature_len(&self) -> usize {
-        match self {
-            PublicKey::P256(_) => P256::MAX_SIGNATURE_LEN,
-            PublicKey::P384(_) => P384::MAX_SIGNATURE_LEN,
-            PublicKey::P521(_) => P521::MAX_SIGNATURE_LEN,
-            PublicKey::Ed25519(_) => Ed25519::MAX_SIGNATURE_LEN,
-        }
+        self.with(MaxSignatureLen)
     }
 
     /// What the encoded `signature` of `message` is under this key with
@@ -347,20 +402,11 @@ impl PublicKey {
         message: &[u8],
         signature: &[u8],
     ) -> Result<SignatureCheck> {
-        match self {
-            PublicKey::P256(q) => {
-                check_as::<P256>(q, algorithm, message, signature)
-            }
-            PublicKey::P384(q) => {
-                check_as::<P384>(q, algorithm, message, signature)
-            }
-            PublicKey::P521(q) => {
-                check_as::<P521>(q, algorithm, message, signature)
-            }
-            PublicKey::Ed25519(bytes) => {
-                check_as::<Ed25519>(bytes, algorithm, message, signature)
-            }
-        }
+        self.with(CheckSignature {
+            algorithm,
+            message,
+            signature,
+        })
     }
 
     /// Whether the encoded `signature` of `message` verifies under this key
@@ -372,20 +418,11 @@ impl PublicKey {
         message: &[u8],
         signature: &[u8],
     ) -> bool {
-        match self {
-            PublicKey::P256(q) => {
-                verify_as::<P256>(q, algorithm, message, signature)
-            }
-            PublicKey::P384(q) => {
-                verify_as::<P384>(q, algorithm, message, signature)
-            }
-            PublicKey::P521(q) => {
-                verify_as::<P521>(q, algorithm, message, signature)
-            }
-            PublicKey::Ed25519(bytes) => {
-                verify_as::<Ed25519>(bytes, algorithm, message, signature)
-            }
-        }
+        self.with(Verify {
+            algorithm,
+            message,
+            signature,
+        })
     }
 }
 

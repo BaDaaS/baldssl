@@ -22,9 +22,8 @@ use crate::der::{DerError, Integer, Oid};
 /// An INTEGER value as [`Integer::parse`] returns it: a sign and a
 /// magnitude without leading zeros, never a negative zero.
 fn integer() -> impl Strategy<Value = Integer> {
-    sign_magnitude(12).prop_map(|(negative, magnitude)| Integer {
-        negative,
-        magnitude,
+    sign_magnitude(12).prop_map(|(negative, magnitude)| {
+        Integer::from_sign_magnitude(negative, &magnitude)
     })
 }
 
@@ -225,6 +224,8 @@ proptest! {
         canonical(&Null, &data);
         canonical(&Unsigned, &data);
         canonical(&Small, &data);
+        canonical(&Signed, &data);
+        canonical(&NamedBits, &data);
         canonical(&OctetString, &data);
         canonical(&BitString, &data);
         canonical(&ObjectIdentifier, &data);
@@ -270,15 +271,10 @@ fn golden() {
     );
     assert_eq!(Integer::from(i64::MIN).to_i64_opt(), Some(i64::MIN));
     // 2^63 and -(2^63 + 1) do not fit.
-    let big = Integer {
-        negative: false,
-        magnitude: vec![0x80, 0, 0, 0, 0, 0, 0, 0],
-    };
+    let big = Integer::from_sign_magnitude(false, &[0x80, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(big.to_i64_opt(), None);
-    let below = Integer {
-        negative: true,
-        magnitude: vec![0x80, 0, 0, 0, 0, 0, 0, 1],
-    };
+    let below =
+        Integer::from_sign_magnitude(true, &[0x80, 0, 0, 0, 0, 0, 0, 1]);
     assert_eq!(below.to_i64_opt(), None);
     assert_eq!(
         encode(&Unsigned, &Natural::from_be_bytes(&[0, 0, 0xff])),

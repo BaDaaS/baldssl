@@ -24,10 +24,13 @@ use std::{net::IpAddr, slice, str::FromStr};
 
 use baldssl_core::{
     Error, Result,
-    der::syntax::{
-        Any, Boolean, Implicit, NamedBits, ObjectId, ObjectIdentifier,
-        OctetString, Optional, RawTlv, Sequence, SequenceOf, Small,
-        WithDefault, decode,
+    der::{
+        Oid,
+        syntax::{
+            Any, Boolean, Implicit, NamedBits, ObjectId, ObjectIdentifier,
+            OctetString, Optional, RawTlv, Sequence, SequenceOf, Small,
+            WithDefault, decode,
+        },
     },
 };
 
@@ -35,29 +38,93 @@ use crate::{
     cert::Extension as ExtensionView,
     conf::{Config, replace_push},
     objects,
+    oid::{
+        ID_CE_AUTHORITY_KEY_IDENTIFIER, ID_CE_BASIC_CONSTRAINTS,
+        ID_CE_EXT_KEY_USAGE, ID_CE_ISSUER_ALT_NAME, ID_CE_KEY_USAGE,
+        ID_CE_SUBJECT_ALT_NAME, ID_CE_SUBJECT_KEY_IDENTIFIER,
+    },
 };
+use general_name_tag::{DNS_NAME, IP_ADDRESS, RFC822_NAME, URI};
 
-/// `subjectKeyIdentifier`, 2.5.29.14.
-pub(crate) const ID_CE_SUBJECT_KEY_IDENTIFIER: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x0e]);
-/// `keyUsage`, 2.5.29.15.
-pub(crate) const ID_CE_KEY_USAGE: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x0f]);
-/// `subjectAltName`, 2.5.29.17.
-pub(crate) const ID_CE_SUBJECT_ALT_NAME: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x11]);
-/// `basicConstraints`, 2.5.29.19.
-pub(crate) const ID_CE_BASIC_CONSTRAINTS: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x13]);
-/// `authorityKeyIdentifier`, 2.5.29.35.
-pub(crate) const ID_CE_AUTHORITY_KEY_IDENTIFIER: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x23]);
-/// `nameConstraints`, 2.5.29.30.
-pub(crate) const ID_CE_NAME_CONSTRAINTS: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x1e]);
-/// `extKeyUsage`, 2.5.29.37.
-pub(crate) const ID_CE_EXT_KEY_USAGE: ObjectId =
-    ObjectId::from_static(&[0x55, 0x1d, 0x25]);
+/// The kinds of extension baldssl reads or writes by their meaning, each
+/// named by its object identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExtensionKind {
+    /// `subjectKeyIdentifier`.
+    SubjectKeyIdentifier,
+    /// `authorityKeyIdentifier`.
+    AuthorityKeyIdentifier,
+    /// `keyUsage`.
+    KeyUsage,
+    /// `subjectAltName`.
+    SubjectAltName,
+    /// `issuerAltName`.
+    IssuerAltName,
+    /// `basicConstraints`.
+    BasicConstraints,
+    /// `extKeyUsage`.
+    ExtendedKeyUsage,
+}
+
+impl ExtensionKind {
+    /// Every kind.
+    const ALL: [ExtensionKind; 7] = [
+        ExtensionKind::SubjectKeyIdentifier,
+        ExtensionKind::AuthorityKeyIdentifier,
+        ExtensionKind::KeyUsage,
+        ExtensionKind::SubjectAltName,
+        ExtensionKind::IssuerAltName,
+        ExtensionKind::BasicConstraints,
+        ExtensionKind::ExtendedKeyUsage,
+    ];
+
+    /// The kind's object identifier.
+    pub(crate) fn oid(self) -> ObjectId {
+        match self {
+            ExtensionKind::SubjectKeyIdentifier => ID_CE_SUBJECT_KEY_IDENTIFIER,
+            ExtensionKind::AuthorityKeyIdentifier => {
+                ID_CE_AUTHORITY_KEY_IDENTIFIER
+            }
+            ExtensionKind::KeyUsage => ID_CE_KEY_USAGE,
+            ExtensionKind::SubjectAltName => ID_CE_SUBJECT_ALT_NAME,
+            ExtensionKind::IssuerAltName => ID_CE_ISSUER_ALT_NAME,
+            ExtensionKind::BasicConstraints => ID_CE_BASIC_CONSTRAINTS,
+            ExtensionKind::ExtendedKeyUsage => ID_CE_EXT_KEY_USAGE,
+        }
+    }
+
+    /// The kind an identifier names, if it is one of these: the inverse of
+    /// [`ExtensionKind::oid`], by search, so the two cannot disagree.
+    pub(crate) fn from_oid_opt(oid: &Oid<'_>) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| *oid == kind.oid())
+    }
+}
+
+/// The context tag numbers of the alternatives of `GeneralName`
+/// ([RFC 5280 section 4.2.1.6]), which the writer here and the `-text`
+/// printer share.
+///
+/// [RFC 5280 section 4.2.1.6]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.6
+pub(crate) mod general_name_tag {
+    /// `otherName [0]`.
+    pub(crate) const OTHER_NAME: u8 = 0;
+    /// `rfc822Name [1]`.
+    pub(crate) const RFC822_NAME: u8 = 1;
+    /// `dNSName [2]`.
+    pub(crate) const DNS_NAME: u8 = 2;
+    /// `x400Address [3]`.
+    pub(crate) const X400_ADDRESS: u8 = 3;
+    /// `directoryName [4]`.
+    pub(crate) const DIRECTORY_NAME: u8 = 4;
+    /// `ediPartyName [5]`.
+    pub(crate) const EDI_PARTY_NAME: u8 = 5;
+    /// `uniformResourceIdentifier [6]`.
+    pub(crate) const URI: u8 = 6;
+    /// `iPAddress [7]`.
+    pub(crate) const IP_ADDRESS: u8 = 7;
+    /// `registeredID [8]`.
+    pub(crate) const REGISTERED_ID: u8 = 8;
+}
 
 /// The named bits of key usage ([RFC 5280 section 4.2.1.3]), in bit order:
 /// OpenSSL's short name, which the configuration takes, and its long name,
@@ -84,9 +151,12 @@ pub(crate) const KEY_USAGE_BITS: [(&str, &str); 9] = [
 const NAMED_KEY_USAGE_BITS: u64 = 0x1ff;
 
 /// A set of key usages: a subset of the nine named bits of
-/// [RFC 5280 section 4.2.1.3], bit `i` for the `i`-th. Sets form a Boolean
-/// algebra under union and intersection, and DER writes each set one way
-/// (the named bit list without trailing zeros).
+/// [RFC 5280 section 4.2.1.3], bit `i` for the `i`-th. Under
+/// [`KeyUsage::union`] the sets form a join-semilattice with the empty set
+/// (the `Default`) as identity: union is associative, commutative and
+/// idempotent; [`KeyUsage::contains`] is its order (`a` contains `b`
+/// exactly when `a` union `b` is `a`). DER writes each set one way (the
+/// named bit list without trailing zeros).
 ///
 /// [RFC 5280 section 4.2.1.3]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -189,23 +259,23 @@ impl GeneralName {
     fn to_raw(&self) -> RawTlv {
         match self {
             GeneralName::Email(s) => RawTlv::encode(
-                &Implicit::<1, _>(OctetString),
+                &Implicit::<RFC822_NAME, _>(OctetString),
                 &s.0.as_bytes().to_vec(),
             ),
             GeneralName::Dns(s) => RawTlv::encode(
-                &Implicit::<2, _>(OctetString),
+                &Implicit::<DNS_NAME, _>(OctetString),
                 &s.0.as_bytes().to_vec(),
             ),
             GeneralName::Uri(s) => RawTlv::encode(
-                &Implicit::<6, _>(OctetString),
+                &Implicit::<URI, _>(OctetString),
                 &s.0.as_bytes().to_vec(),
             ),
             GeneralName::Ip(IpAddr::V4(a)) => RawTlv::encode(
-                &Implicit::<7, _>(OctetString),
+                &Implicit::<IP_ADDRESS, _>(OctetString),
                 &a.octets().to_vec(),
             ),
             GeneralName::Ip(IpAddr::V6(a)) => RawTlv::encode(
-                &Implicit::<7, _>(OctetString),
+                &Implicit::<IP_ADDRESS, _>(OctetString),
                 &a.octets().to_vec(),
             ),
         }
@@ -303,19 +373,24 @@ pub enum ExtensionValue {
 impl ExtensionValue {
     /// The extension's object identifier.
     fn oid(&self) -> ObjectId {
-        match self {
+        let kind = match self {
             ExtensionValue::SubjectKeyIdentifier(_) => {
-                ID_CE_SUBJECT_KEY_IDENTIFIER
+                ExtensionKind::SubjectKeyIdentifier
             }
             ExtensionValue::AuthorityKeyIdentifier(_) => {
-                ID_CE_AUTHORITY_KEY_IDENTIFIER
+                ExtensionKind::AuthorityKeyIdentifier
             }
-            ExtensionValue::KeyUsage(_) => ID_CE_KEY_USAGE,
-            ExtensionValue::SubjectAltName(_) => ID_CE_SUBJECT_ALT_NAME,
-            ExtensionValue::BasicConstraints { .. } => ID_CE_BASIC_CONSTRAINTS,
-            ExtensionValue::ExtendedKeyUsage(_) => ID_CE_EXT_KEY_USAGE,
-            ExtensionValue::Other { oid, .. } => oid.clone(),
-        }
+            ExtensionValue::KeyUsage(_) => ExtensionKind::KeyUsage,
+            ExtensionValue::SubjectAltName(_) => ExtensionKind::SubjectAltName,
+            ExtensionValue::BasicConstraints { .. } => {
+                ExtensionKind::BasicConstraints
+            }
+            ExtensionValue::ExtendedKeyUsage(_) => {
+                ExtensionKind::ExtendedKeyUsage
+            }
+            ExtensionValue::Other { oid, .. } => return oid.clone(),
+        };
+        kind.oid()
     }
 
     /// The DER of the value, one TLV: the contents of `extnValue`.
@@ -387,9 +462,22 @@ pub struct Extension {
 }
 
 /// `Extension ::= SEQUENCE { extnID OBJECT IDENTIFIER, critical BOOLEAN
-/// DEFAULT FALSE, extnValue OCTET STRING }` (RFC 5280 section 4.1).
+/// DEFAULT FALSE, extnValue OCTET STRING }` ([RFC 5280 section 4.1]).
+///
+/// [RFC 5280 section 4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+/// It writes `critical` only when TRUE, as DER requires, and reads it the
+/// same way; [`crate::cert::ExtensionViews`] is the lenient reader of
+/// extensions read from certificates and requests.
 type ExtensionSyntax =
     Sequence<(ObjectIdentifier, (WithDefault<Boolean>, (OctetString, ())))>;
+
+/// The description of [`ExtensionSyntax`].
+fn extension_syntax() -> ExtensionSyntax {
+    Sequence((
+        ObjectIdentifier,
+        (WithDefault::new(Boolean, false), (OctetString, ())),
+    ))
+}
 
 impl Extension {
     /// A non-critical extension.
@@ -436,60 +524,60 @@ impl Extension {
                     Error::Usage(format!("{name}: no section {section:?}"))
                 })?
                 .iter()
-                .map(|(n, v)| ConfItem {
-                    name: n.clone(),
-                    value: Some(v.clone()),
+                .map(|v| ConfItem {
+                    name: v.name.clone(),
+                    value: Some(v.value.clone()),
                 })
                 .collect::<Vec<_>>(),
             None => value.parse::<ConfList>()?.0,
         };
         let names = || items.iter().map(|item| item.name.as_str());
         // OpenSSL looks the name up with OBJ_sn2nid: short names only.
-        let dotted =
-            objects::find_by_short_name_opt(name).ok_or_else(|| {
-                Error::Usage(format!("unknown extension name {name:?}"))
-            })?;
-        let value = match dotted {
-            "2.5.29.17" => ExtensionValue::SubjectAltName(
+        let oid = objects::find_by_short_name_opt(name).ok_or_else(|| {
+            Error::Usage(format!("unknown extension name {name:?}"))
+        })?;
+        let unsupported = || Error::unsupported(format!("extension {name}"));
+        let kind = ExtensionKind::from_oid_opt(&oid.as_oid())
+            .ok_or_else(unsupported)?;
+        let value = match kind {
+            ExtensionKind::SubjectAltName => ExtensionValue::SubjectAltName(
                 items
                     .iter()
                     .map(GeneralName::try_from)
                     .collect::<Result<_>>()?,
             ),
-            "2.5.29.15" => ExtensionValue::KeyUsage(
+            ExtensionKind::KeyUsage => ExtensionValue::KeyUsage(
                 names().try_fold(KeyUsage::default(), |set, name| {
                     Ok::<_, Error>(set.union(name.parse()?))
                 })?,
             ),
-            "2.5.29.37" => ExtensionValue::ExtendedKeyUsage(
-                names()
-                    .map(|i| {
-                        objects::find_by_name_opt(i)
-                            .and_then(ObjectId::from_dotted_opt)
-                            .ok_or_else(|| {
+            ExtensionKind::ExtendedKeyUsage => {
+                ExtensionValue::ExtendedKeyUsage(
+                    names()
+                        .map(|i| {
+                            objects::find_by_name_opt(i).ok_or_else(|| {
                                 Error::Usage(format!(
                                     "extendedKeyUsage: unknown purpose {i:?}"
                                 ))
                             })
-                    })
-                    .collect::<Result<_>>()?,
-            ),
-            "2.5.29.19" => ExtensionValue::basic_constraints(&items)?,
-            _ => {
-                return Err(Error::unsupported(format!("extension {name}")));
+                        })
+                        .collect::<Result<_>>()?,
+                )
             }
+            ExtensionKind::BasicConstraints => {
+                ExtensionValue::basic_constraints(&items)?
+            }
+            ExtensionKind::SubjectKeyIdentifier
+            | ExtensionKind::AuthorityKeyIdentifier
+            | ExtensionKind::IssuerAltName => return Err(unsupported()),
         };
         Ok(Extension { critical, value })
     }
 
     /// The DER `Extension`.
     pub(crate) fn to_raw(&self) -> RawTlv {
-        let syntax: ExtensionSyntax = Sequence((
-            ObjectIdentifier,
-            (WithDefault::new(Boolean, false), (OctetString, ())),
-        ));
         RawTlv::encode(
-            &syntax,
+            &extension_syntax(),
             &(
                 self.value.oid(),
                 (self.critical, (self.value.to_raw().as_bytes().to_vec(), ())),
@@ -521,18 +609,33 @@ impl TryFrom<&ExtensionView<'_>> for Extension {
 }
 
 /// What an extension read from a certificate says, for the kinds baldssl
-/// reads (basic constraints and key usage, in DER), and opaque for the
-/// others. The `-text` printer does not use it: it prints what OpenSSL
-/// prints, malformed values included, which this refuses.
+/// reads (subject key identifier, basic constraints, key usage and extended
+/// key usage, in DER), and opaque for the others. The `-text` printer reads
+/// subject key identifiers and extended key usages through it; it reads
+/// basic constraints and key usage itself, as OpenSSL prints the malformed
+/// values of those two that this refuses (an explicit `cA FALSE`, a
+/// negative or large path length, a key usage with trailing zero bits).
 ///
 /// # Errors
 ///
-/// A basic constraints or key usage value that is not their DER, a path
-/// length beyond 64 bits, and an other value that is not one DER TLV.
+/// A value of one of those kinds that is not its DER, a path length beyond
+/// 64 bits, and an other value that is not one DER TLV.
 impl TryFrom<&ExtensionView<'_>> for ExtensionValue {
     type Error = Error;
 
     fn try_from(view: &ExtensionView<'_>) -> Result<Self> {
+        if view.oid == ID_CE_SUBJECT_KEY_IDENTIFIER {
+            return Ok(ExtensionValue::SubjectKeyIdentifier(decode(
+                &OctetString,
+                view.value,
+            )?));
+        }
+        if view.oid == ID_CE_EXT_KEY_USAGE {
+            return Ok(ExtensionValue::ExtendedKeyUsage(decode(
+                &SequenceOf(ObjectIdentifier),
+                view.value,
+            )?));
+        }
         if view.oid == ID_CE_BASIC_CONSTRAINTS {
             let syntax = Sequence((
                 WithDefault::new(Boolean, false),
@@ -718,61 +821,47 @@ impl FromStr for ConfList {
     type Err = Error;
 
     fn from_str(value: &str) -> Result<Self> {
-        let line = value.split(['\r', '\n']).next().unwrap_or_default();
+        let line = value.split_once(['\r', '\n']).map_or(value, |(l, _)| l);
         let empty =
             || Error::Usage(format!("extension value {value:?}: empty item"));
+        let item = |text: &str| {
+            strip_spaces_opt(text).map(str::to_string).ok_or_else(empty)
+        };
         let mut out = Vec::new();
         let mut rest = line;
         loop {
-            // A name runs to the first ':' or ','; after a ':', the value runs
-            // to the next ','.
-            let stop = rest.find([':', ',']);
-            match stop.map(|i| (i, rest.as_bytes().get(i).copied())) {
-                Some((i, Some(b':'))) => {
-                    let name =
-                        strip_spaces_opt(rest.get(..i).unwrap_or_default())
-                            .ok_or_else(empty)?;
-                    let after =
-                        rest.get(i.saturating_add(1)..).unwrap_or_default();
-                    let (value, next) = match after.find(',') {
-                        Some(j) => (
-                            after.get(..j).unwrap_or_default(),
-                            Some(
-                                after
-                                    .get(j.saturating_add(1)..)
-                                    .unwrap_or_default(),
-                            ),
-                        ),
-                        None => (after, None),
-                    };
-                    let value = strip_spaces_opt(value).ok_or_else(empty)?;
-                    out.push(ConfItem {
-                        name: name.to_string(),
-                        value: Some(value.to_string()),
-                    });
-                    match next {
-                        Some(next) => rest = next,
-                        None => return Ok(ConfList(out)),
-                    }
+            // A name runs to the first ':' or ','; after a ':', the value
+            // runs to the next ','.
+            let Some(stop) = rest.find([':', ',']) else {
+                out.push(ConfItem {
+                    name: item(rest)?,
+                    value: None,
+                });
+                return Ok(ConfList(out));
+            };
+            let (name, tail) = rest.split_at(stop);
+            let mut chars = tail.chars();
+            let separator = chars.next();
+            let after = chars.as_str();
+            if separator == Some(':') {
+                let (value, next) = after
+                    .split_once(',')
+                    .map_or((after, None), |(v, n)| (v, Some(n)));
+                out.push(ConfItem {
+                    name: item(name)?,
+                    value: Some(item(value)?),
+                });
+                match next {
+                    Some(next) => rest = next,
+                    None => return Ok(ConfList(out)),
                 }
-                Some((i, _)) => {
-                    let name =
-                        strip_spaces_opt(rest.get(..i).unwrap_or_default())
-                            .ok_or_else(empty)?;
-                    out.push(ConfItem {
-                        name: name.to_string(),
-                        value: None,
-                    });
-                    rest = rest.get(i.saturating_add(1)..).unwrap_or_default();
-                }
-                None => {
-                    let name = strip_spaces_opt(rest).ok_or_else(empty)?;
-                    out.push(ConfItem {
-                        name: name.to_string(),
-                        value: None,
-                    });
-                    return Ok(ConfList(out));
-                }
+            } else {
+                // The separator `find` stopped at is a ','.
+                out.push(ConfItem {
+                    name: item(name)?,
+                    value: None,
+                });
+                rest = after;
             }
         }
     }

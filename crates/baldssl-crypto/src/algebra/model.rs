@@ -37,11 +37,14 @@
 //!
 //! All models of one curve represent the same group $E(\mathbb{F}_p)$: an
 //! elliptic curve is a group object in the category of varieties, the group
-//! law being a morphism (Silverman, III.3.6), and each model is a chart or an
+//! law being a morphism (Silverman, [*The Arithmetic of Elliptic
+//! Curves*][silverman], III.3.6), and each model is a chart or an
 //! embedding of that one object. The maps between models, `from_affine` and
 //! `to_affine` (and the `From` impls built on them), are isomorphisms of
 //! groups: they commute with the operations and preserve both predicates,
 //! which the tests check.
+//!
+//! [silverman]: https://doi.org/10.1007/978-0-387-09494-6
 
 use core::ops::Neg;
 
@@ -51,7 +54,7 @@ use crate::{
         encoding::{Decodable, Encodable},
         group::{Group, GroupVartime},
     },
-    ct::{Choice, CtEq, CtSelect},
+    ct::{Choice, CtEq, CtOption, CtSelect},
 };
 
 /// The coordinate field of a model.
@@ -60,7 +63,13 @@ pub type Base<P> = <<P as CurveModel>::Curve as Curve>::Base;
 /// The points of a curve in one representation, with its distinguished
 /// points and the predicates every model has.
 pub trait CurveModel:
-    Copy + CtEq + CtSelect + Neg<Output = Self> + Encodable + Decodable
+    crate::sealed::Sealed
+    + Copy
+    + CtEq
+    + CtSelect
+    + Neg<Output = Self>
+    + Encodable
+    + Decodable
 {
     /// The curve the points are on.
     type Curve: Curve;
@@ -88,8 +97,8 @@ pub trait AffineModel: CurveModel {
     /// Whether this is $O$.
     fn is_identity(&self) -> Choice;
 
-    /// The point $(x, y)$, and whether it is on the curve.
-    fn from_coordinates(x: Base<Self>, y: Base<Self>) -> (Self, Choice);
+    /// The point $(x, y)$, present when it is on the curve.
+    fn from_coordinates(x: Base<Self>, y: Base<Self>) -> CtOption<Self>;
 
     /// The coordinates $(x, y)$, `None` for a point at infinity.
     fn coordinates_opt(&self) -> Option<(Base<Self>, Base<Self>)>;

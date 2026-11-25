@@ -6,53 +6,55 @@
 //!
 //! [rfc5280-4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
 
+use std::slice;
+
 use baldssl_core::{
     Error, Result,
     der::{
-        BitString, DerError, Integer, Oid, Reader, Time, TimeKind, Tlv, tag,
+        BitString, DerError, Integer, Oid, Reader, Time, TimeKind, Tlv,
+        parse_bool, tag,
     },
     encoding::Encodable,
 };
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
 
 use crate::{
+    algorithm::{AlgorithmIdentifier, algorithm_identifier},
+    extension::ExtensionValue,
     name::Name,
+    oid::ID_CE_SUBJECT_KEY_IDENTIFIER,
     version::{Version, version_field},
 };
 
-/// `AlgorithmIdentifier ::= SEQUENCE { algorithm OID, parameters ANY OPTIONAL }`
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AlgorithmIdentifier<'a> {
-    /// The algorithm.
-    pub(crate) oid: Oid<'a>,
-    /// The raw parameters, if present.
-    pub(crate) parameters: Option<Tlv<'a>>,
-}
+/// `issuerUniqueID [1] IMPLICIT UniqueIdentifier OPTIONAL`, the context tag
+/// of the TBSCertificate field ([RFC 5280 section 4.1]).
+///
+/// [RFC 5280 section 4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+const ISSUER_UNIQUE_ID: u8 = tag::context(1);
+/// `subjectUniqueID [2] IMPLICIT UniqueIdentifier OPTIONAL`
+/// ([RFC 5280 section 4.1]).
+///
+/// [RFC 5280 section 4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+const SUBJECT_UNIQUE_ID: u8 = tag::context(2);
+/// `extensions [3] EXPLICIT Extensions OPTIONAL` ([RFC 5280 section 4.1]).
+///
+/// [RFC 5280 section 4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+const EXTENSIONS: u8 = tag::context_constructed(3);
 
-impl<'a> AlgorithmIdentifier<'a> {
-    /// Decodes one AlgorithmIdentifier from `r`.
-    ///
-    /// # Errors
-    ///
-    /// On malformed DER.
-    pub(crate) fn read(r: &mut Reader<'a>) -> Result<Self> {
-        let mut seq = r.sequence()?;
-        let oid = Oid::parse(seq.expect(tag::OID)?.value)?;
-        let parameters = if seq.is_empty() {
-            None
-        } else {
-            Some(seq.read()?)
-        };
-        seq.finish()?;
-        Ok(AlgorithmIdentifier { oid, parameters })
+/// The error of a TLV whose identifier octet is not `expected`.
+fn unexpected_tag(expected: u8, found: &Tlv<'_>) -> Error {
+    DerError::UnexpectedTag {
+        expected,
+        found: found.octet_opt(),
     }
+    .into()
 }
 
 /// `SubjectPublicKeyInfo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubjectPublicKeyInfo<'a> {
     /// The key algorithm and its parameters.
-    pub(crate) algorithm: AlgorithmIdentifier<'a>,
+    pub(crate) algorithm: AlgorithmIdentifier,
     /// The `subjectPublicKey` BIT STRING.
     pub(crate) public_key: BitString<'a>,
 }
@@ -69,24 +71,20 @@ impl<'a> TryFrom<Tlv<'a>> for SubjectPublicKeyInfo<'a> {
     type Error = Error;
 
     fn try_from(tlv: Tlv<'a>) -> Result<Self> {
-        if tlv.octet() != tag::SEQUENCE {
-            return Err(DerError::UnexpectedTag {
-                expected: tag::SEQUENCE,
-                found: tlv.octet(),
-            }
-            .into());
+        if tlv.octet_opt() != Some(tag::SEQUENCE) {
+            return Err(unexpected_tag(tag::SEQUENCE, &tlv));
         }
-        let mut r = Reader::new(tlv.value);
+        let mut r = Reader::new(tlv.value());
         let spki = SubjectPublicKeyInfo {
-            algorithm: AlgorithmIdentifier::read(&mut r)?,
-            public_key: BitString::parse(r.expect(tag::BIT_STRING)?.value)?,
+            algorithm: r.syntax(&algorithm_identifier())?,
+            public_key: BitString::parse(r.expect(tag::BIT_STRING)?.value())?,
         };
         r.finish()?;
         Ok(spki)
     }
 }
 
-/// One `Extension`.
+/// One `Extension` of a certificate or a request, as a view of its DER.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Extension<'a> {
     /// `extnID`.
@@ -97,6 +95,79 @@ pub(crate) struct Extension<'a> {
     pub(crate) value: &'a [u8],
 }
 
+/// The extensions of a certificate or a request, in order, as views of
+/// their DER: what the `-text` printer and verification read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ExtensionViews<'a>(pub(crate) Vec<Extension<'a>>);
+
+impl<'a> ExtensionViews<'a> {
+    /// The extensions, in order.
+    pub(crate) fn iter(&self) -> slice::Iter<'_, Extension<'a>> {
+        self.0.iter()
+    }
+
+    /// Whether there is none.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<'v, 'a> IntoIterator for &'v ExtensionViews<'a> {
+    type Item = &'v Extension<'a>;
+    type IntoIter = slice::Iter<'v, Extension<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// The extensions of a DER `Extensions` (`SEQUENCE OF Extension`,
+/// [RFC 5280 section 4.1]), in order: a certificate's, or a request's
+/// `extensionRequest` attribute.
+///
+/// This is a second reader of `Extension`, beside the description
+/// [`crate::extension::Extension`] writes with, for two reasons: it borrows
+/// the input, so that the `-text` printer and copying see the bytes as they
+/// are, and it is lenient where OpenSSL is. DER forbids writing `critical`
+/// when it is FALSE, its default ([X.690] 11.5), and the description refuses
+/// it; OpenSSL 3.5 and 4.1 read such an extension and print it as not
+/// critical, so this reads it too (`extension_views_accept_explicit_false`
+/// tests the difference).
+///
+/// # Errors
+///
+/// A TLV that is not a SEQUENCE, or malformed extensions.
+///
+/// [RFC 5280 section 4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+/// [X.690]: https://www.itu.int/rec/T-REC-X.690
+impl<'a> TryFrom<Tlv<'a>> for ExtensionViews<'a> {
+    type Error = Error;
+
+    fn try_from(list: Tlv<'a>) -> Result<Self> {
+        if list.octet_opt() != Some(tag::SEQUENCE) {
+            return Err(unexpected_tag(tag::SEQUENCE, &list));
+        }
+        let mut seq = Reader::new(list.value());
+        let mut out = Vec::new();
+        while !seq.is_empty() {
+            let mut ext = seq.sequence()?;
+            let oid = Oid::parse(ext.expect(tag::OID)?.value())?;
+            let critical = match ext.optional(tag::BOOLEAN)? {
+                Some(b) => parse_bool(b.value())?,
+                None => false,
+            };
+            let value = ext.expect(tag::OCTET_STRING)?.value();
+            ext.finish()?;
+            out.push(Extension {
+                oid,
+                critical,
+                value,
+            });
+        }
+        Ok(ExtensionViews(out))
+    }
+}
+
 /// `Validity`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validity {
@@ -104,6 +175,40 @@ pub struct Validity {
     pub not_before: Time,
     /// `notAfter`.
     pub not_after: Time,
+}
+
+/// `Validity ::= SEQUENCE { notBefore Time, notAfter Time }`, each `Time` a
+/// UTCTime or a GeneralizedTime ([RFC 5280 section 4.1.2.5]).
+///
+/// # Errors
+///
+/// A TLV that is not a SEQUENCE of two times.
+///
+/// [RFC 5280 section 4.1.2.5]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
+impl TryFrom<Tlv<'_>> for Validity {
+    type Error = Error;
+
+    fn try_from(tlv: Tlv<'_>) -> Result<Self> {
+        if tlv.octet_opt() != Some(tag::SEQUENCE) {
+            return Err(unexpected_tag(tag::SEQUENCE, &tlv));
+        }
+        let mut r = Reader::new(tlv.value());
+        let mut time = || -> Result<Time> {
+            let t = r.read()?;
+            let kind = match t.octet_opt() {
+                Some(tag::UTC_TIME) => TimeKind::Utc,
+                Some(tag::GENERALIZED_TIME) => TimeKind::Generalized,
+                _ => return Err(unexpected_tag(tag::UTC_TIME, &t)),
+            };
+            Ok(Time::parse(kind, t.value())?)
+        };
+        let validity = Validity {
+            not_before: time()?,
+            not_after: time()?,
+        };
+        r.finish()?;
+        Ok(validity)
+    }
 }
 
 /// A decoded X.509 certificate.
@@ -116,7 +221,7 @@ pub struct Certificate<'a> {
     /// `serialNumber`.
     pub serial: Integer,
     /// `signature` inside the TBSCertificate.
-    pub(crate) tbs_signature: AlgorithmIdentifier<'a>,
+    pub(crate) tbs_signature: AlgorithmIdentifier,
     /// `issuer`.
     pub issuer: Name<'a>,
     /// `validity`.
@@ -131,66 +236,22 @@ pub struct Certificate<'a> {
     /// The DER of `subjectPublicKeyInfo`.
     pub(crate) spki_der: &'a [u8],
     /// `extensions`, empty when absent.
-    pub(crate) extensions: Vec<Extension<'a>>,
+    pub(crate) extensions: ExtensionViews<'a>,
     /// The DER of the `TBSCertificate`, as signed.
     pub(crate) tbs_der: &'a [u8],
     /// The outer `signatureAlgorithm`.
-    pub(crate) signature_algorithm: AlgorithmIdentifier<'a>,
+    pub(crate) signature_algorithm: AlgorithmIdentifier,
     /// The `signatureValue` bytes.
     pub(crate) signature: BitString<'a>,
 }
 
-fn read_time(r: &mut Reader<'_>) -> Result<Time> {
-    let tlv = r.read()?;
-    let kind = match tlv.octet() {
-        tag::UTC_TIME => TimeKind::Utc,
-        tag::GENERALIZED_TIME => TimeKind::Generalized,
-        found => {
-            return Err(baldssl_core::der::DerError::UnexpectedTag {
-                expected: tag::UTC_TIME,
-                found,
-            }
-            .into());
-        }
-    };
-    Ok(Time::parse(kind, tlv.value)?)
-}
-
-/// The extensions of a DER `Extensions` (`SEQUENCE OF Extension`), in
-/// order: a certificate's, or a request's `extensionRequest` attribute.
-///
-/// # Errors
-///
-/// A TLV that is not a SEQUENCE, or malformed extensions.
-pub(crate) fn read_extensions(list: Tlv<'_>) -> Result<Vec<Extension<'_>>> {
-    if list.octet() != tag::SEQUENCE {
-        return Err(DerError::UnexpectedTag {
-            expected: tag::SEQUENCE,
-            found: list.octet(),
-        }
-        .into());
-    }
-    let mut seq = Reader::new(list.value);
-    let mut out = Vec::new();
-    while !seq.is_empty() {
-        let mut ext = seq.sequence()?;
-        let oid = Oid::parse(ext.expect(tag::OID)?.value)?;
-        let critical = match ext.optional(tag::BOOLEAN)? {
-            Some(b) => baldssl_core::der::parse_bool(b.value)?,
-            None => false,
-        };
-        let value = ext.expect(tag::OCTET_STRING)?.value;
-        ext.finish()?;
-        out.push(Extension {
-            oid,
-            critical,
-            value,
-        });
-    }
-    Ok(out)
-}
-
 impl<'a> Certificate<'a> {
+    /// The PEM label of a certificate, `PEM_STRING_X509` in
+    /// `include/openssl/pem.h` ([RFC 7468 section 5.1]).
+    ///
+    /// [RFC 7468 section 5.1]: https://www.rfc-editor.org/rfc/rfc7468#section-5.1
+    pub const LABEL: &'static str = "CERTIFICATE";
+
     /// Whether `key` is the private key of this certificate's public key,
     /// as OpenSSL's `X509_check_private_key` asks.
     #[must_use]
@@ -202,15 +263,22 @@ impl<'a> Certificate<'a> {
     /// ([RFC 5280 section 4.2.1.2]), when it is present and well formed.
     ///
     /// [RFC 5280 section 4.2.1.2]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.2
-    pub(crate) fn subject_key_identifier_opt(&self) -> Option<&'a [u8]> {
+    pub(crate) fn subject_key_identifier_opt(&self) -> Option<Vec<u8>> {
         let ext = self
             .extensions
             .iter()
-            .find(|e| e.oid.as_bytes() == [0x55, 0x1d, 0x0e])?;
-        let mut r = Reader::new(ext.value);
-        let id = r.expect(tag::OCTET_STRING).ok()?;
-        r.finish().ok()?;
-        Some(id.value)
+            .find(|e| e.oid == ID_CE_SUBJECT_KEY_IDENTIFIER)?;
+        match ExtensionValue::try_from(ext).ok()? {
+            ExtensionValue::SubjectKeyIdentifier(id) => Some(id),
+            // The decoding of a subjectKeyIdentifier value gives no other
+            // kind.
+            ExtensionValue::AuthorityKeyIdentifier(_)
+            | ExtensionValue::KeyUsage(_)
+            | ExtensionValue::SubjectAltName(_)
+            | ExtensionValue::BasicConstraints { .. }
+            | ExtensionValue::ExtendedKeyUsage(_)
+            | ExtensionValue::Other { .. } => None,
+        }
     }
 
     /// Decodes a DER certificate. The whole input must be one certificate.
@@ -225,41 +293,37 @@ impl<'a> Certificate<'a> {
         top.finish()?;
 
         let tbs_tlv = cert.expect(tag::SEQUENCE)?;
-        let mut tbs = Reader::new(tbs_tlv.value);
+        let mut tbs = Reader::new(tbs_tlv.value());
         let version = tbs.syntax(&version_field())?.unwrap_or_else(Version::v1);
-        let serial = Integer::parse(tbs.expect(tag::INTEGER)?.value)?;
-        let tbs_signature = AlgorithmIdentifier::read(&mut tbs)?;
+        let serial = Integer::parse(tbs.expect(tag::INTEGER)?.value())?;
+        let tbs_signature = tbs.syntax(&algorithm_identifier())?;
         let issuer = Name::read(&mut tbs)?;
-        let mut validity = tbs.sequence()?;
-        let validity_v = Validity {
-            not_before: read_time(&mut validity)?,
-            not_after: read_time(&mut validity)?,
-        };
-        validity.finish()?;
+        let validity = Validity::try_from(tbs.read()?)?;
         let subject_tlv = tbs.expect(tag::SEQUENCE)?;
-        let subject = Name::from_contents(subject_tlv.value)?;
+        let subject = Name::from_contents(subject_tlv.value())?;
 
         let spki_tlv = tbs.expect(tag::SEQUENCE)?;
         let spki = SubjectPublicKeyInfo::try_from(spki_tlv)?;
 
-        if tbs.peek_octet_opt() == Some(tag::context(1))
-            || tbs.peek_octet_opt() == Some(tag::context(2))
+        if tbs.peek_octet_opt() == Some(ISSUER_UNIQUE_ID)
+            || tbs.peek_octet_opt() == Some(SUBJECT_UNIQUE_ID)
         {
             return Err(Error::unsupported("issuerUniqueID / subjectUniqueID"));
         }
-        let extensions = match tbs.optional(tag::context_constructed(3))? {
+        let extensions = match tbs.optional(EXTENSIONS)? {
             Some(e) => {
-                let mut inner = Reader::new(e.value);
+                let mut inner = Reader::new(e.value());
                 let list = inner.read()?;
                 inner.finish()?;
-                read_extensions(list)?
+                ExtensionViews::try_from(list)?
             }
-            None => Vec::new(),
+            None => ExtensionViews::default(),
         };
         tbs.finish()?;
 
-        let signature_algorithm = AlgorithmIdentifier::read(&mut cert)?;
-        let signature = BitString::parse(cert.expect(tag::BIT_STRING)?.value)?;
+        let signature_algorithm = cert.syntax(&algorithm_identifier())?;
+        let signature =
+            BitString::parse(cert.expect(tag::BIT_STRING)?.value())?;
         cert.finish()?;
 
         Ok(Certificate {
@@ -268,13 +332,13 @@ impl<'a> Certificate<'a> {
             serial,
             tbs_signature,
             issuer,
-            validity: validity_v,
+            validity,
             subject,
-            subject_der: subject_tlv.encoded,
+            subject_der: subject_tlv.encoded(),
             spki,
-            spki_der: spki_tlv.encoded,
+            spki_der: spki_tlv.encoded(),
             extensions,
-            tbs_der: tbs_tlv.encoded,
+            tbs_der: tbs_tlv.encoded(),
             signature_algorithm,
             signature,
         })

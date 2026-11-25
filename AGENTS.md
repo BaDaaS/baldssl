@@ -11,6 +11,10 @@ practices" says what the project does; this file says how to work in it.
   each, CI green before the next. Every pull request closes an issue
   (`Closes #N`) and updates the website (`website/src/*.json`) when it changes
   what baldssl does.
+- When a pull request below in the stack merges, rebase the next one onto
+  `main`: drop the commits already merged (they come back with other hashes),
+  retarget its base, remove its "Stacked on" line, and run `make interop`
+  against the release lines its changes touch.
 
 ## Code
 
@@ -64,6 +68,63 @@ practices" says what the project does; this file says how to work in it.
 - A command returns what it writes on standard output and never writes standard
   output itself; a failure that has output carries it
   (`Error::Reported { code, output }`).
+- A difference between OpenSSL release lines is a method of `Compat` named for
+  what differs (`Compat::bn_sign_byte`, `Compat::name_style`), whose
+  documentation cites the OpenSSL source that differs. Callers ask the method;
+  they never compare lines (`compat != Compat::V4`), which silently puts a new
+  line on one side.
+- Before an OpenSSL release joins CI, diff the sources baldssl reproduces
+  (`apps/*.c`, the message tables such as `crypto/x509/x509_txt.c`) against the
+  release line it would share a profile with; any difference that reaches
+  baldssl's output gets its own profile.
+- Command-line arguments that are data (keys, passphrases, values) are bytes,
+  taken with `as_encoded_bytes()`, as OpenSSL takes them. `to_string_lossy()` is
+  for messages only: it replaces what is not UTF-8.
+- A fallback value (`unwrap_or(0)`, `map_or(0, ..)`, `unwrap_or_default()`) says
+  in a comment why it cannot give a wrong result, or the code returns an error
+  instead.
+- No `bool` parameter or field selects behaviour: an enum names each case. Where
+  OpenSSL's flags are sticky (no later option clears them), the enum's order
+  models that and the value is the maximum given, with a test of the option
+  orders.
+- One source per list: a list of names (commands, digests, extensions) is
+  written once, and everything else derives from it (`Algorithm::ALL`).
+- Every variant of an outcome enum (what checking, verifying or processing
+  gives) is reached by a test.
+- Parse, don't validate: a value of a type is proof that it is valid. A
+  validated type keeps its fields private and has one fallible constructor at
+  the boundary (`TryFrom`, `FromStr`, or a `const fn` that asserts at compile
+  time, as `ObjectId::from_static` does); what takes the type is then total.
+- A `match` on an enum of baldssl's lists its variants, so that adding one is a
+  compile error wherever it needs a decision (`clippy::wildcard_enum_match_arm`
+  denies `_ =>`); a variant is never singled out with `==` or `!=` where a
+  `match` would ask for every case.
+- No `as` converts integers (`clippy::as_conversions` denies it): use `From` or
+  `TryFrom`, or, in `const` code and for branch-free truncations on secret data,
+  the documented conversions of `baldssl_core::num`, the one place `as`
+  converts. Reading an enum's discriminant is the exception, in one documented
+  method of that enum with its `allow`. Arithmetic that can overflow is
+  `checked_*` or `saturating_*`, with the reason saying which.
+- A run-time choice among a closed set of types is an enum with one eliminator,
+  the only place the run-time name becomes a type (`Algorithm::with`); every
+  operation goes through it rather than repeating the `match`.
+- Secret material (private keys, seeds, MAC keys, passphrases) lives in a type
+  that is not `Copy`, shows nothing of its contents in `Debug` or `Display`, is
+  wiped when dropped, and compares in constant time (`SecretBytes`).
+- A parser returns a view that borrows its input (`Tlv<'a>`, `Certificate<'a>`);
+  what builds a value owns it (`RawTlv`, `ObjectId`). A view becomes an owned
+  value through `From`, never through its text or a re-encoding.
+- A trait whose laws baldssl relies on to verify, sign or encode is sealed, so
+  that no implementation outside the crate can break them.
+- An outcome enum and a function returning `Result` are `#[must_use]`, and a
+  `let _ =` on a `Result` says in a comment why the result does not matter.
+- Push a precondition into a type so the operation is total
+  (`RawTlv::from_tag_and_contents` is total, as every tag and contents form one
+  TLV); an operation that stays partial says so by its `_opt` suffix, and its
+  documentation states its exact domain.
+- A claim that a result is the best, the only or the first (the issuer chain
+  building prefers) comes with a witness: the code returns it, or a test shows
+  that no other candidate does better.
 - Constant-time code takes `Choice`, never `bool`, and never branches or indexes
   on secret data. Name the property: `_ct` for constant time, `_vartime` for
   variable time.
@@ -102,6 +163,22 @@ practices" says what the project does; this file says how to work in it.
   own output.
 - Decoders are canonical: test that whatever decodes re-encodes to the same
   bytes, and test each rejection rule.
+- An operation that combines values (a merge, an override, a maximum) names its
+  algebra in its documentation and tests its laws as properties: associativity,
+  idempotence, the identity, and commutativity when it holds
+  (`Extensions::override_with` is a band, a role taken at its maximum a
+  join-semilattice).
+- Two representations of one thing commute with their operations: a conversion
+  between them (a view and an owned value, a run-time name and its type) is
+  tested on the square, converting then operating against operating then
+  converting (a `Tlv` view and the `RawTlv` made from it encode the same bytes).
+- A run-time dispatch over a closed set is tested equal to the typed path for
+  every member (`Algorithm::digest` against the hash type each `Algorithm`
+  names).
+- Every decoder says which map it is: the inverse of its encoder on the
+  encoder's image, with the canonicity law; or a lenient reader that accepts
+  more than its encoder writes, with the reason (the `-text` printer prints the
+  malformed values OpenSSL prints) and a test of where the two differ.
 - Output must match OpenSSL byte for byte. Run `make interop` against a real
   OpenSSL (`OPENSSL=/path/to/openssl`): macOS's `/usr/bin/openssl` is LibreSSL,
   which differs.
@@ -119,6 +196,13 @@ practices" says what the project does; this file says how to work in it.
 ## Before pushing
 
 - `make ci` and `make check-urls` pass.
+- Every commit builds and passes clippy on its own. A review fix goes into the
+  commit that introduced the code (`git commit --fixup` and
+  `git rebase --autosquash`), and a commit message that names something renamed
+  or removed is reworded.
+- When a review flags a pattern, fix the class, not the instance: search the
+  pull request, and the stack above it, for every other occurrence before
+  pushing.
 - Commit messages: a title under 80 characters and a wrapped body; no co-author
   or tool attribution lines.
 

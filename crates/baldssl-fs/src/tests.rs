@@ -5,7 +5,10 @@ use std::os::unix::fs::PermissionsExt as _;
 
 use baldssl_core::{Result, encoding::Encodable, pem::Pem, text::Text};
 
-use super::{WritePem as _, WriteText as _, create_owner_only};
+use super::{
+    Access, WritePem as _, WriteText as _, create_owner_only, read_if_present,
+    read_input, write_file,
+};
 
 /// A value whose encoding is fixed bytes.
 struct Fixed(&'static [u8]);
@@ -69,5 +72,33 @@ fn owner_only_file() {
     }
     assert_eq!(std::fs::read_to_string(&file).unwrap(), value.to_pem());
     std::fs::remove_file(&file).unwrap();
+    std::fs::remove_dir(&dir).unwrap();
+}
+
+/// What is written with an access reads back, a missing file reads as
+/// absent, and an owner-only file has mode 0600.
+#[test]
+fn files_round_trip() {
+    let dir = std::env::temp_dir()
+        .join(format!("baldssl-fs-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("f");
+    assert_eq!(read_if_present(&path).unwrap(), None);
+    assert!(matches!(
+        read_input(Some(&path)),
+        Err(baldssl_core::Error::NotFound { .. })
+    ));
+    for access in [Access::Default, Access::OwnerOnly] {
+        std::fs::remove_file(&path).ok();
+        write_file(&path, access, b"bytes").unwrap();
+        assert_eq!(read_input(Some(&path)).unwrap(), b"bytes");
+        assert_eq!(read_if_present(&path).unwrap().unwrap(), b"bytes");
+        #[cfg(unix)]
+        if access == Access::OwnerOnly {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+    std::fs::remove_file(&path).unwrap();
     std::fs::remove_dir(&dir).unwrap();
 }

@@ -22,18 +22,27 @@ const UNIMPLEMENTED_DIGESTS: [&str; 14] = [
     "blake2s256",
 ];
 
-/// Whether `name` is a digest OpenSSL accepts that baldssl does not
-/// implement, ignoring ASCII case.
-pub(crate) fn is_unimplemented_digest(name: &str) -> bool {
-    UNIMPLEMENTED_DIGESTS
-        .iter()
-        .any(|d| d.eq_ignore_ascii_case(name))
+/// What a `-<digest>` option names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DigestName {
+    /// A digest baldssl implements.
+    Implemented(Algorithm),
+    /// A digest OpenSSL has and baldssl does not, which is refused as
+    /// unsupported.
+    Unimplemented,
 }
 
-/// Whether `-<name>` is a digest option: one baldssl implements, or one it
-/// refuses as unsupported.
-pub(crate) fn is_digest_option(name: &str) -> bool {
-    Algorithm::from_name_opt(name).is_some() || is_unimplemented_digest(name)
+impl DigestName {
+    /// The digest `-<name>` names, ignoring ASCII case, if it names one.
+    pub(crate) fn from_option_opt(name: &str) -> Option<DigestName> {
+        match Algorithm::from_name_opt(name) {
+            Some(algorithm) => Some(DigestName::Implemented(algorithm)),
+            None => UNIMPLEMENTED_DIGESTS
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(name))
+                .then_some(DigestName::Unimplemented),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -41,10 +50,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unimplemented_digests_are_named() {
-        assert!(is_unimplemented_digest("MD5"));
-        assert!(is_unimplemented_digest("sha3-256"));
-        assert!(!is_unimplemented_digest("sha256"));
-        assert!(!is_unimplemented_digest("text"));
+    fn digest_names() {
+        assert_eq!(
+            DigestName::from_option_opt("MD5"),
+            Some(DigestName::Unimplemented)
+        );
+        assert_eq!(
+            DigestName::from_option_opt("sha3-256"),
+            Some(DigestName::Unimplemented)
+        );
+        assert_eq!(
+            DigestName::from_option_opt("SHA256"),
+            Some(DigestName::Implemented(Algorithm::Sha256))
+        );
+        assert_eq!(DigestName::from_option_opt("text"), None);
+        for algorithm in Algorithm::ALL {
+            assert_eq!(
+                DigestName::from_option_opt(algorithm.name()),
+                Some(DigestName::Implemented(algorithm))
+            );
+        }
     }
 }

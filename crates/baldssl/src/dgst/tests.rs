@@ -5,13 +5,14 @@
 use std::ffi::OsString;
 
 use baldssl_core::Error;
-use baldssl_crypto::hash::Algorithm;
+use baldssl_crypto::{hash::Algorithm, secret::SecretBytes};
 use baldssl_x509::Compat;
 
 use super::{
-    Encoding, EscapedName, KeyRole, Labels, Operation, Options, Separator,
-    parse_options, prepare,
+    Encoding, Escape, EscapedName, KeyKind, KeyRole, Labels, LoadFailure,
+    Operation, Options, Separator, key_load_line, parse_options, prepare,
 };
+use crate::outputs::Outputs;
 
 fn os(v: &[&str]) -> Vec<OsString> {
     v.iter().map(OsString::from).collect()
@@ -74,7 +75,7 @@ fn formats() {
         EscapedName::new("ab"),
         EscapedName {
             text: "ab".into(),
-            escaped: false
+            escape: Escape::None
         }
     );
     let mut out = Vec::new();
@@ -125,10 +126,8 @@ fn digest_labels() {
         options(&["-sha384"]).digest_label_opt(&Operation::Digest),
         Some("SHA2-384")
     );
-    assert_eq!(
-        options(&[]).digest_label_opt(&Operation::Hmac(Vec::new())),
-        Some("SHA256")
-    );
+    let hmac = Operation::Hmac(SecretBytes::new(Vec::new()));
+    assert_eq!(options(&[]).digest_label_opt(&hmac), Some("SHA256"));
     let preset = parse_options("sha1", Algorithm::from_name_opt("sha1"), &[])
         .unwrap()
         .unwrap();
@@ -139,10 +138,11 @@ fn digest_labels() {
 #[test]
 fn checks() {
     let refused = |v: &[&str]| {
+        let mut out = Outputs::default();
         matches!(
-            prepare("dgst", &options(v), Compat::V3),
+            prepare(&mut out, "dgst", &options(v), Compat::V3),
             Err(Error::Reported { code: 1, .. })
-        )
+        ) && !out.stderr_bytes().is_empty()
     };
     assert!(refused(&["-sign", "k", "a", "b"]));
     assert!(refused(&["-verify", "k"]));
@@ -160,4 +160,33 @@ fn checks() {
         parse_options("dgst", None, &os(&["-keyform", "XYZ"])),
         Err(Error::Usage(_))
     ));
+}
+
+/// The line for a key that does not load, in every release line: the
+/// public-key fallback of 3.2 and later, and each message.
+#[test]
+fn key_load_lines() {
+    let line =
+        |kind, failure, compat| key_load_line("k", kind, failure, compat);
+    assert_eq!(
+        line(KeyKind::Public, LoadFailure::Missing, Compat::V30),
+        "Could not open file or uri for loading public key from k"
+    );
+    assert_eq!(
+        line(KeyKind::Public, LoadFailure::NoKey, Compat::V3),
+        "Could not find private key of public key from k"
+    );
+    assert_eq!(
+        line(KeyKind::Private, LoadFailure::Missing, Compat::V36),
+        "Could not open file or uri for loading private key from k: No such \
+         file or directory"
+    );
+    assert_eq!(
+        line(KeyKind::Private, LoadFailure::NoKey, Compat::V30),
+        "Could not read private key from k"
+    );
+    assert_eq!(
+        line(KeyKind::Private, LoadFailure::NoKey, Compat::V4),
+        "Could not find or decode private key from k"
+    );
 }

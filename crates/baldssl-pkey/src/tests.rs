@@ -3,20 +3,25 @@
 use baldssl_core::{
     Error,
     der::syntax::{ObjectId, decode, encode},
-    encoding::Encodable,
-    pem::Pem,
+    encoding::{Decodable, Encodable},
+    pem::{self, Pem},
 };
 use baldssl_test_utils::{fixture, hex};
+use proptest::prelude::*;
 
 use baldssl_crypto::{
     instances::{P256, P384, P521},
     signature::eddsa::Ed25519,
 };
 
-use super::{Algorithm, AnyPrivateKey, KeyAlgorithm, PrivateKey};
+use super::{
+    Algorithm, AnyPrivateKey, ED25519_KEY_LEN, KeyAlgorithm, PrivateKey,
+    PublicKey, Signing, WithKeyAlgorithm,
+};
 use crate::asn1::{
-    CURVE_PRIVATE_KEY, EC_PRIVATE_KEY, ID_EC_PUBLIC_KEY, ID_ED25519,
-    PRIME256V1, PRIVATE_KEY_INFO, SECP384R1, SECP521R1,
+    CURVE_PRIVATE_KEY, EC_PRIVATE_KEY, ID_EC_PUBLIC_KEY, ID_ED448, ID_ED25519,
+    ID_RSASSA_PSS, ID_X448, ID_X25519, PRIME256V1, PRIVATE_KEY_INFO,
+    RSA_ENCRYPTION, SECP384R1, SECP521R1,
 };
 
 fn algorithm_opt(name: &str) -> Option<Algorithm> {
@@ -39,7 +44,7 @@ fn secret(alg: Algorithm, printed: &str) -> Vec<u8> {
     out
 }
 
-/// Same public key and byte-identical PKCS#8 for the twenty keys OpenSSL
+/// Same public key and byte-identical PKCS#8 for the sixteen keys OpenSSL
 /// generated (`scripts/gen-ec-vectors.sh`).
 #[test]
 fn pkcs8_matches_openssl() {
@@ -97,12 +102,7 @@ fn generated_keys_are_valid_and_distinct() {
 /// The run-time enum dispatches to the typed key of the algorithm named.
 #[test]
 fn any_private_key_dispatches() {
-    for alg in [
-        Algorithm::P256,
-        Algorithm::P384,
-        Algorithm::P521,
-        Algorithm::Ed25519,
-    ] {
+    for alg in Algorithm::ALL {
         let key = AnyPrivateKey::generate(alg).unwrap();
         assert_eq!(key.algorithm(), alg);
         let again =
@@ -171,6 +171,11 @@ fn object_identifiers() {
         (PRIME256V1, "1.2.840.10045.3.1.7"),
         (SECP384R1, "1.3.132.0.34"),
         (SECP521R1, "1.3.132.0.35"),
+        (RSA_ENCRYPTION, "1.2.840.113549.1.1.1"),
+        (ID_RSASSA_PSS, "1.2.840.113549.1.1.10"),
+        (ID_X25519, "1.3.101.110"),
+        (ID_X448, "1.3.101.111"),
+        (ID_ED448, "1.3.101.113"),
     ] {
         assert_eq!(Some(id), ObjectId::from_dotted_opt(dotted), "{dotted}");
     }
@@ -197,5 +202,137 @@ fn algorithm_names() {
             name.parse::<Algorithm>(),
             Err(Error::Unsupported(_))
         ));
+    }
+}
+
+/// The algorithm a type is, through the eliminator: `a.with(Name) == a` for
+/// every `a` is the law that the eliminator picks the type `a` names.
+struct Name;
+
+impl WithKeyAlgorithm for Name {
+    type Output = Algorithm;
+
+    fn run<A>(self) -> Algorithm
+    where
+        A: Signing,
+    {
+        A::ALGORITHM
+    }
+}
+
+#[test]
+fn the_eliminator_names_its_type() {
+    for alg in Algorithm::ALL {
+        assert_eq!(alg.with(Name), alg);
+    }
+}
+
+/// The run-time key and the typed key of one secret agree on every
+/// operation: the dispatch of [`AnyPrivateKey`] and [`PublicKey`] is the
+/// typed path. `None` when the secret is not a key.
+struct Agrees<'a>(&'a [u8]);
+
+impl WithKeyAlgorithm for Agrees<'_> {
+    type Output = Option<()>;
+
+    fn run<A>(self) -> Self::Output
+    where
+        A: Signing,
+    {
+        let typed = PrivateKey::<A>::from_secret(self.0).ok()?;
+        let any = AnyPrivateKey::from_secret(A::ALGORITHM, self.0).unwrap();
+        assert_eq!(any.algorithm(), A::ALGORITHM);
+        assert_eq!(
+            any.traditional_opt().map(|t| t.expose().to_vec()),
+            A::traditional_opt(typed.key_pair()).map(|t| t.expose().to_vec())
+        );
+        assert_eq!(any.pkcs8().expose(), typed.pkcs8().expose());
+        assert_eq!(any.encode(), typed.encode());
+        assert_eq!(any.secret().expose(), typed.secret().expose());
+        assert_eq!(any.public_key_bytes(), typed.public_key_bytes());
+        assert_eq!(
+            PublicKey::from(&any),
+            A::public_into_any(A::subject_public_key(typed.key_pair()))
+        );
+        assert_eq!(
+            PublicKey::from(&any).public_key_bytes(),
+            typed.public_key_bytes()
+        );
+        assert_eq!(PublicKey::from(&any).algorithm(), A::ALGORITHM);
+        assert_eq!(any.default_signature_algorithm(), A::algorithm(A::DEFAULT));
+        assert_eq!(
+            any.sign(A::algorithm(A::DEFAULT), b"m").unwrap(),
+            typed.sign(A::DEFAULT, b"m").unwrap()
+        );
+        Some(())
+    }
+}
+
+/// The laws of [`KeyAlgorithm`], for one algorithm and one secret: `None`
+/// when the secret is not a key.
+struct Laws<'a>(&'a [u8]);
+
+impl WithKeyAlgorithm for Laws<'_> {
+    type Output = Option<()>;
+
+    fn run<A>(self) -> Self::Output
+    where
+        A: Signing,
+    {
+        let pair = A::from_secret(self.0).ok()?;
+        // from_secret(secret(p)) is p.
+        let again = A::from_secret(A::secret(&pair).expose()).unwrap();
+        assert_eq!(A::secret(&again).expose(), A::secret(&pair).expose());
+        assert_eq!(A::public_key(&again), A::public_key(&pair));
+        assert_eq!(A::secret(&pair).expose(), self.0);
+        // pkcs8 decodes, and re-encodes to the same bytes.
+        let pkcs8 = A::pkcs8(&pair);
+        let read = AnyPrivateKey::decode(pkcs8.expose()).unwrap();
+        assert_eq!(read.algorithm(), A::ALGORITHM);
+        assert_eq!(
+            PublicKey::from(&read),
+            A::public_into_any(A::subject_public_key(&pair))
+        );
+        assert_eq!(read.pkcs8().expose(), pkcs8.expose());
+        records_round_trip(pkcs8.expose());
+        // traditional_opt round-trips through SEC 1, in DER and in PEM.
+        if let Some(sec1) = A::traditional_opt(&pair) {
+            let from_der = AnyPrivateKey::decode(sec1.expose()).unwrap();
+            assert_eq!(from_der.pkcs8().expose(), pkcs8.expose());
+            let block = pem::encode("EC PRIVATE KEY", sec1.expose());
+            let from_pem = AnyPrivateKey::from_pem(block.as_bytes()).unwrap();
+            assert_eq!(from_pem.pkcs8().expose(), pkcs8.expose());
+        }
+        // The key a SubjectPublicKeyInfo holds reads back to itself.
+        let public = A::subject_public_key(&pair);
+        assert_eq!(A::read_public(&public.encode()).unwrap(), public);
+        Some(())
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    /// The laws of `KeyAlgorithm` and the dispatch, for every algorithm,
+    /// over secrets: the first bytes of `bytes`, as many as the algorithm
+    /// takes.
+    #[test]
+    fn key_algorithm_laws(bytes in prop::collection::vec(any::<u8>(), 66)) {
+        for alg in Algorithm::ALL {
+            let secret = &bytes[..alg.secret_len()];
+            let laws = alg.with(Laws(secret));
+            prop_assert_eq!(laws, alg.with(Agrees(secret)));
+        }
+    }
+}
+
+/// Every Ed25519 public key a typed key gives is `ED25519_KEY_LEN` bytes,
+/// which [`crate::Ed25519PublicKey`]'s conversion from it relies on.
+#[test]
+fn ed25519_public_keys_are_32_bytes() {
+    for seed in 0..=u8::MAX {
+        let key = PrivateKey::<Ed25519>::from_secret(&[seed; 32]).unwrap();
+        assert_eq!(key.public_key().as_bytes().len(), ED25519_KEY_LEN);
+        assert_eq!(key.public_key_bytes().len(), ED25519_KEY_LEN);
     }
 }

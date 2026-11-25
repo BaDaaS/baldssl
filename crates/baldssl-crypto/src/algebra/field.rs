@@ -32,13 +32,19 @@ use core::{
     ops::{Add, Mul, Neg, Sub},
 };
 
-use crate::ct::{Choice, CtEq, CtSelect};
+use baldssl_core::num::u32_to_usize;
+
+use crate::{
+    ct::{Choice, CtEq, CtOption, CtSelect},
+    secret::{SecretBytes, SecretScalar},
+};
 
 /// The signature of a field. See the module documentation for the laws.
 /// Constant-time equality and selection are part of it: elements may be
 /// secret.
 pub trait Field:
-    Copy
+    crate::sealed::Sealed
+    + Copy
     + Eq
     + CtEq
     + CtSelect
@@ -82,16 +88,20 @@ pub trait PrimeField: Field {
     /// The length of the canonical encoding, $\lceil \mathrm{BITS} / 8
     /// \rceil$ bytes.
     const BYTES: usize;
+    /// The bits of the encoding above $p$'s, $8 \cdot \mathrm{BYTES} -
+    /// \mathrm{BITS}$: below 8 by the definition of
+    /// [`PrimeField::BYTES`], so a shift by it never overflows a byte.
+    const SPARE_BITS: usize = Self::BYTES * 8 - u32_to_usize(Self::BITS);
 
     /// The element $v \bmod p$.
     #[must_use]
     fn from_u64(v: u64) -> Self;
 
     /// Decodes the canonical big-endian encoding of [`PrimeField::BYTES`]
-    /// bytes. The [`Choice`] is false, and the element zero, when the length
-    /// is wrong or the value is not below $p$; the check does not branch on
-    /// the value.
-    fn from_bytes_be(bytes: &[u8]) -> (Self, Choice);
+    /// bytes. Absent, with zero as the placeholder, when the length is wrong
+    /// or the value is not below $p$; the check does not branch on the
+    /// value.
+    fn from_bytes_be(bytes: &[u8]) -> CtOption<Self>;
 
     /// The canonical big-endian encoding, [`PrimeField::BYTES`] bytes.
     fn to_bytes_be(&self) -> Vec<u8>;
@@ -99,8 +109,7 @@ pub trait PrimeField: Field {
     /// Decodes the canonical little-endian encoding of
     /// [`PrimeField::BYTES`] bytes: the big-endian one read backwards, with
     /// the same rejections as [`PrimeField::from_bytes_be`].
-    #[must_use]
-    fn from_bytes_le(bytes: &[u8]) -> (Self, Choice) {
+    fn from_bytes_le(bytes: &[u8]) -> CtOption<Self> {
         let be: Vec<u8> = bytes.iter().rev().copied().collect();
         Self::from_bytes_be(&be)
     }
@@ -122,8 +131,9 @@ pub trait PrimeField: Field {
     ///
     /// [sec1]: https://www.secg.org/sec1-v2.pdf
     /// [rfc8032]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
-    #[must_use]
     fn is_odd(&self) -> Choice {
+        // The encoding has BYTES >= 1 bytes, so `last` is never None and the
+        // fallback is never taken.
         let low = self.to_bytes_be().last().map_or(0, |b| b & 1);
         Choice::from_bit(u64::from(low))
     }
@@ -162,28 +172,32 @@ pub trait PrimeField: Field {
     /// (key pair generation by rejection sampling), which returns an error on
     /// the first rejection where this draws again.
     ///
+    /// The draws are made in a [`SecretBytes`], wiped on every return,
+    /// including the error of `fill`.
+    ///
     /// # Errors
     ///
     /// The error of `fill`.
     ///
     /// [fips186]: https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.186-5.pdf
-    fn random_nonzero<F, E>(mut fill: F) -> Result<Self, E>
+    fn random_nonzero<F, E>(mut fill: F) -> Result<SecretScalar<Self>, E>
     where
         F: FnMut(&mut [u8]) -> Result<(), E>,
     {
-        // BYTES * 8 - BITS is below 8 by the definition of BYTES.
-        let spare = u32::try_from(Self::BYTES * 8)
-            .map_or(0, |bits| bits.saturating_sub(Self::BITS));
-        let mask = 0xffu8.checked_shr(spare).unwrap_or(0);
-        let mut buf = vec![0u8; Self::BYTES];
+        let mask = 0xffu8 >> Self::SPARE_BITS;
+        let mut buf = SecretBytes::filled(0, Self::BYTES);
         loop {
-            fill(&mut buf)?;
-            if let Some(first) = buf.first_mut() {
+            fill(buf.expose_mut())?;
+            // BYTES >= 1, so there is a first byte to mask.
+            if let Some(first) = buf.expose_mut().first_mut() {
                 *first &= mask;
             }
-            let (x, valid) = Self::from_bytes_be(&buf);
-            if (valid & !x.is_zero()).to_bool_vartime() {
-                buf.fill(0);
+            let x = SecretScalar::new(
+                Self::from_bytes_be(buf.expose()).unwrap_or_ct(&Self::ZERO),
+            );
+            // Zero is both the placeholder of a value not below p and the
+            // one valid value rejected; a rejection is public.
+            if (!x.expose().is_zero()).to_bool_vartime() {
                 return Ok(x);
             }
         }
@@ -193,9 +207,9 @@ pub trait PrimeField: Field {
 /// Square roots: half of the nonzero elements of $\mathbb{F}_p$ are squares
 /// ($p$ odd), each with two roots $\pm r$.
 pub trait Sqrt: Field {
-    /// A root $r$ with $r^2 = a$, and whether $a$ is a square; when it is not,
-    /// the element returned is unspecified. Which of $\pm r$ is returned is
+    /// A root $r$ with $r^2 = a$, present when $a$ is a square; when it is
+    /// not, the placeholder is unspecified. Which of $\pm r$ is returned is
     /// unspecified too: callers choose by a sign or parity bit. Constant
     /// time.
-    fn sqrt(&self) -> (Self, Choice);
+    fn sqrt(&self) -> CtOption<Self>;
 }

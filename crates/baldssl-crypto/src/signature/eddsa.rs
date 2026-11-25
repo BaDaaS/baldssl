@@ -37,12 +37,14 @@
 //! cofactored equation $8 S B = 8 R + 8 k A$ instead; the two differ
 //! only on signatures built with small-order components, and the
 //! cofactorless one is the choice that gives OpenSSL's verdicts (the tests
-//! compare them on the edge cases of Chalkias, Garillot and Nikolaenko).
+//! compare them on the edge cases of Chalkias, Garillot and Nikolaenko,
+//! [*Taming the many EdDSAs*][taming], IACR ePrint 2020/1244).
 //!
 //! [rfc8032-5]: https://www.rfc-editor.org/rfc/rfc8032#section-5
 //! [rfc8032-5.1.5]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.5
 //! [rfc8032-5.1.6]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.6
 //! [rfc8032-5.1.7]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.7
+//! [taming]: https://eprint.iacr.org/2020/1244
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -67,13 +69,21 @@ use crate::{
         affine::{Affine, DecodingRules},
         extended::Extended,
     },
-    secret::SecretBytes,
+    secret::{SecretBytes, SecretScalar},
 };
 
 /// The parameters of an EdDSA instance ([RFC 8032, section 5][rfc8032-5]).
 ///
+/// Laws, asserted at compile time for every parameter set signing or key
+/// expansion is instantiated with: $b$ is a whole number of bytes, $H$
+/// outputs exactly $2b$ bits, and $c < n < b$. Each is what makes the
+/// expansion well defined: the secret scalar is the first $b$ bits of the
+/// hash, the nonce prefix the other $b$, and the bits cleared and set are
+/// inside the scalar. Sealed, so that no parameter set outside this crate
+/// can break them.
+///
 /// [rfc8032-5]: https://www.rfc-editor.org/rfc/rfc8032#section-5
-pub trait EddsaParameters: 'static {
+pub trait EddsaParameters: crate::sealed::Sealed + 'static {
     /// The twisted Edwards curve.
     type Curve: TwistedEdwards;
     /// The hash $H$, of $2b$ bits.
@@ -93,32 +103,84 @@ pub struct EdDSA<P>(PhantomData<P>)
 where
     P: EddsaParameters;
 
-/// The secret scalar of section 5.1.5 as $b$ little-endian bytes: the first
-/// half of $H(\mathrm{seed})$ with the $c$ low bits and the bits above $n$
-/// cleared, and bit $n$ set.
-fn clamped_le<P>(seed: &P::Seed) -> Vec<u8>
+/// The laws of [`EddsaParameters`], checked when the constant is
+/// evaluated: after monomorphisation, so at compile time, for each parameter
+/// set [`halves`] is used with.
+struct Laws<P>(PhantomData<P>);
+
+impl<P> Laws<P>
 where
     P: EddsaParameters,
 {
-    let h = SecretBytes::new(P::Hash::digest(seed.as_ref()));
-    let mut s: Vec<u8> = h.expose().iter().take(P::B / 8).copied().collect();
+    /// Compiles only when the laws hold.
+    const HOLD: () = {
+        assert!(P::B.is_multiple_of(8), "EdDSA: b is not a number of bytes");
+        assert!(
+            P::Hash::OUTPUT_LEN * 8 == 2 * P::B,
+            "EdDSA: the hash does not output 2b bits"
+        );
+        assert!(P::N < P::B, "EdDSA: n is not below b");
+        assert!(P::C < P::N, "EdDSA: c is not below n");
+    };
+}
+
+/// $H(\mathrm{seed})$, wiped when dropped.
+fn expand<P>(seed: &P::Seed) -> SecretBytes
+where
+    P: EddsaParameters,
+{
+    SecretBytes::new(P::Hash::digest(seed.as_ref()))
+}
+
+/// The two halves of $h = H(\mathrm{seed})$, $b$ bits each: the one the
+/// secret scalar is made of, and the nonce prefix of signing.
+fn halves<P>(h: &SecretBytes) -> (&[u8], &[u8])
+where
+    P: EddsaParameters,
+{
+    let () = Laws::<P>::HOLD;
+    // By Laws::HOLD, h is 2b / 8 bytes long, so b / 8 is inside it and
+    // split_at cannot panic.
+    h.expose().split_at(P::B / 8)
+}
+
+/// The secret scalar of section 5.1.5 as $b$ little-endian bytes: the first
+/// half of $H(\mathrm{seed})$ with the $c$ low bits and the bits above $n$
+/// cleared, and bit $n$ set.
+fn clamp<P>(low_half: &[u8]) -> SecretBytes
+where
+    P: EddsaParameters,
+{
+    let mut s = SecretBytes::new(low_half.to_vec());
+    let le = s.expose_mut();
     for bit in 0..P::C {
-        set_bit(&mut s, bit, false);
+        clear_bit(le, bit);
     }
     for bit in P::N..P::B {
-        set_bit(&mut s, bit, false);
+        clear_bit(le, bit);
     }
-    set_bit(&mut s, P::N, true);
+    set_bit(le, P::N);
     s
 }
 
-/// Clears, then sets, bit `index` of a little-endian integer.
-fn set_bit(le: &mut [u8], index: usize, value: bool) {
+/// Clears bit `index` of a little-endian integer. The callers' indices are
+/// below $b$ and their integers $b / 8$ bytes long ([`Laws::HOLD`]), so the
+/// byte is always there.
+fn clear_bit(le: &mut [u8], index: usize) {
     if let Some(byte) = le.get_mut(index / 8) {
-        let mask = 1u8 << (index % 8);
-        *byte = (*byte & !mask) | if value { mask } else { 0 };
+        *byte &= !(1u8 << (index % 8));
     }
 }
+
+/// Sets bit `index` of a little-endian integer; the byte is always there,
+/// as for [`clear_bit`].
+fn set_bit(le: &mut [u8], index: usize) {
+    if let Some(byte) = le.get_mut(index / 8) {
+        *byte |= 1u8 << (index % 8);
+    }
+}
+
+impl<P> crate::sealed::Sealed for EdDSA<P> where P: EddsaParameters {}
 
 impl<P> DigitalSignature for EdDSA<P>
 where
@@ -126,12 +188,13 @@ where
 {
     type Group = Extended<P::Curve>;
     type SecretKey = P::Seed;
-    type Scalar = Vec<u8>;
 
     /// The clamped first half of $H(\mathrm{seed})$, big-endian.
-    fn secret_scalar(seed: &P::Seed) -> Vec<u8> {
-        let mut s = clamped_le::<P>(seed);
-        s.reverse();
+    fn secret_scalar(seed: &P::Seed) -> SecretBytes {
+        let h = expand::<P>(seed);
+        let (low, _) = halves::<P>(&h);
+        let mut s = clamp::<P>(low);
+        s.expose_mut().reverse();
         s
     }
 }
@@ -149,7 +212,8 @@ where
 }
 
 /// An EdDSA public key as a verifier holds it: the encoding as given
-/// (which the challenge hash covers) and the point it decodes to.
+/// (which the challenge hash covers) and the point it decodes to. Equality
+/// and printing are those of the encoding (a public key is public).
 #[derive(Clone)]
 pub struct PublicKey<P>
 where
@@ -163,10 +227,52 @@ impl<P> PublicKey<P>
 where
     P: EddsaParameters,
 {
+    /// The public key of a point, with its canonical encoding: what a key
+    /// pair derives from its secret scalar.
+    pub(crate) fn from_point(point: &Affine<P::Curve>) -> Self {
+        PublicKey {
+            encoding: point.encode(),
+            point: Extended::from(*point),
+        }
+    }
+
     /// The point.
     #[must_use]
     pub fn point(&self) -> &Extended<P::Curve> {
         &self.point
+    }
+
+    /// The encoding, as given (little-endian, [section 5.1.2]): what the
+    /// challenge hash covers, and what a SubjectPublicKeyInfo carries.
+    ///
+    /// [section 5.1.2]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1.2
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.encoding
+    }
+}
+
+impl<P> PartialEq for PublicKey<P>
+where
+    P: EddsaParameters,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.encoding == other.encoding
+    }
+}
+
+impl<P> Eq for PublicKey<P> where P: EddsaParameters {}
+
+impl<P> core::fmt::Debug for PublicKey<P>
+where
+    P: EddsaParameters,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PublicKey(")?;
+        for b in &self.encoding {
+            write!(f, "{b:02x}")?;
+        }
+        write!(f, ")")
     }
 }
 
@@ -277,10 +383,12 @@ where
         let (low, high) = s_le
             .split_at_checked(Scalar::<P>::BYTES)
             .ok_or(InvalidEncoding)?;
-        let (s, below) = Scalar::<P>::from_bytes_le(low);
-        if high.iter().any(|&b| b != 0) || !below.to_bool_vartime() {
+        if high.iter().any(|&b| b != 0) {
             return Err(InvalidEncoding);
         }
+        let s = Scalar::<P>::from_bytes_le(low)
+            .into_vartime_opt()
+            .ok_or(InvalidEncoding)?;
         Ok(Signature { r: r.to_vec(), s })
     }
 }
@@ -303,26 +411,30 @@ where
     /// Signing cannot fail.
     type Error = core::convert::Infallible;
 
-    /// Section 5.1.6. Constant time in the seed.
+    /// Section 5.1.6. Constant time in the seed. The secret scalar, the
+    /// nonce $r$ and the product $k s$ are each a [`SecretScalar`], wiped
+    /// when dropped.
     fn sign(
         key: &EdDsaKeyPair<P>,
         message: &[u8],
     ) -> Result<Signature<P>, core::convert::Infallible> {
-        let h = SecretBytes::new(P::Hash::digest(key.seed().as_ref()));
-        let prefix = h.expose().get(P::B / 8..).unwrap_or_default();
-        let s = SecretBytes::new(clamped_le::<P>(key.seed()));
-        let secret = Scalar::<P>::from_le_bytes_mod_order(s.expose());
-        let r = hash_scalar::<P>(&[prefix, message]);
+        let h = expand::<P>(key.seed());
+        let (low, prefix) = halves::<P>(&h);
+        let s = clamp::<P>(low);
+        let secret =
+            SecretScalar::new(Scalar::<P>::from_le_bytes_mod_order(s.expose()));
+        let r = SecretScalar::new(hash_scalar::<P>(&[prefix, message]));
         let big_r = <P::Curve as Curve>::scalar_mul(
             &Extended::<P::Curve>::generator(),
-            &r,
+            r.expose(),
         )
         .to_affine()
         .encode();
-        let k = hash_scalar::<P>(&[&big_r, key.public(), message]);
+        let k = hash_scalar::<P>(&[&big_r, key.public().as_bytes(), message]);
+        let ks = SecretScalar::new(k * *secret.expose());
         Ok(Signature {
             r: big_r,
-            s: r + k * secret,
+            s: *r.expose() + *ks.expose(),
         })
     }
 }
@@ -352,6 +464,8 @@ where
 ///
 /// [rfc8032-5.1]: https://www.rfc-editor.org/rfc/rfc8032#section-5.1
 pub enum Ed25519Parameters {}
+
+impl crate::sealed::Sealed for Ed25519Parameters {}
 
 impl EddsaParameters for Ed25519Parameters {
     type Curve = Edwards25519;

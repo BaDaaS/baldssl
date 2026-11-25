@@ -3,11 +3,14 @@
 //!
 //! The values are those of `openssl ecparam -name secp384r1 -param_enc explicit
 //! -noout -text` (OpenSSL 3.5.9), the source the output of baldssl is compared
-//! against; they are those of [FIPS 186-5] and [SEC 2]. The tests recompute
-//! each modulus from its defining formula, and check that the generator is on
-//! the curve and has order $n$.
+//! against; they are those of [NIST SP 800-186] (Recommendations for Discrete
+//! Logarithm-based Cryptography: Elliptic Curve Domain Parameters), section
+//! 3.2.1.4, and of [SEC 2] (Standards for Efficient Cryptography 2, Recommended
+//! Elliptic Curve Domain Parameters), section 2.5.1, `secp384r1`. The tests
+//! recompute each modulus from its defining formula, and check that the
+//! generator is on the curve and has order $n$.
 //!
-//! [FIPS 186-5]: https://csrc.nist.gov/pubs/fips/186-5/final
+//! [NIST SP 800-186]: https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-186.pdf
 //! [SEC 2]: https://www.secg.org/sec2-v2.pdf
 
 use crate::{
@@ -17,11 +20,12 @@ use crate::{
         fp::{Fp, Modulus},
         model::ProjectiveModel,
     },
-    ct::Choice,
+    ct::{Choice, CtOption},
 };
 
 /// The base field of P-384, $p = 2^{384} - 2^{128} - 2^{96} + 2^{32} - 1$.
 pub enum P384Base {}
+impl crate::sealed::Sealed for P384Base {}
 impl Modulus<6> for P384Base {
     const HEX: &'static str = "fffffffffffffffffffffffffffffffffffffffffffff\
         ffffffffffffffffffeffffffff0000000000000000ffffffff";
@@ -32,6 +36,7 @@ pub type FieldP384 = Fp<P384Base, 6>;
 
 /// The scalar field of P-384.
 pub enum P384Scalar {}
+impl crate::sealed::Sealed for P384Scalar {}
 impl Modulus<6> for P384Scalar {
     const HEX: &'static str = "fffffffffffffffffffffffffffffffffffffffffffff\
         fffc7634d81f4372ddf581a0db248b0a77aecec196accc52973";
@@ -42,8 +47,10 @@ pub type ScalarP384 = Fp<P384Scalar, 6>;
 
 /// NIST P-384 (`secp384r1`).
 pub enum P384 {}
+impl crate::sealed::Sealed for P384 {}
 
-/// Its group of points has prime order: the cofactor is 1 ([SEC 2]).
+/// Its group of points has prime order: the cofactor is 1 ([SEC 2],
+/// section 2.5.1).
 ///
 /// [SEC 2]: https://www.secg.org/sec2-v2.pdf
 impl Curve for P384 {
@@ -73,7 +80,7 @@ impl ShortWeierstrass for P384 {
 
 /// $p \equiv 3 \pmod 4$: the root is $a^{(p + 1)/4}$.
 impl Sqrt for FieldP384 {
-    fn sqrt(&self) -> (Self, Choice) {
+    fn sqrt(&self) -> CtOption<Self> {
         self.sqrt_3_mod_4()
     }
 }

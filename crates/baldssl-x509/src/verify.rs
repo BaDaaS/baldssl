@@ -37,11 +37,7 @@
 
 use baldssl_core::{
     Error, Result,
-    der::{
-        Reader,
-        syntax::{ObjectId, RawTlv},
-        tag,
-    },
+    der::{Reader, syntax::ObjectId, tag},
     encoding::Decodable,
 };
 use baldssl_crypto::signature::SignatureAlgorithm;
@@ -49,15 +45,24 @@ use baldssl_pkey::PublicKey;
 
 use crate::{
     Certificate, Compat,
-    algorithm::from_identifier,
     cert::Extension as ExtensionView,
-    extension::{
-        ExtensionValue, ID_CE_AUTHORITY_KEY_IDENTIFIER,
-        ID_CE_BASIC_CONSTRAINTS, ID_CE_KEY_USAGE, ID_CE_NAME_CONSTRAINTS,
-        KeyUsage,
-    },
+    extension::{ExtensionValue, KeyUsage},
     name::CanonicalName,
+    oid::{
+        ID_CE_AUTHORITY_KEY_IDENTIFIER, ID_CE_BASIC_CONSTRAINTS,
+        ID_CE_CERTIFICATE_POLICIES, ID_CE_EXT_KEY_USAGE,
+        ID_CE_INHIBIT_ANY_POLICY, ID_CE_KEY_USAGE, ID_CE_NAME_CONSTRAINTS,
+        ID_CE_POLICY_CONSTRAINTS, ID_CE_POLICY_MAPPINGS,
+        ID_CE_SUBJECT_ALT_NAME, ID_PE_AUTONOMOUS_SYS_IDS, ID_PE_IP_ADDR_BLOCKS,
+        ID_PE_PROXY_CERT_INFO, NETSCAPE_CERT_TYPE,
+    },
 };
+
+/// `authorityKeyIdentifier`'s `keyIdentifier [0] IMPLICIT`
+/// ([RFC 5280 section 4.2.1.1]).
+///
+/// [RFC 5280 section 4.2.1.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.1
+const AKI_KEY_IDENTIFIER: u8 = tag::context(0);
 
 /// Why a chain does not verify: OpenSSL's `X509_V_ERR_*` for each check
 /// baldssl makes, each with its number in `include/openssl/x509_vfy.h.in`
@@ -94,6 +99,11 @@ pub enum VerifyError {
 impl VerifyError {
     /// OpenSSL's error number, the discriminant.
     #[must_use]
+    #[allow(
+        clippy::as_conversions,
+        reason = "an enum's discriminant is read only with `as`, and the \
+                  discriminants are OpenSSL's numbers"
+    )]
     pub fn code(self) -> u32 {
         self as u32
     }
@@ -222,34 +232,26 @@ impl Report {
 /// in `crypto/x509/v3_purp.c`): Netscape certificate type, key usage,
 /// subject alternative name, basic constraints, certificate policies,
 /// extended key usage, policy constraints, proxy certificate information,
-/// name constraints, policy mappings, inhibit any-policy, and the RFC 3779
-/// address and AS identifier blocks.
+/// name constraints, policy mappings, inhibit any-policy, and the
+/// [RFC 3779 section 2.2.1] address and [RFC 3779 section 3.2.1] AS
+/// identifier blocks.
+///
+/// [RFC 3779 section 2.2.1]: https://www.rfc-editor.org/rfc/rfc3779#section-2.2.1
+/// [RFC 3779 section 3.2.1]: https://www.rfc-editor.org/rfc/rfc3779#section-3.2.1
 const HANDLED_CRITICAL: [ObjectId; 13] = [
-    // 2.16.840.1.113730.1.1
-    ObjectId::from_static(&[
-        0x60, 0x86, 0x48, 0x01, 0x86, 0xf8, 0x42, 0x01, 0x01,
-    ]),
+    NETSCAPE_CERT_TYPE,
     ID_CE_KEY_USAGE,
-    // 2.5.29.17
-    ObjectId::from_static(&[0x55, 0x1d, 0x11]),
+    ID_CE_SUBJECT_ALT_NAME,
     ID_CE_BASIC_CONSTRAINTS,
-    // 2.5.29.32
-    ObjectId::from_static(&[0x55, 0x1d, 0x20]),
-    // 2.5.29.37
-    ObjectId::from_static(&[0x55, 0x1d, 0x25]),
-    // 2.5.29.36
-    ObjectId::from_static(&[0x55, 0x1d, 0x24]),
-    // 1.3.6.1.5.5.7.1.14
-    ObjectId::from_static(&[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x0e]),
+    ID_CE_CERTIFICATE_POLICIES,
+    ID_CE_EXT_KEY_USAGE,
+    ID_CE_POLICY_CONSTRAINTS,
+    ID_PE_PROXY_CERT_INFO,
     ID_CE_NAME_CONSTRAINTS,
-    // 2.5.29.33
-    ObjectId::from_static(&[0x55, 0x1d, 0x21]),
-    // 2.5.29.54
-    ObjectId::from_static(&[0x55, 0x1d, 0x36]),
-    // 1.3.6.1.5.5.7.1.7
-    ObjectId::from_static(&[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x07]),
-    // 1.3.6.1.5.5.7.1.8
-    ObjectId::from_static(&[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x08]),
+    ID_CE_POLICY_MAPPINGS,
+    ID_CE_INHIBIT_ANY_POLICY,
+    ID_PE_IP_ADDR_BLOCKS,
+    ID_PE_AUTONOMOUS_SYS_IDS,
 ];
 
 /// What `X509_check_ca` makes of a certificate, by the value it returns.
@@ -291,7 +293,15 @@ impl Certificate<'_> {
             ExtensionValue::BasicConstraints { ca, path_length } => {
                 Ok(Some(Constraints { ca, path_length }))
             }
-            _ => Err(Error::invalid("basicConstraints")),
+            // The decoding of a basicConstraints value gives no other kind.
+            ExtensionValue::SubjectKeyIdentifier(_)
+            | ExtensionValue::AuthorityKeyIdentifier(_)
+            | ExtensionValue::KeyUsage(_)
+            | ExtensionValue::SubjectAltName(_)
+            | ExtensionValue::ExtendedKeyUsage(_)
+            | ExtensionValue::Other { .. } => {
+                Err(Error::invalid("basicConstraints"))
+            }
         }
     }
 
@@ -302,7 +312,13 @@ impl Certificate<'_> {
         };
         match ExtensionValue::try_from(view)? {
             ExtensionValue::KeyUsage(usage) => Ok(Some(usage)),
-            _ => Err(Error::invalid("keyUsage")),
+            // The decoding of a keyUsage value gives no other kind.
+            ExtensionValue::SubjectKeyIdentifier(_)
+            | ExtensionValue::AuthorityKeyIdentifier(_)
+            | ExtensionValue::SubjectAltName(_)
+            | ExtensionValue::BasicConstraints { .. }
+            | ExtensionValue::ExtendedKeyUsage(_)
+            | ExtensionValue::Other { .. } => Err(Error::invalid("keyUsage")),
         }
     }
 
@@ -315,7 +331,7 @@ impl Certificate<'_> {
         let mut top = Reader::new(view.value);
         let mut seq = top.sequence()?;
         top.finish()?;
-        Ok(seq.optional(tag::context(0))?.map(|t| t.value))
+        Ok(seq.optional(AKI_KEY_IDENTIFIER)?.map(|t| t.value()))
     }
 
     /// Whether the key usage, if any, allows signing certificates.
@@ -343,21 +359,12 @@ impl Certificate<'_> {
     /// Whether `issuer`'s key verifies this certificate's signature.
     fn signed_by(&self, issuer: &Certificate<'_>) -> Result<bool> {
         let key = PublicKey::decode(issuer.spki_der)?;
-        let algorithm = self.signature_algorithm_value()?;
-        if self.signature.unused != 0 {
+        let algorithm =
+            SignatureAlgorithm::try_from(&self.signature_algorithm)?;
+        if self.signature.unused() != 0 {
             return Ok(false);
         }
-        Ok(key.verify(algorithm, self.tbs_der, self.signature.bytes))
-    }
-
-    /// The outer signature algorithm, as baldssl names it.
-    fn signature_algorithm_value(&self) -> Result<SignatureAlgorithm> {
-        let alg = &self.signature_algorithm;
-        let params = alg
-            .parameters
-            .map(|p| RawTlv::parse(p.encoded))
-            .transpose()?;
-        from_identifier(&(ObjectId::from(alg.oid), (params, ())))
+        Ok(key.verify(algorithm, self.tbs_der, self.signature.bytes()))
     }
 }
 
@@ -399,7 +406,7 @@ impl<'c, 'a> Node<'c, 'a> {
                 subject.cert.authority_key_id_opt()?,
                 self.cert.subject_key_identifier_opt(),
             ) {
-                (Some(akid), Some(skid)) => akid == skid,
+                (Some(akid), Some(skid)) => akid == skid.as_slice(),
                 _ => true,
             },
         )

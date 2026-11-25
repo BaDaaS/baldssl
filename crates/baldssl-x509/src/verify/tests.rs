@@ -11,9 +11,9 @@ use super::{
 };
 use crate::{
     Certificate, CertificateTemplate, CertificationRequest, Compat, Extension,
-    ExtensionValue, Extensions, IssuedExtensions, SerialNumber,
+    ExtensionFile, ExtensionValue, Extensions, IssuedExtensions, SerialNumber,
     SignatureAlgorithm, Validity,
-    dn::{DistinguishedName, InputEncoding, UTF8_ONLY},
+    dn::{DistinguishedName, InputEncoding, RdnMode, UTF8_ONLY},
 };
 
 fn key(seed: u8) -> AnyPrivateKey {
@@ -24,11 +24,11 @@ fn name(subj: &str) -> DistinguishedName {
     DistinguishedName::from_subj(
         subj.as_bytes(),
         InputEncoding::Latin1,
-        true,
+        RdnMode::MultiValued,
         UTF8_ONLY,
     )
     .unwrap()
-    .0
+    .name
 }
 
 /// A root valid over `[from, to]`.
@@ -76,7 +76,7 @@ fn issue(
         Validity::from_unix_seconds(from, to),
         &IssuedExtensions {
             extensions,
-            from_file: true,
+            extension_file: ExtensionFile::Given,
         },
         Compat::V3,
     )

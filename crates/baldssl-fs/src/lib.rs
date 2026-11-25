@@ -1,5 +1,6 @@
-//! The filesystem side of baldssl: opening output files with the access
-//! OpenSSL gives them, and writing encodings and text forms to any writer.
+//! The filesystem side of baldssl: reading input files and standard input,
+//! opening output files with the access OpenSSL gives them, writing the
+//! standard streams, and writing encodings and text forms to any writer.
 //!
 //! Encodings ([`Pem`], PEM being Privacy-Enhanced Mail, [RFC 7468]) and
 //! text forms ([`Text`]) live with their types and do no I/O, which keeps
@@ -12,7 +13,7 @@
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write as _},
+    io::{self, Read as _, Write as _},
     path::Path,
 };
 
@@ -79,16 +80,36 @@ pub fn create_owner_only(path: &Path) -> Result<File> {
     options.open(path).map_err(|e| write_error(path, &e))
 }
 
-/// Writes `bytes` to the file `path`, or to standard output without one,
-/// as a command's output goes.
+/// Who may read a file baldssl writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// What the process's umask allows, as OpenSSL's `bio_open_default`
+    /// creates a file.
+    Default,
+    /// Its owner only ([`create_owner_only`]), as OpenSSL's
+    /// `bio_open_owner` creates a file that holds a private key.
+    OwnerOnly,
+}
+
+/// Writes `bytes` to `path`, created (or truncated) with `access`.
 ///
 /// # Errors
 ///
-/// [`Error::Io`] when the file or standard output cannot be written.
-pub fn write_output(bytes: &[u8], path: Option<&Path>) -> Result<()> {
-    if let Some(path) = path {
-        return fs::write(path, bytes).map_err(|e| write_error(path, &e));
+/// [`Error::Io`] when the file cannot be created or written.
+pub fn write_file(path: &Path, access: Access, bytes: &[u8]) -> Result<()> {
+    match access {
+        Access::Default => fs::write(path, bytes),
+        Access::OwnerOnly => create_owner_only(path)?.write_all(bytes),
     }
+    .map_err(|e| write_error(path, &e))
+}
+
+/// Writes `bytes` on standard output, then flushes it.
+///
+/// # Errors
+///
+/// [`Error::Io`] when standard output cannot be written.
+pub fn write_stdout(bytes: &[u8]) -> Result<()> {
     let mut stdout = io::stdout().lock();
     stdout
         .write_all(bytes)
@@ -97,6 +118,68 @@ pub fn write_output(bytes: &[u8], path: Option<&Path>) -> Result<()> {
             context: "writing stdout".into(),
             message: e.to_string(),
         })
+}
+
+/// Writes `bytes` on standard error, then flushes it.
+///
+/// # Errors
+///
+/// [`Error::Io`] when standard error cannot be written.
+pub fn write_stderr(bytes: &[u8]) -> Result<()> {
+    let mut stderr = io::stderr().lock();
+    stderr
+        .write_all(bytes)
+        .and_then(|()| stderr.flush())
+        .map_err(|e| Error::Io {
+            context: "writing stderr".into(),
+            message: e.to_string(),
+        })
+}
+
+/// The bytes of `path`, or of standard input without one.
+///
+/// # Errors
+///
+/// [`Error::NotFound`] for a missing file, [`Error::Io`] otherwise.
+pub fn read_input(path: Option<&Path>) -> Result<Vec<u8>> {
+    match path {
+        None => {
+            let mut buf = Vec::new();
+            io::stdin().read_to_end(&mut buf).map_err(|e| Error::Io {
+                context: "reading stdin".into(),
+                message: e.to_string(),
+            })?;
+            Ok(buf)
+        }
+        Some(p) => fs::read(p).map_err(|e| {
+            let shown = p.display().to_string();
+            if e.kind() == io::ErrorKind::NotFound {
+                Error::NotFound { path: shown }
+            } else {
+                Error::Io {
+                    context: format!("reading {shown}"),
+                    message: e.to_string(),
+                }
+            }
+        }),
+    }
+}
+
+/// The bytes of `path`, or `None` when it does not exist (a serial file
+/// `-CAcreateserial` creates).
+///
+/// # Errors
+///
+/// [`Error::Io`] when it exists and cannot be read.
+pub fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::Io {
+            context: format!("reading {}", path.display()),
+            message: e.to_string(),
+        }),
+    }
 }
 
 /// The error of writing `path`, as baldssl reports it.

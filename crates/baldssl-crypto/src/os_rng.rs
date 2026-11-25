@@ -24,9 +24,7 @@
 //!
 //! CI checks them: the `os-rng-*` jobs run these tests on every platform and
 //! version listed in `website/src/platforms.json` (the website's Platforms
-//! table), and a version below a minimum must fail to link. Whether
-//! `BCryptGenRandom` is the right primitive on Windows, against the
-//! `ProcessPrng` Rust's standard library uses, is still being investigated.
+//! table), and a version below a minimum must fail to link.
 //!
 //! [glibc 2.25 NEWS]: https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=NEWS;hb=HEAD
 //! [musl 1.1.20 release notes]: https://git.musl-libc.org/cgit/musl/plain/WHATSNEW
@@ -46,6 +44,9 @@ pub enum RngError {
     Unsupported,
     /// The system call failed with this error code.
     Os(i32),
+    /// The system call returned what its interface rules out: a failure
+    /// without an error code, or more bytes than were asked for.
+    Unexpected,
 }
 
 impl core::fmt::Display for RngError {
@@ -60,11 +61,48 @@ impl core::fmt::Display for RngError {
                     "the operating system's random source failed ({code})"
                 )
             }
+            RngError::Unexpected => f.write_str(
+                "the operating system's random source returned an \
+                 unexpected result",
+            ),
         }
     }
 }
 
 impl std::error::Error for RngError {}
+
+/// What a caller drawing randomness reports: no source on this target is
+/// [`Unsupported`](baldssl_core::Error::Unsupported), a failing source an
+/// [`Io`](baldssl_core::Error::Io) error with this error's message.
+impl From<RngError> for baldssl_core::Error {
+    fn from(e: RngError) -> Self {
+        match e {
+            RngError::Unsupported => baldssl_core::Error::unsupported(
+                "key generation: no source of randomness",
+            ),
+            RngError::Os(_) | RngError::Unexpected => baldssl_core::Error::Io {
+                context: "reading randomness".into(),
+                message: e.to_string(),
+            },
+        }
+    }
+}
+
+/// The error the system reported, or [`RngError::Unexpected`] when it
+/// reported none.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn os_error(err: &std::io::Error) -> RngError {
+    err.raw_os_error()
+        .map_or(RngError::Unexpected, RngError::Os)
+}
 
 /// Fills `buf` with bytes from the operating system's cryptographically
 /// secure random number generator.
@@ -82,7 +120,7 @@ pub fn fill(buf: &mut [u8]) -> Result<(), RngError> {
 mod imp {
     use core::ffi::{c_uint, c_void};
 
-    use super::RngError;
+    use super::{RngError, os_error};
 
     unsafe extern "C" {
         /// `ssize_t getrandom(void *buf, size_t buflen, unsigned int flags)`,
@@ -105,11 +143,11 @@ mod imp {
                 if err.kind() == std::io::ErrorKind::Interrupted {
                     continue;
                 }
-                return Err(RngError::Os(err.raw_os_error().unwrap_or(-1)));
+                return Err(os_error(&err));
             }
             // A large request may be served in parts; continue after them.
-            let n = usize::try_from(n).map_err(|_| RngError::Os(-1))?;
-            rest = rest.get_mut(n..).ok_or(RngError::Os(-1))?;
+            let n = usize::try_from(n).map_err(|_| RngError::Unexpected)?;
+            rest = rest.get_mut(n..).ok_or(RngError::Unexpected)?;
         }
         Ok(())
     }
@@ -125,7 +163,7 @@ mod imp {
 mod imp {
     use core::ffi::{c_int, c_void};
 
-    use super::RngError;
+    use super::{RngError, os_error};
 
     /// `getentropy` refuses requests above 256 bytes.
     const MAX: usize = 256;
@@ -143,8 +181,7 @@ mod imp {
             let r =
                 unsafe { getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
             if r != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(RngError::Os(err.raw_os_error().unwrap_or(-1)));
+                return Err(os_error(&std::io::Error::last_os_error()));
             }
         }
         Ok(())
@@ -154,6 +191,8 @@ mod imp {
 #[cfg(windows)]
 mod imp {
     use core::ffi::c_void;
+
+    use baldssl_core::num::u32_to_usize;
 
     use super::RngError;
 
@@ -174,9 +213,9 @@ mod imp {
 
     pub(super) fn fill(buf: &mut [u8]) -> Result<(), RngError> {
         // The length is a 32-bit ULONG.
-        for chunk in buf.chunks_mut(u32::MAX as usize) {
+        for chunk in buf.chunks_mut(u32_to_usize(u32::MAX)) {
             let length =
-                u32::try_from(chunk.len()).map_err(|_| RngError::Os(-1))?;
+                u32::try_from(chunk.len()).map_err(|_| RngError::Unexpected)?;
             // SAFETY: `chunk` is a live, exclusively borrowed region of
             // `length` writable bytes; with BCRYPT_USE_SYSTEM_PREFERRED_RNG
             // the algorithm handle must be NULL, which it is.

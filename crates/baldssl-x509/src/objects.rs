@@ -4,7 +4,10 @@
 //! `scripts/gen-objects.py` (see `make objects`).
 
 use crate::objects_table::OBJECTS;
-use baldssl_core::{Result, der::Oid};
+use baldssl_core::{
+    Result,
+    der::{Oid, syntax::ObjectId},
+};
 
 fn cmp_dotted(a: &str, b: &str) -> core::cmp::Ordering {
     let mut lhs = a.split('.');
@@ -53,32 +56,56 @@ pub(crate) fn long_name(oid: &Oid<'_>) -> Result<String> {
     Ok(find_opt(&dotted).map_or(dotted, |(_, ln)| ln.to_string()))
 }
 
-/// The dotted OID of a short name only, as OpenSSL's `OBJ_sn2nid` finds
-/// it: how a configuration names an extension.
-pub(crate) fn find_by_short_name_opt(text: &str) -> Option<&'static str> {
+/// The identifier of a table entry's dotted form, `None` for the three
+/// roots `itu-t` (0), `iso` (1) and `joint-iso-itu-t` (2): an OBJECT
+/// IDENTIFIER has at least two arcs ([X.690] 8.19.4), so these have no
+/// encoding, in OpenSSL as here. Every other entry has one
+/// (`entries_are_identifiers` tests the whole table).
+///
+/// [X.690]: https://www.itu.int/rec/T-REC-X.690
+fn entry_oid_opt(dotted: &str) -> Option<ObjectId> {
+    ObjectId::from_dotted_opt(dotted)
+}
+
+/// Whether a short name, a long name or a dotted OID is in OpenSSL's table,
+/// as `OBJ_txt2nid` finds it, encodable or not.
+#[must_use]
+pub(crate) fn is_name(text: &str) -> bool {
+    OBJECTS
+        .iter()
+        .any(|(d, sn, ln)| *sn == text || *ln == text || *d == text)
+}
+
+/// The object of a short name only, as OpenSSL's `OBJ_sn2nid` finds it: how
+/// a configuration names an extension.
+pub(crate) fn find_by_short_name_opt(text: &str) -> Option<ObjectId> {
     OBJECTS
         .iter()
         .find(|(_, sn, _)| *sn == text)
-        .map(|(d, _, _)| *d)
+        .and_then(|(d, _, _)| entry_oid_opt(d))
 }
 
 /// `OBJ_txt2nid`: the object a short name, a long name, or a dotted OID
-/// names, in that order, when OpenSSL has it in its table. Names are
-/// case-sensitive, as in OpenSSL.
+/// names, in that order, when OpenSSL has it in its table and it has an
+/// encoding (see [`entry_oid_opt`]). Names are case-sensitive, as in
+/// OpenSSL.
 #[must_use]
-pub(crate) fn find_by_name_opt(text: &str) -> Option<&'static str> {
+pub(crate) fn find_by_name_opt(text: &str) -> Option<ObjectId> {
     OBJECTS
         .iter()
         .find(|(_, sn, _)| *sn == text)
         .or_else(|| OBJECTS.iter().find(|(_, _, ln)| *ln == text))
         .or_else(|| OBJECTS.iter().find(|(d, _, _)| *d == text))
-        .map(|(d, _, _)| *d)
+        .and_then(|(d, _, _)| entry_oid_opt(d))
 }
 
-/// Whether OpenSSL has this object in its table.
+/// Whether OpenSSL has this object in its table. An identifier without a
+/// dotted form (an arc of 2^128 or more, see [`Oid::to_dotted`]) is not in
+/// it: every entry has one.
 #[must_use]
-pub(crate) fn is_known(dotted: &str) -> bool {
-    find_opt(dotted).is_some()
+pub(crate) fn is_known(oid: &Oid<'_>) -> bool {
+    oid.to_dotted()
+        .is_ok_and(|dotted| find_opt(&dotted).is_some())
 }
 
 #[cfg(test)]
@@ -98,6 +125,17 @@ mod tests {
         }
     }
 
+    /// Every entry's dotted form is an object identifier, which the
+    /// lookups' conversion relies on.
+    #[test]
+    fn entries_are_identifiers() {
+        for (dotted, _, _) in OBJECTS {
+            let root = !dotted.contains('.');
+            assert_eq!(entry_oid_opt(dotted).is_none(), root, "{dotted}");
+        }
+        assert!(is_name("ISO") && find_by_name_opt("ISO").is_none());
+    }
+
     #[test]
     fn lookups() {
         assert_eq!(
@@ -108,5 +146,19 @@ mod tests {
         assert_eq!(find_opt("1.2.3.4.5"), None);
         let oid = Oid::parse(&[0x2a, 0x03, 0x04, 0x05]).unwrap();
         assert_eq!(long_name(&oid).unwrap(), "1.2.3.4.5");
+        assert!(!is_known(&oid));
+        assert_eq!(
+            find_by_short_name_opt("keyUsage"),
+            ObjectId::from_dotted_opt("2.5.29.15")
+        );
+        assert_eq!(find_by_short_name_opt("X509v3 Key Usage"), None);
+        assert_eq!(
+            find_by_name_opt("X509v3 Key Usage"),
+            ObjectId::from_dotted_opt("2.5.29.15")
+        );
+        assert_eq!(
+            find_by_name_opt("2.5.29.15"),
+            ObjectId::from_dotted_opt("2.5.29.15")
+        );
     }
 }

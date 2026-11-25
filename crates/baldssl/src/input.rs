@@ -1,10 +1,10 @@
-//! Reading a command's input, and the `-inform`/`-outform` values, shared
-//! by the commands.
+//! Reading a command's input, the `-inform`/`-outform` values, and the
+//! release line to imitate, shared by the commands.
 
 use std::{
+    env::{self, VarError},
     ffi::OsStr,
-    fs,
-    io::{self, Read},
+    path::Path,
 };
 
 use baldssl_core::{
@@ -12,68 +12,95 @@ use baldssl_core::{
     encoding::Decodable,
     pem::{self, Pem},
 };
+use baldssl_fs::read_input as read_fs;
 use baldssl_pkey::AnyPrivateKey;
-use baldssl_x509::{CertificationRequest, Format};
+use baldssl_x509::{CertificationRequest, Compat, Format};
 
-/// The bytes of `path`, or of standard input without one.
+/// The environment variable selecting the OpenSSL release line to imitate.
+pub(crate) const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
+
+/// The release line [`COMPAT_ENV`] names (see the `FromStr` of
+/// [`Compat`]), or the default without it.
+///
+/// # Errors
+///
+/// [`Error::Usage`] for a value that names no profile, or is not UTF-8.
+pub(crate) fn compat() -> Result<Compat> {
+    match env::var(COMPAT_ENV) {
+        Err(VarError::NotPresent) => Ok(Compat::default()),
+        Err(VarError::NotUnicode(v)) => Err(Error::Usage(format!(
+            "{COMPAT_ENV}: not UTF-8: {}",
+            v.display()
+        ))),
+        Ok(v) => v
+            .parse()
+            .map_err(|e| Error::Usage(format!("{COMPAT_ENV}: {e}"))),
+    }
+}
+
+/// The bytes of the file `path`, or of standard input without one.
 ///
 /// # Errors
 ///
 /// [`Error::NotFound`] for a missing file, [`Error::Io`] otherwise.
 pub(crate) fn read_input(path: Option<&OsStr>) -> Result<Vec<u8>> {
-    match path {
-        None => {
-            let mut buf = Vec::new();
-            io::stdin().read_to_end(&mut buf).map_err(|e| Error::Io {
-                context: "reading stdin".into(),
-                message: e.to_string(),
-            })?;
-            Ok(buf)
-        }
-        Some(p) => fs::read(p).map_err(|e| {
-            let shown = p.to_string_lossy().into_owned();
-            if e.kind() == io::ErrorKind::NotFound {
-                Error::NotFound { path: shown }
-            } else {
-                Error::Io {
-                    context: format!("reading {shown}"),
-                    message: e.to_string(),
-                }
-            }
-        }),
-    }
+    read_fs(path.map(Path::new))
 }
 
-/// The value of `-inform` or `-outform` for `command`: `PEM` or `DER`, in
-/// any case, as OpenSSL accepts them.
+/// What `opt_format` in OpenSSL's `apps/lib/opt.c` prints before a format
+/// value it does not know.
+const BAD_FORMAT: &str = "Bad format";
+/// What `opt_next` in `apps/lib/opt.c` prints, after the command name,
+/// before a format value it does not know.
+const INVALID_FORMAT: &str = "Invalid format";
+
+/// The value of `-inform`, `-outform` or another format option of
+/// `command` (see the `FromStr` of [`Format`]).
 ///
 /// # Errors
 ///
-/// [`Error::Usage`] for anything else, with OpenSSL's message.
-pub(crate) fn parse_format(
+/// [`Error::Usage`] for anything else, with OpenSSL's two lines: `Bad
+/// format "<value>"` from `opt_format`, then `<command>: Invalid format
+/// "<value>" for option -<option>` from `opt_next` (`apps/lib/opt.c`).
+pub(crate) fn format_value(
     value: &OsStr,
     command: &str,
     option: &str,
 ) -> Result<Format> {
-    match value.to_str().map(str::to_ascii_uppercase).as_deref() {
-        Some("PEM") => Ok(Format::Pem),
-        Some("DER") => Ok(Format::Der),
+    value.to_str().and_then(|v| v.parse().ok()).ok_or_else(|| {
         // OpenSSL's two lines; the command name in front of the first is
         // the one every usage error gets.
-        _ => {
-            let value = value.to_string_lossy();
-            Err(Error::Usage(format!(
-                "Bad format \"{value}\"\n{command}: Invalid format \"{value}\" \
-                 for option -{option}"
-            )))
-        }
-    }
+        let value = value.to_string_lossy();
+        Error::Usage(format!(
+            "{BAD_FORMAT} \"{value}\"\n{command}: {INVALID_FORMAT} \
+             \"{value}\" for option -{option}"
+        ))
+    })
 }
 
-/// Whether the bytes are PEM: a `-----BEGIN` boundary, as OpenSSL 3 detects
-/// it when no format is given.
-pub(crate) fn is_pem(bytes: &[u8]) -> bool {
-    bytes.windows(10).any(|w| w == b"-----BEGIN")
+/// How a command writes what it produces: in `-outform`, unless `-noout`,
+/// which wins wherever it comes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum OutputForm {
+    /// PEM.
+    #[default]
+    Pem,
+    /// DER.
+    Der,
+    /// Nothing (`-noout`).
+    Nothing,
+}
+
+impl OutputForm {
+    /// After `-outform <format>`: that format, unless `-noout` came first.
+    #[must_use]
+    pub(crate) fn with_format(self, format: Format) -> OutputForm {
+        match (self, format) {
+            (OutputForm::Nothing, _) => OutputForm::Nothing,
+            (OutputForm::Pem | OutputForm::Der, Format::Pem) => OutputForm::Pem,
+            (OutputForm::Pem | OutputForm::Der, Format::Der) => OutputForm::Der,
+        }
+    }
 }
 
 /// A private key file, PEM or DER (`-key`, `-CAkey`).
@@ -86,11 +113,9 @@ pub(crate) fn read_key(
     form: Option<Format>,
 ) -> Result<AnyPrivateKey> {
     let bytes = read_input(Some(path))?;
-    let pem = form.map_or_else(|| is_pem(&bytes), |f| f == Format::Pem);
-    if pem {
-        AnyPrivateKey::from_pem(&bytes)
-    } else {
-        AnyPrivateKey::decode(&bytes)
+    match Format::given_or_detected(form, &bytes) {
+        Format::Pem => AnyPrivateKey::from_pem(&bytes),
+        Format::Der => AnyPrivateKey::decode(&bytes),
     }
 }
 
@@ -104,11 +129,60 @@ pub(crate) fn read_request(
     form: Option<Format>,
 ) -> Result<CertificationRequest> {
     let bytes = read_input(path)?;
-    let pem = form.map_or_else(|| is_pem(&bytes), |f| f == Format::Pem);
-    if pem {
-        let block = pem::decode_first(&bytes, &[CertificationRequest::LABEL])?;
-        CertificationRequest::decode(&block.contents)
-    } else {
-        CertificationRequest::decode(&bytes)
+    match Format::given_or_detected(form, &bytes) {
+        Format::Pem => {
+            let block =
+                pem::decode_first(&bytes, &[CertificationRequest::LABEL])?;
+            CertificationRequest::decode(&block.contents)
+        }
+        Format::Der => CertificationRequest::decode(&bytes),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use baldssl_core::Error;
+    use baldssl_x509::Format;
+
+    use super::{OutputForm, format_value};
+
+    /// A format value in any case, and OpenSSL's two lines for any other.
+    #[test]
+    fn format_values() {
+        let value = |v: &str| format_value(OsStr::new(v), "x509", "inform");
+        assert_eq!(value("der").unwrap(), Format::Der);
+        assert_eq!(value("Pem").unwrap(), Format::Pem);
+        assert_eq!(
+            value("xyz").err(),
+            Some(Error::Usage(
+                "Bad format \"xyz\"\nx509: Invalid format \"xyz\" for option \
+                 -inform"
+                    .into()
+            ))
+        );
+    }
+
+    /// `-noout` wins over `-outform`, in either order; the last
+    /// `-outform` wins over the ones before.
+    #[test]
+    fn noout_is_sticky() {
+        let after = |steps: &[Option<Format>]| {
+            steps
+                .iter()
+                .fold(OutputForm::default(), |form, step| match step {
+                    Some(f) => form.with_format(*f),
+                    None => OutputForm::Nothing,
+                })
+        };
+        assert_eq!(after(&[]), OutputForm::Pem);
+        assert_eq!(after(&[Some(Format::Der)]), OutputForm::Der);
+        assert_eq!(
+            after(&[Some(Format::Der), Some(Format::Pem)]),
+            OutputForm::Pem
+        );
+        assert_eq!(after(&[None, Some(Format::Der)]), OutputForm::Nothing);
+        assert_eq!(after(&[Some(Format::Der), None]), OutputForm::Nothing);
     }
 }

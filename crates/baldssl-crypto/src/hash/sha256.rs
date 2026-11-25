@@ -12,8 +12,15 @@
     clippy::many_single_char_names
 )]
 
-use crate::Digest;
+use baldssl_core::num::usize_to_u64;
 
+use super::PADDING_START;
+use crate::{Digest, secret::wipe};
+
+/// The constants $K_0, \dots, K_{63}$ ([FIPS 180-4][fips180], section
+/// 4.2.2).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 const K: [u32; 64] = [
     0x428a_2f98,
     0x7137_4491,
@@ -81,6 +88,10 @@ const K: [u32; 64] = [
     0xc671_78f2,
 ];
 
+/// The initial hash value of SHA-256 ([FIPS 180-4][fips180], section
+/// 5.3.3).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 const H256: [u32; 8] = [
     0x6a09_e667,
     0xbb67_ae85,
@@ -92,6 +103,10 @@ const H256: [u32; 8] = [
     0x5be0_cd19,
 ];
 
+/// The initial hash value of SHA-224 ([FIPS 180-4][fips180], section
+/// 5.3.2).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 const H224: [u32; 8] = [
     0xc105_9ed8,
     0x367c_d507,
@@ -103,6 +118,9 @@ const H224: [u32; 8] = [
     0xbefa_4fa4,
 ];
 
+/// The compression function ([FIPS 180-4][fips180], section 6.2.2).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 fn compress(h: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for t in 0..16 {
@@ -149,6 +167,7 @@ fn compress(h: &mut [u32; 8], block: &[u8; 64]) {
     for (x, v) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
         *x = x.wrapping_add(v);
     }
+    wipe(&mut w);
 }
 
 /// Shared SHA-256 engine; the variants differ in IV and truncation.
@@ -162,6 +181,14 @@ struct Engine {
     len: u64,
 }
 
+/// Overwrites the chaining value and the buffer.
+impl Drop for Engine {
+    fn drop(&mut self) {
+        wipe(&mut self.h);
+        wipe(&mut self.buf);
+    }
+}
+
 impl Engine {
     fn new(iv: [u32; 8]) -> Self {
         Engine {
@@ -173,7 +200,7 @@ impl Engine {
     }
 
     fn update(&mut self, mut data: &[u8]) {
-        self.len = self.len.wrapping_add(data.len() as u64);
+        self.len = self.len.wrapping_add(usize_to_u64(data.len()));
         if self.buf_len > 0 {
             let take = (64 - self.buf_len).min(data.len());
             self.buf[self.buf_len..self.buf_len + take]
@@ -183,8 +210,7 @@ impl Engine {
             if self.buf_len < 64 {
                 return;
             }
-            let block = self.buf;
-            compress(&mut self.h, &block);
+            compress(&mut self.h, &self.buf);
             self.buf_len = 0;
         }
         let (blocks, rest) = data.as_chunks::<64>();
@@ -198,7 +224,7 @@ impl Engine {
     fn finalize(mut self) -> [u32; 8] {
         let bits = self.len.wrapping_mul(8);
         let mut pad = [0u8; 72];
-        pad[0] = 0x80;
+        pad[0] = PADDING_START;
         let zeros = (119 - self.buf_len) % 64;
         let mut tail = Vec::with_capacity(zeros + 9);
         tail.extend_from_slice(&pad[..=zeros]);
@@ -217,6 +243,8 @@ fn output(h: &[u32; 8], words: usize) -> Vec<u8> {
 #[derive(Clone)]
 pub struct Sha256(Engine);
 
+impl crate::sealed::Sealed for Sha256 {}
+
 impl Digest for Sha256 {
     const OUTPUT_LEN: usize = 32;
     const BLOCK_LEN: usize = 64;
@@ -234,6 +262,8 @@ impl Digest for Sha256 {
 /// SHA-224: SHA-256 with another IV, truncated to 224 bits.
 #[derive(Clone)]
 pub struct Sha224(Engine);
+
+impl crate::sealed::Sealed for Sha224 {}
 
 impl Digest for Sha224 {
     const OUTPUT_LEN: usize = 28;

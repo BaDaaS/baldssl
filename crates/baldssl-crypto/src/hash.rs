@@ -1,5 +1,10 @@
 //! Hash functions: SHA-1 and SHA-2 ([FIPS 180-4][fips180]).
 //!
+//! The state of a hash that has absorbed a key (HMAC's inner and outer
+//! hashes) is as secret as the key, so each engine overwrites its chaining
+//! value and its buffer when dropped, and each compression its message
+//! schedule, best effort as for [`crate::secret::SecretBytes`].
+//!
 //! Every hash here is a Merkle-Damgard iteration: a compression function
 //! `f : State x Block -> State` folded over the padded message. Updating is
 //! therefore a right action of the free monoid of byte strings on the
@@ -7,6 +12,12 @@
 //! streaming property tests check.
 //!
 //! [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+
+/// The byte that starts the padding: the bit `1` appended to the message,
+/// followed by zeros ([FIPS 180-4][fips180], sections 5.1.1 and 5.1.2).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+const PADDING_START: u8 = 0x80;
 
 mod sha1;
 mod sha256;
@@ -19,7 +30,7 @@ pub use sha512::{Sha384, Sha512};
 use crate::drbg::DrbgHash;
 
 /// A hash function with incremental input.
-pub trait Digest: Sized {
+pub trait Digest: crate::sealed::Sealed + Sized {
     /// Digest length in bytes.
     const OUTPUT_LEN: usize;
     /// Block length in bytes: what the compression function absorbs at a

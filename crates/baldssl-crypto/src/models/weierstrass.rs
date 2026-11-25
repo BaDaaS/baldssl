@@ -61,6 +61,27 @@
     clippy::similar_names
 )]
 
+/// The one-byte encoding of the identity, the point at infinity
+/// ([SEC 1], section 2.3.3, step 1).
+///
+/// [SEC 1]: https://www.secg.org/sec1-v2.pdf
+pub const IDENTITY: u8 = 0x00;
+/// The first byte of the uncompressed encoding `04 || x || y` ([SEC 1],
+/// section 2.3.3, step 3).
+///
+/// [SEC 1]: https://www.secg.org/sec1-v2.pdf
+pub const UNCOMPRESSED: u8 = 0x04;
+/// The first byte of the compressed encoding `02 || x` of a point whose
+/// $y$ is even ([SEC 1], section 2.3.3, step 2).
+///
+/// [SEC 1]: https://www.secg.org/sec1-v2.pdf
+pub const COMPRESSED_EVEN: u8 = 0x02;
+/// The first byte of the compressed encoding `03 || x` of a point whose
+/// $y$ is odd ([SEC 1], section 2.3.3, step 2).
+///
+/// [SEC 1]: https://www.secg.org/sec1-v2.pdf
+pub const COMPRESSED_ODD: u8 = 0x03;
+
 pub mod affine;
 pub mod compressed;
 pub mod jacobian;

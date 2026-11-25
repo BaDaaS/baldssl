@@ -20,10 +20,17 @@
 //! randomness from the system is involved. OpenSSL draws random nonces by
 //! default, so signatures differ from OpenSSL's; both verify.
 //!
-//! A signature is [`Signature`], encoded as the DER `ECDSA-Sig-Value` of
-//! [RFC 3279 section 2.2.3], `SEQUENCE { r INTEGER, s INTEGER }`, and
-//! decoded strictly: canonical DER only, with $r$ and $s$ in $[1, n - 1]$.
+//! A signature is [`Signature`], encoded as the DER (Distinguished Encoding
+//! Rules, [ITU-T X.690]) `ECDSA-Sig-Value` of [RFC 3279 section 2.2.3],
+//! `SEQUENCE { r INTEGER, s INTEGER }`, and decoded strictly: canonical DER
+//! only, with $r$ and $s$ in $[1, n - 1]$. A verifying key is a
+//! [`PublicKey`], a point other than the identity by construction.
 //!
+//! The secret scalar, the nonce, its inverse and $e + r d$ are each a
+//! [`SecretScalar`], wiped when dropped, and so is every buffer a nonce is
+//! drawn in.
+//!
+//! [ITU-T X.690]: https://www.itu.int/rec/T-REC-X.690
 //! [FIPS 186-5]: https://csrc.nist.gov/pubs/fips/186-5/final
 //! [RFC 6979]: https://www.rfc-editor.org/rfc/rfc6979#section-3.2
 //! [RFC 3279 section 2.2.3]: https://www.rfc-editor.org/rfc/rfc3279#section-2.2.3
@@ -36,7 +43,10 @@
 
 use core::marker::PhantomData;
 
-use baldssl_core::der::syntax::{Natural, Sequence, Unsigned, decode, encode};
+use baldssl_core::{
+    der::syntax::{Natural, Sequence, Unsigned, decode, encode},
+    num::u32_to_usize,
+};
 
 use crate::{
     algebra::{
@@ -52,7 +62,7 @@ use crate::{
     hash::{Algorithm, WithHash},
     keys::EcKeyPair,
     models::weierstrass::{affine::Affine, projective::Projective},
-    secret::SecretBytes,
+    secret::{SecretBytes, SecretScalar},
     signature::{
         SignEncoded, SignatureScheme, Signer, Verifier, VerifyEncoded,
     },
@@ -60,6 +70,104 @@ use crate::{
 
 /// ECDSA over the curve `C` with the hash `H`.
 pub struct Ecdsa<C, H>(PhantomData<(C, H)>);
+
+impl<C, H> crate::sealed::Sealed for Ecdsa<C, H> {}
+
+/// An ECDSA public key: a point $Q$ of the curve other than the identity
+/// (FIPS 186-5 section 6.4.2 rejects the identity as a key). The only
+/// constructors check it ([`PublicKey::new_opt`], the decoder) or derive
+/// $Q = d G$ from a nonzero $d$, which is never the identity in a group of
+/// prime order, so a verifier taking a [`PublicKey`] needs no check.
+pub struct PublicKey<C>
+where
+    C: ShortWeierstrass,
+{
+    point: Affine<C>,
+}
+
+impl<C> Clone for PublicKey<C>
+where
+    C: ShortWeierstrass,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<C> Copy for PublicKey<C> where C: ShortWeierstrass {}
+
+/// Equality of the points (a public key is public).
+impl<C> PartialEq for PublicKey<C>
+where
+    C: ShortWeierstrass,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.point == other.point
+    }
+}
+
+impl<C> Eq for PublicKey<C> where C: ShortWeierstrass {}
+
+impl<C> PublicKey<C>
+where
+    C: ShortWeierstrass,
+{
+    /// The key `point` is; `None` for the identity.
+    #[must_use]
+    pub fn new_opt(point: Affine<C>) -> Option<Self> {
+        (!point.is_identity().to_bool_vartime()).then_some(PublicKey { point })
+    }
+
+    /// $Q = d G$ for a nonzero $d$: not the identity, as $G$ has prime
+    /// order $n > d$.
+    pub(crate) fn of_nonzero(d: &SecretScalar<C::Scalar>) -> Self {
+        PublicKey {
+            point: C::scalar_mul(&Projective::<C>::generator(), d.expose())
+                .to_affine(),
+        }
+    }
+
+    /// The point $Q$.
+    #[must_use]
+    pub fn point(&self) -> &Affine<C> {
+        &self.point
+    }
+}
+
+impl<C> core::fmt::Debug for PublicKey<C>
+where
+    C: ShortWeierstrass,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PublicKey({:?})", self.point)
+    }
+}
+
+/// The point's uncompressed encoding ([`Affine`]'s, SEC 1 section 2.3.3,
+/// big-endian).
+impl<C> Encodable for PublicKey<C>
+where
+    C: ShortWeierstrass,
+{
+    type Bytes = Vec<u8>;
+
+    fn encode(&self) -> Vec<u8> {
+        self.point.encode()
+    }
+}
+
+/// The uncompressed encoding of a point other than the identity: the
+/// inverse of the encoding, the identity's `00` being rejected.
+impl<C> Decodable for PublicKey<C>
+where
+    C: ShortWeierstrass,
+{
+    type Error = InvalidEncoding;
+
+    fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
+        Self::new_opt(Affine::<C>::decode(bytes)?).ok_or(InvalidEncoding)
+    }
+}
 
 /// An ECDSA signature: the pair $(r, s)$, both in $[1, n - 1]$, which
 /// [`Signature::new_opt`] and the decoder enforce. Equality and printing are
@@ -198,10 +306,8 @@ where
         .ok_or(InvalidEncoding)?;
     let mut bytes = vec![0u8; pad];
     bytes.extend_from_slice(digits);
-    let (scalar, valid) = C::Scalar::from_bytes_be(&bytes);
-    valid
-        .to_bool_vartime()
-        .then_some(scalar)
+    C::Scalar::from_bytes_be(&bytes)
+        .into_vartime_opt()
         .ok_or(InvalidEncoding)
 }
 
@@ -212,7 +318,7 @@ pub(crate) fn bits2int<C>(bytes: &[u8]) -> Vec<u8>
 where
     C: ShortWeierstrass,
 {
-    let qlen = C::Scalar::BITS as usize;
+    let qlen = u32_to_usize(C::Scalar::BITS);
     let rlen = C::Scalar::BYTES;
     let blen = bytes.len().saturating_mul(8);
     if blen <= qlen {
@@ -220,18 +326,21 @@ where
         out.extend_from_slice(bytes);
         return out;
     }
-    // Keep the first rlen bytes, then shift right by the bits beyond qlen.
-    let kept = bytes.get(..rlen).unwrap_or(bytes);
-    let shift =
-        u32::try_from(rlen.saturating_mul(8).saturating_sub(qlen)).unwrap_or(0);
+    // Keep the first rlen bytes (there are at least that many, as
+    // blen > qlen > 8 (rlen - 1)), then shift right by the bits beyond qlen,
+    // SPARE_BITS, which is below 8.
+    let shift = C::Scalar::SPARE_BITS;
+    let mut out = vec![0u8; rlen];
     if shift == 0 {
-        return kept.to_vec();
+        for (o, &b) in out.iter_mut().zip(bytes) {
+            *o = b;
+        }
+        return out;
     }
-    let mut out = vec![0u8; kept.len()];
     let mut carry = 0u8;
-    for (o, &b) in out.iter_mut().zip(kept) {
-        *o = b.checked_shr(shift).unwrap_or(0) | carry;
-        carry = b.checked_shl(8u32.saturating_sub(shift)).unwrap_or(0);
+    for (o, &b) in out.iter_mut().zip(bytes) {
+        *o = (b >> shift) | carry;
+        carry = b << (8 - shift);
     }
     out
 }
@@ -240,12 +349,11 @@ where
 /// the integer minus $n$. Variable time, for public values only (a hash, a
 /// coordinate of a public point): for the curves here $2^{\mathrm{qlen}} <
 /// 2n$ and $p < 2n$, so one subtraction reduces any of them.
-pub(crate) fn reduce_once<C>(bytes: &[u8]) -> C::Scalar
+pub(crate) fn reduce_once_vartime<C>(bytes: &[u8]) -> C::Scalar
 where
     C: ShortWeierstrass,
 {
-    let (scalar, valid) = C::Scalar::from_bytes_be(bytes);
-    if valid.to_bool_vartime() {
+    if let Some(scalar) = C::Scalar::from_bytes_be(bytes).into_vartime_opt() {
         return scalar;
     }
     let n = C::Scalar::modulus_be();
@@ -261,7 +369,9 @@ where
         *out = value.to_le_bytes()[0];
         borrow = u16::from(under);
     }
-    C::Scalar::from_bytes_be(&diff).0
+    // Every caller's integer is below 2n (see above), so the difference is
+    // below n and the zero placeholder is never taken.
+    C::Scalar::from_bytes_be(&diff).unwrap_or_ct(&C::Scalar::ZERO)
 }
 
 /// $e$: the leftmost bits of the message's hash, reduced modulo $n$.
@@ -270,7 +380,7 @@ where
     C: ShortWeierstrass,
     H: DrbgHash,
 {
-    reduce_once::<C>(&bits2int::<C>(&H::digest(message)))
+    reduce_once_vartime::<C>(&bits2int::<C>(&H::digest(message)))
 }
 
 /// $x(P) \bmod n$ for a point other than the identity.
@@ -280,7 +390,7 @@ where
 {
     point
         .coordinates_opt()
-        .map(|(x, _)| reduce_once::<C>(&x.to_bytes_be()))
+        .map(|(x, _)| reduce_once_vartime::<C>(&x.to_bytes_be()))
 }
 
 /// The nonces of RFC 6979 section 3.2 for one key and one message: the
@@ -309,9 +419,12 @@ where
     /// [`DrbgError::EntropyTooShort`] when the scalar is shorter than the
     /// hash's security strength (never for P-256, P-384 and P-521 with the
     /// SHA-2 hashes).
-    pub fn new(secret: &C::Scalar, hash: &[u8]) -> Result<Self, DrbgError> {
-        let x = SecretBytes::new(secret.to_bytes_be());
-        let h = reduce_once::<C>(&bits2int::<C>(hash)).to_bytes_be();
+    pub fn new(
+        secret: &SecretScalar<C::Scalar>,
+        hash: &[u8],
+    ) -> Result<Self, DrbgError> {
+        let x = SecretBytes::new(secret.expose().to_bytes_be());
+        let h = reduce_once_vartime::<C>(&bits2int::<C>(hash)).to_bytes_be();
         let drbg = HmacDrbg::new(
             Entropy(x.expose()),
             Nonce(&h),
@@ -323,20 +436,26 @@ where
         })
     }
 
-    /// The next nonce (section 3.2, step h).
+    /// The next nonce (section 3.2, step h), wiped when dropped, as are the
+    /// blocks it is drawn from, on every return.
     ///
     /// # Errors
     ///
     /// [`DrbgError::ReseedRequired`], after $2^{48}$ blocks.
-    pub fn next_nonce(&mut self) -> Result<C::Scalar, DrbgError> {
+    pub fn next_nonce(&mut self) -> Result<SecretScalar<C::Scalar>, DrbgError> {
         loop {
-            let mut block = vec![0u8; C::Scalar::BYTES];
-            self.drbg.generate(&mut block, AdditionalInput::NONE)?;
-            let t = SecretBytes::new(bits2int::<C>(&block));
-            block.fill(0);
-            let (k, below_n) = C::Scalar::from_bytes_be(t.expose());
+            let mut block = SecretBytes::filled(0, C::Scalar::BYTES);
+            self.drbg
+                .generate(block.expose_mut(), AdditionalInput::NONE)?;
+            let t = SecretBytes::new(bits2int::<C>(block.expose()));
+            // Zero is both the placeholder of a block not below n and the one
+            // value below n rejected.
+            let k = SecretScalar::new(
+                C::Scalar::from_bytes_be(t.expose())
+                    .unwrap_or_ct(&C::Scalar::ZERO),
+            );
             // A rejected block is public: only how many were rejected leaks.
-            if (below_n & !k.is_zero()).to_bool_vartime() {
+            if (!k.expose().is_zero()).to_bool_vartime() {
                 return Ok(k);
             }
         }
@@ -354,7 +473,7 @@ where
     H: DrbgHash,
 {
     type SigningKey = EcKeyPair<C>;
-    type VerifyingKey = Affine<C>;
+    type VerifyingKey = PublicKey<C>;
     type Signature = Signature<C>;
 }
 
@@ -368,14 +487,17 @@ where
     /// and the message scalar $e$. Constant time in $d$ and $k$, apart from
     /// the public outcome.
     fn sign_with_opt(
-        secret: &C::Scalar,
+        secret: &SecretScalar<C::Scalar>,
         digest: &C::Scalar,
-        nonce: &C::Scalar,
+        nonce: &SecretScalar<C::Scalar>,
     ) -> Option<Signature<C>> {
         let point =
-            C::scalar_mul(&Projective::<C>::generator(), nonce).to_affine();
+            C::scalar_mul(&Projective::<C>::generator(), nonce.expose())
+                .to_affine();
         let r = x_mod_n_opt::<C>(&point)?;
-        let s = nonce.invert() * (*digest + r * *secret);
+        let nonce_inverse = SecretScalar::new(nonce.expose().invert());
+        let sum = SecretScalar::new(*digest + r * *secret.expose());
+        let s = *nonce_inverse.expose() * *sum.expose();
         Signature::new_opt(r, s)
     }
 }
@@ -392,7 +514,7 @@ where
         message: &[u8],
     ) -> Result<Signature<C>, SigningError> {
         let hash = H::digest(message);
-        let e = reduce_once::<C>(&bits2int::<C>(&hash));
+        let e = reduce_once_vartime::<C>(&bits2int::<C>(&hash));
         let mut nonces =
             Rfc6979::<C, H>::new(key.secret(), &hash).map_err(SigningError)?;
         loop {
@@ -409,22 +531,19 @@ where
     C: ShortWeierstrass,
     H: DrbgHash,
 {
-    /// FIPS 186-5 section 6.4.2. The key is on the curve by construction;
-    /// the identity is rejected here.
+    /// FIPS 186-5 section 6.4.2. The key is on the curve and not the
+    /// identity by construction ([`PublicKey`]).
     fn verify(
-        key: &Affine<C>,
+        key: &PublicKey<C>,
         message: &[u8],
         signature: &Signature<C>,
     ) -> bool {
-        if key.is_identity().to_bool_vartime() {
-            return false;
-        }
         let digest = message_scalar::<C, H>(message);
         let s_inverse = signature.s.invert();
         let u1 = digest * s_inverse;
         let u2 = signature.r * s_inverse;
         let generator = Projective::<C>::generator();
-        let public = Projective::<C>::from(*key);
+        let public = Projective::<C>::from(key.point);
         let point = (C::scalar_mul(&generator, &u1)
             + C::scalar_mul(&public, &u2))
         .to_affine();
@@ -460,7 +579,7 @@ struct VerifyWith<'a, C>
 where
     C: ShortWeierstrass,
 {
-    key: &'a Affine<C>,
+    key: &'a PublicKey<C>,
     message: &'a [u8],
     signature: &'a [u8],
 }
@@ -501,7 +620,7 @@ where
 #[must_use]
 pub fn verify_with_hash<C>(
     hash: Algorithm,
-    key: &Affine<C>,
+    key: &PublicKey<C>,
     message: &[u8],
     signature: &[u8],
 ) -> bool
