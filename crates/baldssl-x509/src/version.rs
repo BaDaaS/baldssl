@@ -18,6 +18,12 @@ use baldssl_core::der::{
     syntax::{Explicit, Map, Optional, Signed},
 };
 
+/// The stored value of `v3`, the last version [RFC 5280 section 4.1]
+/// names.
+///
+/// [RFC 5280 section 4.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
+const V3: u8 = 2;
+
 /// A certificate version: the INTEGER of the version field, of any value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Version(Integer);
@@ -27,6 +33,12 @@ impl Version {
     #[must_use]
     pub(crate) fn v1() -> Self {
         Version(Integer::from(0))
+    }
+
+    /// v3, the version of a certificate with extensions.
+    #[must_use]
+    pub(crate) fn v3() -> Self {
+        Version(Integer::from(i64::from(V3)))
     }
 
     /// The INTEGER as stored: 0 for v1, 1 for v2, 2 for v3.
@@ -41,7 +53,7 @@ impl Version {
         self.0
             .to_u64_opt()
             .and_then(|n| u8::try_from(n).ok())
-            .filter(|&n| n <= 2)
+            .filter(|&n| n <= V3)
     }
 }
 

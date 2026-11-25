@@ -12,7 +12,9 @@
 //! * OpenSSL 3.0: `XN_FLAG_ONELINE`, ` = ` with spaces, bytes above `0x7F`
 //!   and control characters escaped as `\XX`, and a value containing an RFC
 //!   2253 special character (`,+<>;`, or a leading `#` or space, or a
-//!   trailing space) wrapped in double quotes.
+//!   trailing space, [RFC 2253 section 2.4]) wrapped in double quotes.
+//!
+//! [RFC 2253 section 2.4]: https://www.rfc-editor.org/rfc/rfc2253#section-2.4
 
 use baldssl_core::{
     Error, Result,
@@ -58,6 +60,15 @@ impl<'a> Name<'a> {
     }
 
     /// Decodes a Name from the contents of its SEQUENCE.
+    ///
+    /// This is the lenient reader of names, beside the description
+    /// [`crate::dn::NAME`] that writes them: it borrows the input, keeps
+    /// the attributes of each RDN in encoding order, and accepts a SET OF
+    /// that is not in DER order ([X.690] 11.6), which the description
+    /// refuses, since OpenSSL reads such a name and prints its attributes
+    /// in encoding order. Each attribute value may be any TLV.
+    ///
+    /// [X.690]: https://www.itu.int/rec/T-REC-X.690
     ///
     /// # Errors
     ///
@@ -140,7 +151,7 @@ impl<'a> Name<'a> {
     ///
     /// [`Error::Unsupported`] for value types OpenSSL would not print as
     /// text, and, in the [`NameStyle::Oneline`] style, for values containing
-    /// `"` or `\\`, whose escaping baldssl does not reproduce yet.
+    /// `"` or `\\`, whose escaping baldssl does not reproduce.
     pub fn to_openssl(&self, style: NameStyle) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         for (i, rdn) in self.rdns.iter().enumerate() {
@@ -175,9 +186,9 @@ impl<'a> Name<'a> {
 /// Escapes a value as `XN_FLAG_ONELINE` does (`do_buf` and `do_esc_char`
 /// with `ASN1_STRFLGS_RFC2253 | ASN1_STRFLGS_ESC_QUOTE`): `\\XX` for bytes
 /// above `0x7E` and control characters, and double quotes around a value
-/// that contains an [RFC 2253][rfc2253] special character.
+/// that contains an [RFC 2253 section 2.4] special character.
 ///
-/// [rfc2253]: https://www.rfc-editor.org/rfc/rfc2253
+/// [RFC 2253 section 2.4]: https://www.rfc-editor.org/rfc/rfc2253#section-2.4
 fn oneline_value(value: &[u8], out: &mut Vec<u8>) -> Result<()> {
     if value.iter().any(|&b| b == b'"' || b == b'\\') {
         return Err(Error::unsupported(
@@ -286,6 +297,8 @@ fn canonical_text(text: &[u8]) -> Vec<u8> {
         .map_or(start, |i| i.saturating_add(1));
     let mut out = Vec::with_capacity(end.saturating_sub(start));
     let mut in_space = false;
+    // `start <= end <= text.len()` by construction, so the range is in
+    // bounds and the empty fallback is never taken.
     for b in text.get(start..end).unwrap_or_default() {
         if space(b) {
             if !in_space {

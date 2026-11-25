@@ -17,7 +17,7 @@ use baldssl_test_utils::{fixture, hex};
 
 use super::{CertificationRequest, SignatureAlgorithm};
 use crate::{
-    dn::{DistinguishedName, InputEncoding, UTF8_ONLY},
+    dn::{DistinguishedName, InputEncoding, RdnMode, UTF8_ONLY},
     extension::Extensions,
 };
 
@@ -50,9 +50,14 @@ fn cases() -> Vec<Case> {
 }
 
 fn subject(arg: &[u8]) -> DistinguishedName {
-    DistinguishedName::from_subj(arg, InputEncoding::Latin1, true, UTF8_ONLY)
-        .unwrap()
-        .0
+    DistinguishedName::from_subj(
+        arg,
+        InputEncoding::Latin1,
+        RdnMode::MultiValued,
+        UTF8_ONLY,
+    )
+    .unwrap()
+    .name
 }
 
 /// baldssl's request against OpenSSL's, for every key and subject.

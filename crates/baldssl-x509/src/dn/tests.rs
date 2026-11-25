@@ -10,8 +10,8 @@ use baldssl_core::encoding::Encodable;
 use baldssl_test_utils::{fixture, hex};
 
 use super::{
-    DistinguishedName, InputEncoding, StringType, StringTypes, SubjError,
-    UTF8_ONLY,
+    DistinguishedName, InputEncoding, ParsedSubject, RdnMode, StringType,
+    StringTypes, SubjError, UTF8_ONLY,
 };
 use crate::objects::find_by_name_opt;
 
@@ -29,10 +29,14 @@ fn matches_openssl() {
         };
         let arg = hex(f[1]);
         let shown = String::from_utf8_lossy(&arg).into_owned();
-        let result =
-            DistinguishedName::from_subj(&arg, encoding, true, UTF8_ONLY);
+        let result = DistinguishedName::from_subj(
+            &arg,
+            encoding,
+            RdnMode::MultiValued,
+            UTF8_ONLY,
+        );
         match (f[2], result) {
-            ("ok", Ok((name, warnings))) => {
+            ("ok", Ok(ParsedSubject { name, warnings })) => {
                 assert_eq!(name.encode(), hex(f[3]), "{shown} ({encoding:?})");
                 assert_eq!(
                     warnings.len().to_string(),
@@ -68,8 +72,13 @@ fn rules_name_known_attributes() {
 #[test]
 fn errors() {
     let parse = |s: &[u8]| {
-        DistinguishedName::from_subj(s, InputEncoding::Latin1, true, UTF8_ONLY)
-            .err()
+        DistinguishedName::from_subj(
+            s,
+            InputEncoding::Latin1,
+            RdnMode::MultiValued,
+            UTF8_ONLY,
+        )
+        .err()
     };
     assert!(matches!(parse(b"CN=x"), Some(SubjError::NotAName(_))));
     assert_eq!(parse(b"/CN"), Some(SubjError::MissingEquals("CN".into())));
@@ -92,11 +101,19 @@ fn errors() {
         parse(b"/C=B@"),
         Some(SubjError::IllegalCharacters { name: "C".into() })
     );
+    // OpenSSL: req: Error adding subject name attribute "/ISO=x".
+    assert_eq!(
+        parse(b"/ISO=x"),
+        Some(SubjError::NotEncodable {
+            name: "ISO".into(),
+            value: "x".into()
+        })
+    );
     assert_eq!(
         DistinguishedName::from_subj(
             b"/CN=\xff",
             InputEncoding::Utf8,
-            true,
+            RdnMode::MultiValued,
             UTF8_ONLY
         )
         .err(),
@@ -107,13 +124,14 @@ fn errors() {
 /// Without multi-valued RDNs, `+` is part of the value.
 #[test]
 fn plus_without_multi() {
-    let (name, _) = DistinguishedName::from_subj(
+    let name = DistinguishedName::from_subj(
         b"/CN=a+b",
         InputEncoding::Latin1,
-        false,
+        RdnMode::SingleValued,
         UTF8_ONLY,
     )
-    .unwrap();
+    .unwrap()
+    .name;
     assert_eq!(name.0.len(), 1);
     assert_eq!(name.0[0].0[0].contents, b"a+b");
 }
@@ -124,13 +142,14 @@ fn plus_without_multi() {
 #[test]
 fn string_types() {
     let all = StringTypes::DIRECTORY;
-    let (name, _) = DistinguishedName::from_subj(
+    let name = DistinguishedName::from_subj(
         b"/CN=abc/O=caf\xe9/INN=123",
         InputEncoding::Latin1,
-        true,
+        RdnMode::MultiValued,
         all,
     )
-    .unwrap();
+    .unwrap()
+    .name;
     let types: Vec<StringType> =
         name.0.iter().map(|rdn| rdn.0[0].string_type).collect();
     assert_eq!(

@@ -60,7 +60,8 @@ use baldssl_fs::{
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
     Certificate, CertificateTemplate, CertificationRequest, DistinguishedName,
-    Extension, Extensions, Format, InputEncoding, SubjWarning, UTF8_ONLY,
+    Extension, Extensions, Format, InputEncoding, ParsedSubject, RdnMode,
+    RdnPosition, SubjWarning, UTF8_ONLY,
 };
 
 use crate::{
@@ -313,15 +314,16 @@ fn digest_opt(name: &str) -> Option<Digest> {
 /// Prints OpenSSL's warning for an attribute `-subj` skipped.
 fn warn(warning: &SubjWarning) {
     match warning {
-        SubjWarning::UnknownAttribute { name, multi } => {
+        SubjWarning::UnknownAttribute { name, position } => {
             eprintln!(
                 "req warning: Skipping unknown subject name attribute \"{name}\""
             );
-            if *multi {
-                eprintln!(
+            match position {
+                RdnPosition::Further => eprintln!(
                     "req hint: a '+' in a value string needs be escaped using \
                      '\\' else a new member of a multi-valued RDN is expected"
-                );
+                ),
+                RdnPosition::First => {}
             }
         }
         SubjWarning::EmptyValue { name } => eprintln!(
@@ -336,10 +338,13 @@ fn subject(o: &Options) -> Result<DistinguishedName> {
     let subj = o.subj.as_deref().ok_or_else(|| {
         Error::unsupported("req -new without -subj (interactive prompts)")
     })?;
-    let (subject, warnings) = DistinguishedName::from_subj(
+    let ParsedSubject {
+        name: subject,
+        warnings,
+    } = DistinguishedName::from_subj(
         subj.as_encoded_bytes(),
         o.encoding,
-        true,
+        RdnMode::MultiValued,
         UTF8_ONLY,
     )
     .map_err(|e| Error::Usage(format!("req: {e}")))?;

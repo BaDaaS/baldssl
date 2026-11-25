@@ -47,8 +47,8 @@ use baldssl_crypto::Algorithm;
 use baldssl_fs::WriteText as _;
 use baldssl_x509::{
     Certificate, CertificateTemplate, Compat, Config, CopyExtensions,
-    Extensions, Format, IssuedExtensions, certificate_der, fingerprint_line,
-    serial_line, time_rfc822,
+    ExtensionFile, Extensions, Format, IssuedExtensions, certificate_der,
+    fingerprint_line, serial_line, time_rfc822,
 };
 
 use crate::{
@@ -518,7 +518,11 @@ fn issue(o: &Options, compat: Compat) -> Result<Vec<u8>> {
                 .copy
                 .apply(&Extensions::new(), &request)?
                 .override_with(&section),
-            from_file: s.extfile.is_some(),
+            extension_file: if s.extfile.is_some() {
+                ExtensionFile::Given
+            } else {
+                ExtensionFile::Absent
+            },
         },
         compat,
     )?

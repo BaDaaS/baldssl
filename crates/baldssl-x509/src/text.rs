@@ -2,28 +2,60 @@
 //! default flags, as in OpenSSL 3.x and 4.x).
 //!
 //! Platform note: OpenSSL decides between the one-line and the hex form of a
-//! serial number by `sizeof(long)`. baldssl follows LP64 (8 bytes, Linux and
-//! macOS); OpenSSL on Windows (LLP64, 4-byte `long`) prints serials of 5 to
-//! 8 bytes in the hex form instead.
+//! serial number by `sizeof(long)`. baldssl follows LP64 (the data model of
+//! Linux and macOS, where `long` and pointers are 64 bits: 8 bytes); OpenSSL
+//! on Windows (LLP64, where only `long long` and pointers are 64 bits, and
+//! `long` is 4 bytes) prints serials of 5 to 8 bytes in the hex form
+//! instead.
 
 use baldssl_core::{
     Error, Result,
-    der::{Integer, Reader, Time, TimeKind, tag},
+    der::{
+        BitString, Integer, Oid, Reader, Time, TimeKind, parse_tlv,
+        syntax::{Null, ObjectId, RawTlv},
+        tag,
+    },
+    encoding::Encodable,
     hex::{self, Case},
     text::Text,
 };
-
-use baldssl_core::{der::BitString, encoding::Encodable};
-use baldssl_pkey::{AnyPrivateKey, PublicKey};
+use baldssl_crypto::models::weierstrass::{
+    COMPRESSED_EVEN, COMPRESSED_ODD, UNCOMPRESSED,
+};
+use baldssl_pkey::{AnyPrivateKey, ED25519_KEY_LEN, PublicKey};
 
 use crate::{
-    CertificationRequest, algorithm,
-    cert::{AlgorithmIdentifier, Certificate, SubjectPublicKeyInfo},
-    ext,
+    CertificationRequest,
+    algorithm::AlgorithmIdentifier,
+    cert::{Certificate, SubjectPublicKeyInfo},
+    ext::ExtensionIndent,
     name::NameStyle,
     objects,
+    oid::{
+        ID_EC_PUBLIC_KEY, ID_ED25519, ID_RSASSA_PSS, PRIME256V1,
+        RSA_ENCRYPTION, SECP384R1, SECP521R1, SM2_WITH_SM3,
+    },
     version::Version,
 };
+
+/// The indentation of the public key inside a certificate's or a
+/// request's `Subject Public Key Info:` block (`X509_print_ex` calls
+/// `EVP_PKEY_print_public` with 16).
+const SPKI_KEY_INDENT: usize = 16;
+/// The indentation of a key printed alone (`openssl pkey -text`).
+const PKEY_INDENT: usize = 0;
+/// How much further in than its header a key's hex dump is
+/// (`ASN1_hex_dump(bp, buf, len, off + 4)` in OpenSSL's key printers).
+const DUMP_STEP: usize = 4;
+/// The indentation of the signature's hex dump (`X509_hex_dump(bp,
+/// sig, 8)` in `X509_signature_print`).
+const SIGNATURE_INDENT: usize = 8;
+/// `BN_BYTES` on LP64: a bignum of at most this many bytes is printed on
+/// one line, in decimal and hex (`ASN1_bn_print`, `crypto/asn1/t_pkey.c`).
+const BN_BYTES: usize = 8;
+/// The bytes `i2a_ASN1_INTEGER` writes before a backslash-newline
+/// (`crypto/asn1/f_int.c`).
+const SERIAL_BYTES_PER_LINE: usize = 35;
 
 /// Which OpenSSL release line's output to reproduce. The lines differ in
 /// the style of names (3.0), the hex-dump geometry and the EC key header
@@ -63,9 +95,52 @@ impl Compat {
     }
 
     /// Whether a bignum with its top bit set is printed with a leading
-    /// `00:` (the two's-complement sign byte).
+    /// `00:` (the two's-complement sign byte): `ASN1_bn_print` in
+    /// `crypto/asn1/t_pkey.c` adds it in 3.x, and OpenSSL 4 no longer does.
     fn bn_sign_byte(self) -> bool {
-        self != Compat::V4
+        match self {
+            Compat::V30 | Compat::V3 | Compat::V36 => true,
+            Compat::V4 => false,
+        }
+    }
+
+    /// The size an EC key's header gives (`Public-Key: (...)`), as
+    /// `ec_to_text` in
+    /// `providers/implementations/encode_decode/encode_key2text.c` writes
+    /// it: the field size in 3.x, and the security level too in 4.
+    fn ec_key_size(self) -> EcKeySize {
+        match self {
+            Compat::V30 | Compat::V3 | Compat::V36 => EcKeySize::Bits,
+            Compat::V4 => EcKeySize::BitsAndSecurity,
+        }
+    }
+
+    /// Whether `req -x509` with the default configuration writes an
+    /// authority key identifier in a self-signed certificate: the `v3_ca`
+    /// section of `apps/openssl.cnf` says `keyid:always,issuer` in 3.x, and
+    /// `keyid:nonss,issuer:nonss` ("non-self-signed") in 4.
+    pub(crate) fn self_signed_authority_key_id(
+        self,
+    ) -> SelfSignedAuthorityKeyId {
+        match self {
+            Compat::V30 | Compat::V3 | Compat::V36 => {
+                SelfSignedAuthorityKeyId::Written
+            }
+            Compat::V4 => SelfSignedAuthorityKeyId::Omitted,
+        }
+    }
+
+    /// Where `x509 -req -CA` takes the key identifiers it adds from. In 3.x,
+    /// `do_X509_sign` (`apps/lib/apps.c`) adds the missing ones when it
+    /// signs, which 3.0 does only for a certificate with extensions; in 4,
+    /// they come from the `default_skid_akid` section of `apps/openssl.cnf`
+    /// (`extensions = default_skid_akid`).
+    pub(crate) fn default_key_identifiers(self) -> DefaultKeyIdentifiers {
+        match self {
+            Compat::V30 => DefaultKeyIdentifiers::AtSigningWithExtensions,
+            Compat::V3 | Compat::V36 => DefaultKeyIdentifiers::AtSigning,
+            Compat::V4 => DefaultKeyIdentifiers::FromConfiguration,
+        }
     }
 
     /// Whether `openssl pkey -outform DER` writes a private key in its
@@ -106,16 +181,53 @@ impl Compat {
     }
 }
 
+/// What an EC key's header gives as its size ([`Compat::ec_key_size`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EcKeySize {
+    /// `256 bit`.
+    Bits,
+    /// `256 bit field, 128 bit security level`.
+    BitsAndSecurity,
+}
+
+/// Whether a self-signed certificate gets an authority key identifier
+/// ([`Compat::self_signed_authority_key_id`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelfSignedAuthorityKeyId {
+    /// It does, its own key identifier.
+    Written,
+    /// It does not.
+    Omitted,
+}
+
+/// When `x509 -req -CA` adds a subject and an authority key identifier
+/// ([`Compat::default_key_identifiers`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DefaultKeyIdentifiers {
+    /// When signing, each one missing, the authority's left out when the
+    /// request's key is the CA's.
+    AtSigning,
+    /// As [`DefaultKeyIdentifiers::AtSigning`], and only to a certificate
+    /// that has extensions already.
+    AtSigningWithExtensions,
+    /// From the default configuration, after the copied extensions, and
+    /// only without an extension file.
+    FromConfiguration,
+}
+
+/// The months as `ASN1_TIME_print` names them.
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
     "Nov", "Dec",
 ];
 
-/// `ASN1_TIME_print` ([RFC 822][rfc822] style, the default `-dateopt`).
+/// `ASN1_TIME_print` ([RFC 822 section 5] style, the default `-dateopt`).
 ///
-/// [rfc822]: https://www.rfc-editor.org/rfc/rfc822
+/// [RFC 822 section 5]: https://www.rfc-editor.org/rfc/rfc822#section-5
 #[must_use]
 pub fn time_rfc822(t: &Time) -> String {
+    // A `Time` holds a month from 1 to 12 (`Time::parse` refuses others),
+    // so the lookup always finds one and the fallback is never printed.
     let month = MONTHS
         .get(usize::from(t.month().saturating_sub(1)))
         .copied()
@@ -136,8 +248,10 @@ pub fn time_rfc822(t: &Time) -> String {
     )
 }
 
-/// `ASN1_buf_print`: `per_line` bytes per line, lower-case, `:`-separated.
-fn buf_print(out: &mut Vec<u8>, bytes: &[u8], indent: usize, per_line: usize) {
+/// A hex dump as `ASN1_buf_print` (keys, moduli) and `X509_signature_dump`
+/// (signatures) both write it: `per_line` bytes per line, lower-case,
+/// `:`-separated, each line at `indent` spaces.
+fn hex_dump(out: &mut Vec<u8>, bytes: &[u8], indent: usize, per_line: usize) {
     let pad = " ".repeat(indent);
     let per_line = per_line.max(1);
     for (i, b) in bytes.iter().enumerate() {
@@ -155,7 +269,7 @@ fn buf_print(out: &mut Vec<u8>, bytes: &[u8], indent: usize, per_line: usize) {
     out.push(b'\n');
 }
 
-/// `ASN1_bn_print`, with `BN_BYTES = 8`.
+/// `ASN1_bn_print`, with [`BN_BYTES`].
 fn bn_print(
     out: &mut Vec<u8>,
     label: &str,
@@ -169,8 +283,10 @@ fn bn_print(
         out.extend_from_slice(format!("{label} 0\n").as_bytes());
         return;
     }
-    if n.magnitude().len() <= 8 {
-        let v = n.magnitude_u128_opt().unwrap_or(0);
+    if let Some(v) = n
+        .magnitude_u128_opt()
+        .filter(|_| n.magnitude().len() <= BN_BYTES)
+    {
         out.extend_from_slice(
             format!("{label} {neg}{v} ({neg}0x{v:x})\n").as_bytes(),
         );
@@ -185,10 +301,10 @@ fn bn_print(
         buf.push(0);
     }
     buf.extend_from_slice(n.magnitude());
-    buf_print(
+    hex_dump(
         out,
         &buf,
-        indent.saturating_add(4),
+        indent.saturating_add(DUMP_STEP),
         compat.key_bytes_per_line(),
     );
 }
@@ -203,15 +319,15 @@ fn print_serial(out: &mut Vec<u8>, serial: &Integer) {
         Some(v) => i64::try_from(v).is_ok(),
         None => {
             serial.is_negative()
-                && serial.magnitude().len() <= 8
+                && serial.magnitude().len() <= BN_BYTES
                 && serial
                     .magnitude_u128_opt()
                     .is_some_and(|m| m <= 1u128 << 63)
         }
     };
     let minus_one = serial.is_negative() && serial.magnitude() == [1];
-    if fits && !minus_one {
-        let v = serial.magnitude_u128_opt().unwrap_or(0);
+    let short = serial.magnitude_u128_opt().filter(|_| fits && !minus_one);
+    if let Some(v) = short {
         let neg = if serial.is_negative() { "-" } else { "" };
         out.extend_from_slice(format!(" {neg}{v} ({neg}0x{v:x})\n").as_bytes());
     } else {
@@ -226,47 +342,29 @@ fn print_serial(out: &mut Vec<u8>, serial: &Integer) {
     }
 }
 
-/// `X509_signature_dump`: `per_line` bytes per line.
-fn signature_dump(
-    out: &mut Vec<u8>,
-    sig: &[u8],
-    indent: usize,
-    per_line: usize,
-) {
-    let pad = " ".repeat(indent);
-    let per_line = per_line.max(1);
-    for (i, b) in sig.iter().enumerate() {
-        if i % per_line == 0 {
-            if i > 0 {
-                out.push(b'\n');
-            }
-            out.extend_from_slice(pad.as_bytes());
-        }
-        out.extend_from_slice(hex::plain(&[*b], Case::Lower).as_bytes());
-        if i.saturating_add(1) != sig.len() {
-            out.push(b':');
-        }
+/// The name of a signature algorithm, refusing those whose OpenSSL
+/// `sig_print` adds parameter lines baldssl does not print (RSASSA-PSS,
+/// SM2 with SM3).
+fn signature_name(alg: &AlgorithmIdentifier) -> Result<String> {
+    if alg.oid == ID_RSASSA_PSS {
+        return Err(Error::unsupported(
+            "RSASSA-PSS parameters in -text output",
+        ));
     }
-    out.push(b'\n');
-}
-
-/// Signature algorithms whose OpenSSL `sig_print` adds parameter lines.
-fn signature_name(alg: &AlgorithmIdentifier<'_>) -> Result<String> {
-    match alg.oid.to_dotted()?.as_str() {
-        "1.2.840.113549.1.1.10" => {
-            Err(Error::unsupported("RSASSA-PSS parameters in -text output"))
-        }
-        "1.2.156.10197.1.501" => Err(Error::unsupported("SM2 signatures")),
-        _ => objects::long_name(&alg.oid),
+    if alg.oid == SM2_WITH_SM3 {
+        return Err(Error::unsupported("SM2 signatures"));
     }
+    objects::long_name(&alg.oid.as_oid())
 }
 
 /// A named curve baldssl supports.
 struct Curve {
-    oid: &'static str,
+    /// Its identifier.
+    oid: ObjectId,
     /// OpenSSL short name (`ASN1 OID:`).
     sn: &'static str,
-    /// `NIST CURVE:`.
+    /// `NIST CURVE:`, the name NIST (the National Institute of Standards
+    /// and Technology) gives it.
     nist: &'static str,
     /// Order bits, the 3.x `Public-Key: (N bit)`.
     bits: usize,
@@ -275,23 +373,23 @@ struct Curve {
     security: usize,
 }
 
-const CURVES: [Curve; 3] = [
+static CURVES: [Curve; 3] = [
     Curve {
-        oid: "1.2.840.10045.3.1.7",
+        oid: PRIME256V1,
         sn: "prime256v1",
         nist: "P-256",
         bits: 256,
         security: 128,
     },
     Curve {
-        oid: "1.3.132.0.34",
+        oid: SECP384R1,
         sn: "secp384r1",
         nist: "P-384",
         bits: 384,
         security: 192,
     },
     Curve {
-        oid: "1.3.132.0.35",
+        oid: SECP521R1,
         sn: "secp521r1",
         nist: "P-521",
         bits: 521,
@@ -301,6 +399,25 @@ const CURVES: [Curve; 3] = [
 
 fn field_bytes(bits: usize) -> usize {
     bits.div_ceil(8)
+}
+
+/// Whether a key block is of a private key or of a public key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyKind {
+    /// A private key, its secret printed.
+    Private,
+    /// A public key.
+    Public,
+}
+
+impl KeyKind {
+    /// The word OpenSSL's headers use (`Private-Key:`, `Public-Key:`).
+    fn as_str(self) -> &'static str {
+        match self {
+            KeyKind::Private => "Private",
+            KeyKind::Public => "Public",
+        }
+    }
 }
 
 /// What every key block shares: the key, the secret, the indentation, and
@@ -316,8 +433,8 @@ struct KeyLayout<'a> {
     data: usize,
     /// Bytes per hex line.
     per_line: usize,
-    /// `Private` or `Public`.
-    kind: &'a str,
+    /// Private or public.
+    kind: KeyKind,
     /// The release line.
     compat: Compat,
 }
@@ -339,37 +456,46 @@ fn print_ec_key(
     } = layout;
     let (key, secret, data, per_line, compat) =
         (*key, *secret, *data, *per_line, *compat);
+    let kind = kind.as_str();
     let params = spki
         .algorithm
         .parameters
+        .as_ref()
         .ok_or_else(|| Error::invalid("EC key without parameters"))?;
+    let (params, _) = parse_tlv(params.as_bytes())?;
     if params.octet_opt() != Some(tag::OID) {
         return Err(Error::unsupported(
             "explicit or implicit EC domain parameters",
         ));
     }
-    let curve_oid = baldssl_core::der::Oid::parse(params.value())?;
-    let curve = curve_oid.to_dotted()?;
-    let Some(c) = CURVES.iter().find(|c| c.oid == curve) else {
+    let curve_oid = Oid::parse(params.value())?;
+    let Some(c) = CURVES.iter().find(|c| curve_oid == c.oid) else {
         return Err(Error::unsupported(format!(
-            "EC curve {curve} ({})",
+            "EC curve {} ({})",
+            curve_oid.to_dotted()?,
             objects::short_name(&curve_oid)?
         )));
     };
     let len = field_bytes(c.bits);
+    // SEC 1 section 2.3.3: the prefix octet, then x, then y for an
+    // uncompressed point.
     let well_formed = match key.first() {
-        Some(0x04) => key.len() == 2 * len + 1,
-        Some(0x02 | 0x03) => key.len() == len + 1,
+        Some(&UNCOMPRESSED) => {
+            key.len() == len.saturating_mul(2).saturating_add(1)
+        }
+        Some(&(COMPRESSED_EVEN | COMPRESSED_ODD)) => {
+            key.len() == len.saturating_add(1)
+        }
         _ => false,
     };
-    // TODO(ec-point-validation): OpenSSL also rejects points that
-    // are not on the curve; that needs field arithmetic.
+    // The encoding is checked, not whether the point is on the curve:
+    // OpenSSL refuses a point off the curve, which baldssl prints.
     if !well_formed {
         return Err(Error::invalid("EC point encoding"));
     }
-    let size = match compat {
-        Compat::V30 | Compat::V3 | Compat::V36 => format!("{} bit", c.bits),
-        Compat::V4 => {
+    let size = match compat.ec_key_size() {
+        EcKeySize::Bits => format!("{} bit", c.bits),
+        EcKeySize::BitsAndSecurity => {
             format!("{} bit field, {} bit security level", c.bits, c.security)
         }
     };
@@ -378,10 +504,10 @@ fn print_ec_key(
     // zeros kept, no sign byte, in every release line.
     if let Some(secret) = secret {
         out.extend_from_slice(format!("{pad16}priv:\n").as_bytes());
-        buf_print(out, secret, data, per_line);
+        hex_dump(out, secret, data, per_line);
     }
     out.extend_from_slice(format!("{pad16}pub:\n").as_bytes());
-    buf_print(out, key, data, per_line);
+    hex_dump(out, key, data, per_line);
     out.extend_from_slice(
         format!("{pad16}ASN1 OID: {}\n{pad16}NIST CURVE: {}\n", c.sn, c.nist)
             .as_bytes(),
@@ -402,12 +528,12 @@ fn print_key(
 ) -> Result<()> {
     let per_line = compat.key_bytes_per_line();
     let kind = if secret.is_some() {
-        "Private"
+        KeyKind::Private
     } else {
-        "Public"
+        KeyKind::Public
     };
-    let data = indent.saturating_add(4);
-    let alg = spki.algorithm.oid.to_dotted()?;
+    let data = indent.saturating_add(DUMP_STEP);
+    let alg = &spki.algorithm.oid;
     let key = spki.public_key.bytes();
     if spki.public_key.unused() != 0 {
         return Err(Error::invalid("public key BIT STRING with unused bits"));
@@ -422,52 +548,53 @@ fn print_key(
         kind,
         compat,
     };
-    match alg.as_str() {
-        // rsaEncryption: RSAPublicKey ::= SEQUENCE { n INTEGER, e INTEGER }
-        "1.2.840.113549.1.1.1" => {
-            if secret.is_some() {
-                return Err(Error::unsupported("RSA private keys"));
-            }
-            if let Some(p) = &spki.algorithm.parameters
-                && (p.octet_opt() != Some(tag::NULL) || !p.value().is_empty())
-            {
-                return Err(Error::invalid("rsaEncryption parameters"));
-            }
-            let mut outer = Reader::new(key);
-            let mut seq = outer.sequence()?;
-            outer.finish()?;
-            let n = Integer::parse(seq.expect(tag::INTEGER)?.value())?;
-            let e = Integer::parse(seq.expect(tag::INTEGER)?.value())?;
-            seq.finish()?;
-            out.extend_from_slice(
-                format!("{pad16}Public-Key: ({} bit)\n", n.bits()).as_bytes(),
-            );
-            bn_print(out, "Modulus:", &n, indent, compat);
-            bn_print(out, "Exponent:", &e, indent, compat);
+    if *alg == RSA_ENCRYPTION {
+        // RSAPublicKey ::= SEQUENCE { n INTEGER, e INTEGER }, RFC 8017
+        // appendix A.1.1:
+        // https://www.rfc-editor.org/rfc/rfc8017#appendix-A.1.1
+        if secret.is_some() {
+            return Err(Error::unsupported("RSA private keys"));
         }
-        // id-ecPublicKey with a named curve.
-        "1.2.840.10045.2.1" => print_ec_key(out, spki, &layout)?,
-        // Ed25519 (RFC 8410): no parameters, 32-byte key.
-        "1.3.101.112" => {
-            if spki.algorithm.parameters.is_some() || key.len() != 32 {
-                return Err(Error::invalid("Ed25519 public key"));
-            }
-            out.extend_from_slice(
-                format!("{pad16}ED25519 {kind}-Key:\n").as_bytes(),
-            );
-            if let Some(secret) = secret {
-                out.extend_from_slice(format!("{pad16}priv:\n").as_bytes());
-                buf_print(out, secret, data, per_line);
-            }
-            out.extend_from_slice(format!("{pad16}pub:\n").as_bytes());
-            buf_print(out, key, data, per_line);
+        if let Some(p) = &spki.algorithm.parameters
+            && *p != RawTlv::encode(&Null, &())
+        {
+            return Err(Error::invalid("rsaEncryption parameters"));
         }
-        _ => {
-            return Err(Error::unsupported(format!(
-                "public key algorithm {alg} ({})",
-                objects::long_name(&spki.algorithm.oid)?
-            )));
+        let mut outer = Reader::new(key);
+        let mut seq = outer.sequence()?;
+        outer.finish()?;
+        let n = Integer::parse(seq.expect(tag::INTEGER)?.value())?;
+        let e = Integer::parse(seq.expect(tag::INTEGER)?.value())?;
+        seq.finish()?;
+        out.extend_from_slice(
+            format!("{pad16}Public-Key: ({} bit)\n", n.bits()).as_bytes(),
+        );
+        bn_print(out, "Modulus:", &n, indent, compat);
+        bn_print(out, "Exponent:", &e, indent, compat);
+    } else if *alg == ID_EC_PUBLIC_KEY {
+        print_ec_key(out, spki, &layout)?;
+    } else if *alg == ID_ED25519 {
+        // No parameters, and the 32-byte key, RFC 8410 section 3:
+        // https://www.rfc-editor.org/rfc/rfc8410#section-3
+        if spki.algorithm.parameters.is_some() || key.len() != ED25519_KEY_LEN {
+            return Err(Error::invalid("Ed25519 public key"));
         }
+        let kind = kind.as_str();
+        out.extend_from_slice(
+            format!("{pad16}ED25519 {kind}-Key:\n").as_bytes(),
+        );
+        if let Some(secret) = secret {
+            out.extend_from_slice(format!("{pad16}priv:\n").as_bytes());
+            hex_dump(out, secret, data, per_line);
+        }
+        out.extend_from_slice(format!("{pad16}pub:\n").as_bytes());
+        hex_dump(out, key, data, per_line);
+    } else {
+        return Err(Error::unsupported(format!(
+            "public key algorithm {} ({})",
+            alg.to_dotted()?,
+            objects::long_name(&alg.as_oid())?
+        )));
     }
     Ok(())
 }
@@ -493,8 +620,10 @@ fn version_line(version: &Version) -> String {
 ///
 /// # Errors
 ///
-/// [`Error::Unsupported`] for anything baldssl cannot yet print exactly as
-/// OpenSSL does; [`Error::Invalid`] for malformed contents.
+/// [`Error::Unsupported`] for what baldssl does not print exactly as
+/// OpenSSL does (see the module of the extensions printer, RSASSA-PSS and
+/// SM2 signatures, keys other than RSA, EC on a named curve and Ed25519);
+/// [`Error::Invalid`] for malformed contents.
 impl Text for Certificate<'_> {
     type Layout = Compat;
 
@@ -524,7 +653,7 @@ fn print_certificate(
     out.extend_from_slice(&cert.subject.to_openssl(compat.name_style())?);
     out.push(b'\n');
     print_subject_public_key_info(&mut out, &cert.spki, compat)?;
-    ext::print_extensions(&mut out, &cert.extensions)?;
+    cert.extensions.print_certificate_block(&mut out)?;
     print_signed(&mut out, &cert.signature_algorithm, &cert.signature, compat)?;
     Ok(out)
 }
@@ -538,9 +667,11 @@ fn print_subject_public_key_info(
     out.extend_from_slice(
         b"        Subject Public Key Info:\n            Public Key Algorithm: ",
     );
-    out.extend_from_slice(objects::long_name(&spki.algorithm.oid)?.as_bytes());
+    out.extend_from_slice(
+        objects::long_name(&spki.algorithm.oid.as_oid())?.as_bytes(),
+    );
     out.push(b'\n');
-    print_key(out, spki, None, 16, compat)
+    print_key(out, spki, None, SPKI_KEY_INDENT, compat)
 }
 
 /// `openssl pkey -text`: a private key as OpenSSL prints it, by release
@@ -555,12 +686,22 @@ pub fn print_private_key_text(
 ) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let der = PublicKey::from(key).encode();
-    let mut r = Reader::new(&der);
+    let spki = spki_view(&der)?;
+    let secret = key.secret();
+    print_key(&mut out, &spki, Some(secret.expose()), PKEY_INDENT, compat)?;
+    Ok(out)
+}
+
+/// The view of a key's `SubjectPublicKeyInfo` encoding. The key printer
+/// reads that view, which a certificate gives as it is (malformed and
+/// unsupported keys included, which a [`PublicKey`] cannot hold); a key
+/// that is already a value is printed through the view of its encoding,
+/// so that one printer serves both, at the cost of this second decoding.
+fn spki_view(der: &[u8]) -> Result<SubjectPublicKeyInfo<'_>> {
+    let mut r = Reader::new(der);
     let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
     r.finish()?;
-    let secret = key.secret();
-    print_key(&mut out, &spki, Some(secret.expose()), 0, compat)?;
-    Ok(out)
+    Ok(spki)
 }
 
 /// `openssl pkey -text_pub` (or `-pubin -text`): a public key as OpenSSL
@@ -575,10 +716,7 @@ pub fn print_public_key_text(
 ) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let der = key.encode();
-    let mut r = Reader::new(&der);
-    let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
-    r.finish()?;
-    print_key(&mut out, &spki, None, 0, compat)?;
+    print_key(&mut out, &spki_view(&der)?, None, PKEY_INDENT, compat)?;
     Ok(out)
 }
 
@@ -589,7 +727,7 @@ pub fn print_public_key_text(
 /// [X.509]: https://www.itu.int/rec/T-REC-X.509
 fn print_signed(
     out: &mut Vec<u8>,
-    algorithm: &AlgorithmIdentifier<'_>,
+    algorithm: &AlgorithmIdentifier,
     signature: &BitString<'_>,
     compat: Compat,
 ) -> Result<()> {
@@ -601,10 +739,10 @@ fn print_signed(
             "signature BIT STRING with unused bits",
         ));
     }
-    signature_dump(
+    hex_dump(
         out,
         signature.bytes(),
-        8,
+        SIGNATURE_INDENT,
         compat.signature_bytes_per_line(),
     );
     Ok(())
@@ -634,24 +772,18 @@ impl Text for CertificationRequest {
         );
         out.push(b'\n');
         let key = self.public_key().encode();
-        let mut r = Reader::new(&key);
-        let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
-        r.finish()?;
-        print_subject_public_key_info(&mut out, &spki, compat)?;
-        let extensions = self.requested_extensions()?;
+        print_subject_public_key_info(&mut out, &spki_view(&key)?, compat)?;
+        let requested = self.requested_extensions()?;
+        let extensions = requested.views()?;
         out.extend_from_slice(b"        Attributes:\n");
         if extensions.is_empty() {
             out.extend_from_slice(b"            (none)\n");
         }
         out.extend_from_slice(b"            Requested Extensions:\n");
-        ext::print_extension_list(&mut out, &extensions, 16)?;
-        let oid = algorithm::oid(self.algorithm());
+        extensions.print_list(&mut out, ExtensionIndent::Request)?;
         print_signed(
             &mut out,
-            &AlgorithmIdentifier {
-                oid: oid.as_oid(),
-                parameters: None,
-            },
+            &AlgorithmIdentifier::from(self.algorithm()),
             &BitString::from_bytes(self.signature()),
             compat,
         )?;
@@ -671,7 +803,7 @@ pub fn serial_line(serial: &Integer) -> String {
         s.push_str("00");
     }
     for (i, b) in serial.magnitude().iter().enumerate() {
-        if i > 0 && i % 35 == 0 {
+        if i > 0 && i % SERIAL_BYTES_PER_LINE == 0 {
             s.push_str("\\\n");
         }
         s.push_str(&hex::plain(&[*b], Case::Upper));
@@ -744,13 +876,13 @@ mod tests {
     #[test]
     fn dumps() {
         let mut out = Vec::new();
-        buf_print(&mut out, &[0xab; 16], 2, 15);
+        hex_dump(&mut out, &[0xab; 16], 2, 15);
         assert_eq!(
             out,
             b"  ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:\n  ab\n"
         );
         let mut out = Vec::new();
-        signature_dump(&mut out, &[0x01; 19], 1, 18);
+        hex_dump(&mut out, &[0x01; 19], 1, 18);
         assert_eq!(out.iter().filter(|&&b| b == b'\n').count(), 2);
         let mut out = Vec::new();
         bn_print(

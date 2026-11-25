@@ -5,7 +5,7 @@ use std::str::FromStr as _;
 
 use baldssl_core::Error;
 
-use super::{Config, replace_push};
+use super::{ConfValue, Config, replace_push};
 use crate::extension::{Extension, ExtensionValue, GeneralName, Ia5String};
 
 #[test]
@@ -35,7 +35,7 @@ fn sections_and_values() {
         .section_opt("server")
         .unwrap()
         .iter()
-        .map(|(n, _)| n.as_str())
+        .map(|v| v.name.as_str())
         .collect();
     assert_eq!(
         names,
@@ -64,8 +64,14 @@ fn repeated_names() {
     assert_eq!(
         config.section_opt("default").unwrap(),
         [
-            ("b".to_string(), "2".to_string()),
-            ("a".to_string(), "3".to_string())
+            ConfValue {
+                name: "b".to_string(),
+                value: "2".to_string()
+            },
+            ConfValue {
+                name: "a".to_string(),
+                value: "3".to_string()
+            }
         ]
     );
     let mut v = vec![1, 2, 3];

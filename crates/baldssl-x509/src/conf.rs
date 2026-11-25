@@ -30,11 +30,30 @@ where
     items.push(item);
 }
 
+/// One `name = value` line of a section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfValue {
+    /// The name, before the `=`, trimmed.
+    pub name: String,
+    /// The value, after it, trimmed.
+    pub value: String,
+}
+
 /// A section: its name and its values, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Section {
     name: String,
-    values: Vec<(String, String)>,
+    values: Vec<ConfValue>,
+}
+
+impl Section {
+    /// A section without values.
+    fn new(name: &str) -> Self {
+        Section {
+            name: name.to_string(),
+            values: Vec::new(),
+        }
+    }
 }
 
 /// A configuration file, read.
@@ -54,16 +73,12 @@ impl FromStr for Config {
     type Err = Error;
 
     fn from_str(text: &str) -> Result<Self> {
-        let mut config = Config {
-            sections: vec![Section {
-                name: "default".into(),
-                values: Vec::new(),
-            }],
-        };
-        let mut current = 0;
+        // The section the lines go to, and the others, read so far.
+        let mut current = Section::new(DEFAULT_SECTION);
+        let mut others: Vec<Section> = Vec::new();
         for (number, raw) in text.lines().enumerate() {
             let line_number = number.saturating_add(1);
-            let line = raw.split('#').next().unwrap_or_default().trim();
+            let line = raw.split_once('#').map_or(raw, |(l, _)| l).trim();
             if line.is_empty() {
                 continue;
             }
@@ -85,17 +100,11 @@ impl FromStr for Config {
                         ))
                     })?;
                 // A section opened twice gathers both parts, as in OpenSSL.
-                current = config
-                    .sections
-                    .iter()
-                    .position(|s| s.name == name)
-                    .unwrap_or_else(|| {
-                        config.sections.push(Section {
-                            name: name.to_string(),
-                            values: Vec::new(),
-                        });
-                        config.sections.len().saturating_sub(1)
-                    });
+                let next = match others.iter().position(|s| s.name == name) {
+                    Some(i) => others.remove(i),
+                    None => Section::new(name),
+                };
+                others.push(core::mem::replace(&mut current, next));
                 continue;
             }
             let (name, value) = line.split_once('=').ok_or_else(|| {
@@ -103,17 +112,22 @@ impl FromStr for Config {
                     "configuration line {line_number}: missing equal sign"
                 ))
             })?;
-            if let Some(section) = config.sections.get_mut(current) {
-                replace_push(
-                    &mut section.values,
-                    (name.trim().to_string(), value.trim().to_string()),
-                    |a, b| a.0 == b.0,
-                );
-            }
+            replace_push(
+                &mut current.values,
+                ConfValue {
+                    name: name.trim().to_string(),
+                    value: value.trim().to_string(),
+                },
+                |a, b| a.name == b.name,
+            );
         }
-        Ok(config)
+        others.push(current);
+        Ok(Config { sections: others })
     }
 }
+
+/// The section of the lines before the first header (`conf_def.c`).
+const DEFAULT_SECTION: &str = "default";
 
 impl Config {
     /// The extensions of a section, in order, a later one replacing an
@@ -130,16 +144,14 @@ impl Config {
                 Error::Usage(format!("no extension section {section:?}"))
             })?
             .iter()
-            .map(|(name, value)| {
-                Extension::from_name_value(name, value, Some(self))
-            })
+            .map(|v| Extension::from_name_value(&v.name, &v.value, Some(self)))
             .collect()
     }
 
     /// The values of a section, in order; `None` when there is no such
     /// section.
     #[must_use]
-    pub fn section_opt(&self, name: &str) -> Option<&[(String, String)]> {
+    pub fn section_opt(&self, name: &str) -> Option<&[ConfValue]> {
         self.sections
             .iter()
             .find(|s| s.name == name)
@@ -151,8 +163,8 @@ impl Config {
     pub fn value_opt(&self, section: &str, name: &str) -> Option<&str> {
         self.section_opt(section)?
             .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
+            .find(|v| v.name == name)
+            .map(|v| v.value.as_str())
     }
 }
 

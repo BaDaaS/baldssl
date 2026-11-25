@@ -3,9 +3,10 @@
 //! SHA hash ([RFC 3279 section 2.2.3], [RFC 5758 section 3.2]) and Ed25519
 //! ([RFC 8410 section 3]).
 //!
-//! [`identifier`] is an exhaustive `match`, so every algorithm has a name
-//! by construction; [`from_identifier`] is its inverse, found by searching
-//! the finite set of algorithms, so the two cannot disagree.
+//! [`oid`] is an exhaustive `match`, so every algorithm has a name by
+//! construction; the `TryFrom` of [`SignatureAlgorithm`] is its inverse,
+//! found by searching the finite set of algorithms, so the two cannot
+//! disagree.
 //!
 //! [RFC 3279 section 2.2.3]: https://www.rfc-editor.org/rfc/rfc3279#section-2.2.3
 //! [RFC 5758 section 3.2]: https://www.rfc-editor.org/rfc/rfc5758#section-3.2
@@ -14,10 +15,12 @@
 use baldssl_core::{
     Error, Result,
     der::syntax::{
-        Any, ObjectId, ObjectIdentifier, OptionalLast, RawTlv, Sequence,
+        Any, Map, ObjectId, ObjectIdentifier, OptionalLast, RawTlv, Sequence,
     },
 };
 use baldssl_crypto::{hash::Algorithm as Hash, signature::SignatureAlgorithm};
+
+use crate::oid::ID_ED25519;
 
 /// `ecdsa-with-SHA1`, 1.2.840.10045.4.1.
 const ECDSA_WITH_SHA1: ObjectId =
@@ -34,20 +37,41 @@ const ECDSA_WITH_SHA384: ObjectId =
 /// `ecdsa-with-SHA512`, 1.2.840.10045.4.3.4.
 const ECDSA_WITH_SHA512: ObjectId =
     ObjectId::from_static(&[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x04]);
-/// `id-Ed25519`, 1.3.101.112.
-const ID_ED25519: ObjectId = ObjectId::from_static(&[0x2b, 0x65, 0x70]);
 
 /// `AlgorithmIdentifier ::= SEQUENCE { algorithm OBJECT IDENTIFIER,
-/// parameters ANY OPTIONAL }`.
-pub(crate) type AlgorithmIdentifier =
-    Sequence<(ObjectIdentifier, (OptionalLast<Any>, ()))>;
+/// parameters ANY OPTIONAL }` ([RFC 5280 section 4.1.1.2]): of a
+/// signature, or of a public key. The one model of the structure, for
+/// certificates, requests and keys alike.
+///
+/// [RFC 5280 section 4.1.1.2]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.1.2
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AlgorithmIdentifier {
+    /// The algorithm.
+    pub(crate) oid: ObjectId,
+    /// The parameters, one TLV of any type, when present.
+    pub(crate) parameters: Option<RawTlv>,
+}
+
+/// The fields of [`AlgorithmIdentifier`], as the description reads them.
+type Fields = (ObjectId, (Option<RawTlv>, ()));
 
 /// The description of [`AlgorithmIdentifier`].
-pub(crate) const ALGORITHM_IDENTIFIER: AlgorithmIdentifier =
-    Sequence((ObjectIdentifier, (OptionalLast(Any), ())));
+pub(crate) type AlgorithmIdentifierSyntax = Map<
+    Sequence<(ObjectIdentifier, (OptionalLast<Any>, ()))>,
+    AlgorithmIdentifier,
+>;
 
-/// An `AlgorithmIdentifier`'s value: the OID and the parameters.
-pub(crate) type Identifier = (ObjectId, (Option<RawTlv>, ()));
+/// The description of [`AlgorithmIdentifier`]: the SEQUENCE, seen as the
+/// struct. Every pair of fields is an identifier, so the law holds.
+pub(crate) fn algorithm_identifier() -> AlgorithmIdentifierSyntax {
+    Map::new(
+        Sequence((ObjectIdentifier, (OptionalLast(Any), ()))),
+        |(oid, (parameters, ())): Fields| {
+            Some(AlgorithmIdentifier { oid, parameters })
+        },
+        |id| (id.oid.clone(), (id.parameters.clone(), ())),
+    )
+}
 
 /// Every signature algorithm: ECDSA with each hash, and Ed25519.
 fn all() -> impl Iterator<Item = SignatureAlgorithm> {
@@ -69,45 +93,103 @@ pub(crate) fn oid(algorithm: SignatureAlgorithm) -> ObjectId {
     }
 }
 
-/// The `AlgorithmIdentifier` of an algorithm: its OID, no parameters.
-pub(crate) fn identifier(algorithm: SignatureAlgorithm) -> Identifier {
-    (oid(algorithm), (None, ()))
+/// The `AlgorithmIdentifier` of a signature algorithm: its OID, no
+/// parameters.
+impl From<SignatureAlgorithm> for AlgorithmIdentifier {
+    fn from(algorithm: SignatureAlgorithm) -> Self {
+        AlgorithmIdentifier {
+            oid: oid(algorithm),
+            parameters: None,
+        }
+    }
 }
 
-/// The algorithm an `AlgorithmIdentifier` names; its parameters must be
-/// absent.
+/// The signature algorithm an `AlgorithmIdentifier` names; its parameters
+/// must be absent. The inverse of the `From` above, found by searching the
+/// finite set of algorithms, so the two cannot disagree.
 ///
 /// # Errors
 ///
 /// [`Error::Invalid`] for parameters, [`Error::Unsupported`] for any other
 /// algorithm.
-pub(crate) fn from_identifier(
-    (id, (params, ())): &Identifier,
-) -> Result<SignatureAlgorithm> {
-    let algorithm = all().find(|&a| oid(a) == *id).ok_or_else(|| {
-        Error::unsupported(format!(
-            "signature algorithm {}",
-            id.to_dotted().unwrap_or_default()
-        ))
-    })?;
-    if params.is_some() {
-        return Err(Error::invalid(
-            "signature algorithm: parameters must be absent",
-        ));
+impl TryFrom<&AlgorithmIdentifier> for SignatureAlgorithm {
+    type Error = Error;
+
+    fn try_from(id: &AlgorithmIdentifier) -> Result<Self> {
+        let Some(algorithm) = all().find(|&a| oid(a) == id.oid) else {
+            return Err(Error::unsupported(format!(
+                "signature algorithm {}",
+                id.oid.to_dotted()?
+            )));
+        };
+        if id.parameters.is_some() {
+            return Err(Error::invalid(
+                "signature algorithm: parameters must be absent",
+            ));
+        }
+        Ok(algorithm)
     }
-    Ok(algorithm)
 }
 
 #[cfg(test)]
 mod tests {
+    use baldssl_core::der::syntax::{
+        Null, decode, encode,
+        laws::{canonical, round_trip},
+    };
+
     use super::*;
 
-    /// `from_identifier` inverts `identifier`, so the OIDs are distinct.
+    /// The `TryFrom` inverts the `From`, so the OIDs are distinct.
     #[test]
     fn identifiers_round_trip() {
         for a in all() {
-            assert_eq!(from_identifier(&identifier(a)), Ok(a), "{a:?}");
+            let id = AlgorithmIdentifier::from(a);
+            assert_eq!(SignatureAlgorithm::try_from(&id), Ok(a), "{a:?}");
         }
+    }
+
+    /// The description is canonical: it reads what it writes, with and
+    /// without parameters, and rejects what is not one identifier.
+    #[test]
+    fn description() {
+        let syntax = algorithm_identifier();
+        let with_null = AlgorithmIdentifier {
+            oid: ID_ED25519,
+            parameters: Some(RawTlv::encode(&Null, &())),
+        };
+        for id in [
+            AlgorithmIdentifier::from(SignatureAlgorithm::Ed25519),
+            with_null,
+        ] {
+            round_trip(&syntax, &id, b"");
+            canonical(&syntax, &encode(&syntax, &id));
+        }
+        // SEQUENCE { OID 1.3.101.112 }, as RFC 8410 writes Ed25519.
+        assert_eq!(
+            decode(&syntax, &[0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]),
+            Ok(AlgorithmIdentifier::from(SignatureAlgorithm::Ed25519))
+        );
+        for bad in [
+            // No algorithm.
+            &[0x30, 0x00][..],
+            // Two parameters.
+            &[
+                0x30, 0x09, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x05, 0x00, 0x05,
+                0x00,
+            ],
+            // A SET, not a SEQUENCE.
+            &[0x31, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70],
+        ] {
+            assert!(decode(&syntax, bad).is_err(), "{bad:02x?}");
+        }
+        assert!(
+            SignatureAlgorithm::try_from(&AlgorithmIdentifier {
+                oid: ID_ED25519,
+                parameters: Some(RawTlv::encode(&Null, &())),
+            })
+            .is_err()
+        );
     }
 
     /// The dotted names, from RFC 3279, RFC 5758 and RFC 8410.

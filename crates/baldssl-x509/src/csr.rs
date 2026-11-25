@@ -31,10 +31,10 @@
 use baldssl_core::{
     Error, Result,
     der::{
-        Oid, Reader,
+        Reader, parse_tlv,
         syntax::{
-            Any, BitString, Implicit, ObjectId, ObjectIdentifier, RawTlv,
-            Sequence, SequenceOf, SetOf, Small, decode, encode,
+            Any, BitString, Implicit, ObjectIdentifier, RawTlv, Sequence,
+            SequenceOf, SetOf, Small, decode, encode,
         },
         tag,
     },
@@ -47,20 +47,19 @@ use baldssl_pkey::{AnyPrivateKey, PublicKey};
 use crate::{
     Name,
     algorithm::{
-        ALGORITHM_IDENTIFIER, AlgorithmIdentifier, from_identifier, identifier,
+        AlgorithmIdentifier, AlgorithmIdentifierSyntax, algorithm_identifier,
     },
-    cert::{Extension as ExtensionView, read_extensions},
+    cert::ExtensionViews,
     dn::DistinguishedName,
     extension::{Extension, Extensions},
+    oid::EXTENSION_REQUEST,
 };
 
-/// `extensionRequest`, 1.2.840.113549.1.9.14 ([RFC 2985 section
-/// 5.4.2]).
+/// `CertificationRequestInfo`'s version, `v1(0)`, its only one
+/// ([RFC 2986 section 4.1]).
 ///
-/// [RFC 2985 section 5.4.2]: https://www.rfc-editor.org/rfc/rfc2985#page-17
-pub(crate) const EXTENSION_REQUEST: ObjectId = ObjectId::from_static(&[
-    0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x0e,
-]);
+/// [RFC 2986 section 4.1]: https://www.rfc-editor.org/rfc/rfc2986#section-4
+const VERSION_V1: u64 = 0;
 
 /// `CertificationRequestInfo`, with the subject and the key kept as TLVs.
 type InfoSyntax =
@@ -70,12 +69,48 @@ type InfoSyntax =
 const INFO: InfoSyntax =
     Sequence((Small, (Any, (Any, (Implicit::<0, _>(SetOf(Any)), ())))));
 
+/// `Attribute ::= SEQUENCE { type OBJECT IDENTIFIER, values SET OF ANY }`
+/// ([RFC 2986 section 4.1]): the one description of an attribute, which
+/// writes and reads the `extensionRequest` attribute.
+///
+/// [RFC 2986 section 4.1]: https://www.rfc-editor.org/rfc/rfc2986#section-4
+type AttributeSyntax = Sequence<(ObjectIdentifier, (SetOf<Any>, ()))>;
+
+/// The description of [`AttributeSyntax`].
+const ATTRIBUTE: AttributeSyntax =
+    Sequence((ObjectIdentifier, (SetOf(Any), ())));
+
 /// `CertificationRequest`, with the info kept as a TLV (the signed bytes).
-type RequestSyntax = Sequence<(Any, (AlgorithmIdentifier, (BitString, ())))>;
+type RequestSyntax =
+    Sequence<(Any, (AlgorithmIdentifierSyntax, (BitString, ())))>;
 
 /// The description of [`RequestSyntax`].
-const REQUEST: RequestSyntax =
-    Sequence((Any, (ALGORITHM_IDENTIFIER, (BitString, ()))));
+fn request_syntax() -> RequestSyntax {
+    Sequence((Any, (algorithm_identifier(), (BitString, ()))))
+}
+
+/// The `Extensions` a request asks for, each the value of an
+/// `extensionRequest` attribute, as DER: what
+/// [`CertificationRequest::requested_extensions`] gives, and what
+/// [`RequestedExtensions::views`] reads.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct RequestedExtensions(Vec<RawTlv>);
+
+impl RequestedExtensions {
+    /// The extensions, in order, as views of the DER.
+    ///
+    /// # Errors
+    ///
+    /// Malformed extensions.
+    pub(crate) fn views(&self) -> Result<ExtensionViews<'_>> {
+        let mut out = ExtensionViews::default();
+        for list in &self.0 {
+            let (tlv, _) = parse_tlv(list.as_bytes())?;
+            out.0.extend(ExtensionViews::try_from(tlv)?.0);
+        }
+        Ok(out)
+    }
+}
 
 /// A certificate signing request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,7 +144,7 @@ impl CertificationRequest {
         extensions: &Extensions,
     ) -> Result<Self> {
         let public_key = PublicKey::from(key);
-        let subject = RawTlv::parse(&subject.encode())?;
+        let subject = subject.to_raw();
         let spki = RawTlv::parse(&public_key.encode())?;
         // The extensions, when there are any, as one extensionRequest
         // attribute whose single value is their Extensions, as OpenSSL
@@ -120,13 +155,19 @@ impl CertificationRequest {
             let extensions: Vec<RawTlv> =
                 extensions.iter().map(Extension::to_raw).collect();
             vec![RawTlv::encode(
-                &Sequence((ObjectIdentifier, (SetOf(SequenceOf(Any)), ()))),
-                &(EXTENSION_REQUEST, (vec![extensions], ())),
+                &ATTRIBUTE,
+                &(
+                    EXTENSION_REQUEST,
+                    (vec![RawTlv::encode(&SequenceOf(Any), &extensions)], ()),
+                ),
             )]
         };
         let info = RawTlv::parse(&encode(
             &INFO,
-            &(0, (subject.clone(), (spki, (attributes.clone(), ())))),
+            &(
+                VERSION_V1,
+                (subject.clone(), (spki, (attributes.clone(), ()))),
+            ),
         ))?;
         let signature = key.sign(algorithm, info.as_bytes())?;
         Ok(CertificationRequest {
@@ -162,10 +203,10 @@ impl CertificationRequest {
         )
     }
 
-    /// The subject, a DER `Name`.
+    /// The subject, a DER `Name`, as it is in the request.
     #[must_use]
-    pub fn subject_der(&self) -> &[u8] {
-        self.subject.as_bytes()
+    pub fn subject(&self) -> &RawTlv {
+        &self.subject
     }
 
     /// The key the request is for.
@@ -182,36 +223,37 @@ impl CertificationRequest {
 
     /// The extensions the request asks for: the `Extensions` of its
     /// `extensionRequest` attribute (PKCS#9, [RFC 2985 section 5.4.2]), or
-    /// none without attributes.
+    /// none without attributes. The attribute is read with the description
+    /// that writes it ([`ATTRIBUTE`]), and must have exactly one value, as
+    /// RFC 2985 says (`SINGLE VALUE TRUE`, [RFC 2985 section 5.4.2]).
     ///
     /// # Errors
     ///
-    /// [`Error::Unsupported`] for any other attribute, and on malformed
+    /// [`Error::Unsupported`] for any other attribute; [`Error::Invalid`]
+    /// for an extensionRequest without exactly one value, and on malformed
     /// DER.
     ///
-    /// [RFC 2985 section 5.4.2]: https://www.rfc-editor.org/rfc/rfc2985#page-17
-    pub(crate) fn requested_extensions(
-        &self,
-    ) -> Result<Vec<ExtensionView<'_>>> {
+    /// [RFC 2985 section 5.4.2]: https://www.rfc-editor.org/rfc/rfc2985#section-5
+    pub(crate) fn requested_extensions(&self) -> Result<RequestedExtensions> {
         let mut out = Vec::new();
         for attribute in &self.attributes {
-            let mut top = Reader::new(attribute.as_bytes());
-            let mut seq = top.sequence()?;
-            top.finish()?;
-            let oid = Oid::parse(seq.expect(tag::OID)?.value())?;
-            if oid.as_bytes() != EXTENSION_REQUEST.as_oid().as_bytes() {
+            let (oid, (values, ())) = decode(&ATTRIBUTE, attribute.as_bytes())?;
+            if oid != EXTENSION_REQUEST {
                 return Err(Error::unsupported(format!(
                     "request attribute {}",
                     oid.to_dotted()?
                 )));
             }
-            let mut values = Reader::new(seq.expect(tag::SET)?.value());
-            seq.finish()?;
-            let extensions = values.read()?;
-            values.finish()?;
-            out.extend(read_extensions(extensions)?);
+            let [extensions] =
+                <[RawTlv; 1]>::try_from(values).map_err(|v| {
+                    Error::invalid(format!(
+                        "extensionRequest with {} values",
+                        v.len()
+                    ))
+                })?;
+            out.push(extensions);
         }
-        Ok(out)
+        Ok(RequestedExtensions(out))
     }
 
     /// How the request is signed.
@@ -233,10 +275,13 @@ impl Encodable for CertificationRequest {
 
     fn encode(&self) -> Vec<u8> {
         encode(
-            &REQUEST,
+            &request_syntax(),
             &(
                 self.info.clone(),
-                (identifier(self.algorithm), (self.signature.clone(), ())),
+                (
+                    AlgorithmIdentifier::from(self.algorithm),
+                    (self.signature.clone(), ()),
+                ),
             ),
         )
     }
@@ -250,10 +295,11 @@ impl Decodable for CertificationRequest {
     type Error = Error;
 
     fn decode(der: &[u8]) -> Result<Self> {
-        let (info, (algorithm, (signature, ()))) = decode(&REQUEST, der)?;
+        let (info, (algorithm, (signature, ()))) =
+            decode(&request_syntax(), der)?;
         let (version, (subject, (spki, (attributes, ())))) =
             decode(&INFO, info.as_bytes())?;
-        if version != 0 {
+        if version != VERSION_V1 {
             return Err(Error::invalid(format!(
                 "certificate request: version {version}"
             )));
@@ -263,7 +309,7 @@ impl Decodable for CertificationRequest {
             subject,
             public_key: PublicKey::decode(spki.as_bytes())?,
             attributes,
-            algorithm: from_identifier(&algorithm)?,
+            algorithm: SignatureAlgorithm::try_from(&algorithm)?,
             signature,
         })
     }

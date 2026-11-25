@@ -21,7 +21,7 @@ use super::{
 use crate::{
     Certificate, CertificationRequest, Compat, SignatureAlgorithm,
     cert::Validity,
-    dn::{DistinguishedName, InputEncoding, UTF8_ONLY},
+    dn::{DistinguishedName, InputEncoding, RdnMode, UTF8_ONLY},
     extension::{ExtensionValue, Extensions},
 };
 
@@ -51,11 +51,11 @@ fn matches_openssl() {
         let subject = DistinguishedName::from_subj(
             &hex(f[2]),
             InputEncoding::Latin1,
-            true,
+            RdnMode::MultiValued,
             UTF8_ONLY,
         )
         .unwrap()
-        .0;
+        .name;
         let serial = SerialNumber::new_opt(&hex(f[3])).unwrap();
         let validity = Validity::from_unix_seconds(
             f[4].parse().unwrap(),
@@ -104,11 +104,11 @@ fn authority_key_identifier_by_release() {
     let subject = DistinguishedName::from_subj(
         b"/CN=x",
         InputEncoding::Latin1,
-        true,
+        RdnMode::MultiValued,
         UTF8_ONLY,
     )
     .unwrap()
-    .0;
+    .name;
     let has_authority = |compat| {
         CertificateTemplate::self_signed(
             &subject,
@@ -229,11 +229,11 @@ fn issued_needs_a_ca_key_identifier() {
         DistinguishedName::from_subj(
             subj,
             InputEncoding::Latin1,
-            true,
+            RdnMode::MultiValued,
             UTF8_ONLY,
         )
         .unwrap()
-        .0
+        .name
     };
     let mut ca = CertificateTemplate::self_signed(
         &name(b"/CN=CA"),
