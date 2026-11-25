@@ -3,11 +3,14 @@
 //!
 //! The values are those of `openssl ecparam -name secp521r1 -param_enc explicit
 //! -noout -text` (OpenSSL 3.5.9), the source the output of baldssl is compared
-//! against; they are those of [FIPS 186-5] and [SEC 2]. The tests recompute
-//! each modulus from its defining formula, and check that the generator is on
-//! the curve and has order $n$.
+//! against; they are those of [NIST SP 800-186] (Recommendations for Discrete
+//! Logarithm-based Cryptography: Elliptic Curve Domain Parameters), section
+//! 3.2.1.5, and of [SEC 2] (Standards for Efficient Cryptography 2, Recommended
+//! Elliptic Curve Domain Parameters), section 2.6.1, `secp521r1`. The tests
+//! recompute each modulus from its defining formula, and check that the
+//! generator is on the curve and has order $n$.
 //!
-//! [FIPS 186-5]: https://csrc.nist.gov/pubs/fips/186-5/final
+//! [NIST SP 800-186]: https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-186.pdf
 //! [SEC 2]: https://www.secg.org/sec2-v2.pdf
 
 use crate::{
@@ -17,11 +20,12 @@ use crate::{
         fp::{Fp, Modulus},
         model::ProjectiveModel,
     },
-    ct::Choice,
+    ct::{Choice, CtOption},
 };
 
 /// The base field of P-521, the Mersenne prime $p = 2^{521} - 1$.
 pub enum P521Base {}
+impl crate::sealed::Sealed for P521Base {}
 impl Modulus<9> for P521Base {
     const HEX: &'static str = "01ffffffffffffffffffffffffffffffffffffffffffff\
         ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
@@ -33,6 +37,7 @@ pub type FieldP521 = Fp<P521Base, 9>;
 
 /// The scalar field of P-521.
 pub enum P521Scalar {}
+impl crate::sealed::Sealed for P521Scalar {}
 impl Modulus<9> for P521Scalar {
     const HEX: &'static str = "01ffffffffffffffffffffffffffffffffffffffffffff\
         fffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47ae\
@@ -44,8 +49,10 @@ pub type ScalarP521 = Fp<P521Scalar, 9>;
 
 /// NIST P-521 (`secp521r1`).
 pub enum P521 {}
+impl crate::sealed::Sealed for P521 {}
 
-/// Its group of points has prime order: the cofactor is 1 ([SEC 2]).
+/// Its group of points has prime order: the cofactor is 1 ([SEC 2],
+/// section 2.6.1).
 ///
 /// [SEC 2]: https://www.secg.org/sec2-v2.pdf
 impl Curve for P521 {
@@ -78,7 +85,7 @@ impl ShortWeierstrass for P521 {
 
 /// $p \equiv 3 \pmod 4$: the root is $a^{(p + 1)/4}$.
 impl Sqrt for FieldP521 {
-    fn sqrt(&self) -> (Self, Choice) {
+    fn sqrt(&self) -> CtOption<Self> {
         self.sqrt_3_mod_4()
     }
 }

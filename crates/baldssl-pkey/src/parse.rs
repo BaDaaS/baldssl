@@ -27,7 +27,7 @@ use baldssl_core::{
 use baldssl_crypto::{
     algebra::curve::ShortWeierstrass,
     instances::{P256, P384, P521},
-    models::weierstrass::affine::Affine,
+    signature::ecdsa::PublicKey as EcdsaPublicKey,
 };
 
 use crate::{
@@ -61,11 +61,11 @@ const OTHER_ALGORITHMS: &[(&str, &str)] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PublicKey {
     /// A point of P-256 other than the identity.
-    P256(Affine<P256>),
+    P256(EcdsaPublicKey<P256>),
     /// A point of P-384 other than the identity.
-    P384(Affine<P384>),
+    P384(EcdsaPublicKey<P384>),
     /// A point of P-521 other than the identity.
-    P521(Affine<P521>),
+    P521(EcdsaPublicKey<P521>),
     /// An Ed25519 public key.
     Ed25519([u8; 32]),
 }
@@ -107,7 +107,7 @@ impl PublicKey {
 }
 
 /// The point of `C` that `key` encodes, as [`point_opt`] reads it.
-fn point<C>(key: &[u8]) -> Result<Affine<C>>
+fn point<C>(key: &[u8]) -> Result<EcdsaPublicKey<C>>
 where
     C: ShortWeierstrass,
 {
@@ -150,7 +150,9 @@ impl From<&AnyPrivateKey> for PublicKey {
                 // An Ed25519 public key is 32 bytes; zip copies without a
                 // length check that could panic.
                 let mut bytes = [0u8; 32];
-                for (b, p) in bytes.iter_mut().zip(k.key_pair().public()) {
+                for (b, p) in
+                    bytes.iter_mut().zip(k.key_pair().public().as_bytes())
+                {
                     *b = *p;
                 }
                 PublicKey::Ed25519(bytes)

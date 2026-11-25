@@ -12,19 +12,22 @@ use baldssl_test_utils::hex;
 use proptest::prelude::*;
 
 use super::{
-    Ecdsa, Rfc6979, Signature, bits2int, sign_with_hash, verify_with_hash,
+    Ecdsa, PublicKey, Rfc6979, Signature, bits2int, sign_with_hash,
+    verify_with_hash,
 };
 use crate::{
     algebra::{
         curve::{Curve, ShortWeierstrass},
         encoding::{Decodable, Encodable, InvalidEncoding},
         field::{Field, PrimeField},
+        laws::canonical,
         model::AffineModel,
     },
     drbg::DrbgHash,
-    hash::{Algorithm, Sha1, Sha224, Sha256, Sha384, Sha512},
+    hash::{Algorithm, Sha1, Sha224, Sha256, Sha384, Sha512, WithHash},
     instances::{P256, P384, P521},
     keys::EcKeyPair,
+    secret::SecretScalar,
     signature::{SignEncoded, Signer, Verifier},
 };
 
@@ -605,7 +608,7 @@ fn scalar<C>(hex_be: &str) -> C::Scalar
 where
     C: ShortWeierstrass,
 {
-    let (s, valid) = C::Scalar::from_bytes_be(&hex(hex_be));
+    let (s, valid) = C::Scalar::from_bytes_be(&hex(hex_be)).into_parts();
     assert!(valid.to_bool_vartime(), "{hex_be} is not below n");
     s
 }
@@ -617,7 +620,7 @@ where
     H: DrbgHash,
 {
     let pair = EcKeyPair::<C>::from_secret_opt(scalar::<C>(vectors.x)).unwrap();
-    let (ux, uy) = pair.public().coordinates_opt().unwrap();
+    let (ux, uy) = pair.public().point().coordinates_opt().unwrap();
     assert_eq!(ux.to_bytes_be(), hex(vectors.ux), "{} Ux", C::NAME);
     assert_eq!(uy.to_bytes_be(), hex(vectors.uy), "{} Uy", C::NAME);
     let mut seen = 0;
@@ -625,7 +628,11 @@ where
         let what = format!("{} {} {}", C::NAME, v.hash, v.message);
         let digest = H::digest(v.message.as_bytes());
         let mut nonces = Rfc6979::<C, H>::new(pair.secret(), &digest).unwrap();
-        assert_eq!(nonces.next_nonce().unwrap(), scalar::<C>(v.k), "{what}: k");
+        assert_eq!(
+            *nonces.next_nonce().unwrap().expose(),
+            scalar::<C>(v.k),
+            "{what}: k"
+        );
         let signature =
             Ecdsa::<C, H>::sign(&pair, v.message.as_bytes()).unwrap();
         assert_eq!(*signature.r(), scalar::<C>(v.r), "{what}: r");
@@ -682,7 +689,7 @@ where
     let mut bytes = vec![0u8; C::Scalar::BYTES];
     let take = secret.len().min(bytes.len());
     bytes[..take].copy_from_slice(&secret[..take]);
-    let (d, _) = C::Scalar::from_bytes_be(&bits2int::<C>(&bytes));
+    let (d, _) = C::Scalar::from_bytes_be(&bits2int::<C>(&bytes)).into_parts();
     let Some(pair) = EcKeyPair::<C>::from_secret_opt(d) else {
         return;
     };
@@ -714,20 +721,78 @@ where
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(ProptestConfig::with_cases(6))]
 
+    /// Every curve with every hash: hashes longer than $n$ (truncated) and
+    /// shorter (padded) included.
     #[test]
     fn signature_laws(
         secret in prop::collection::vec(any::<u8>(), 1..66),
         message in prop::collection::vec(any::<u8>(), 0..200),
         other in prop::collection::vec(any::<u8>(), 0..200),
     ) {
-        laws::<P256, Sha256>(&secret, &message, &other);
-        laws::<P384, Sha384>(&secret, &message, &other);
-        laws::<P521, Sha512>(&secret, &message, &other);
-        // A hash longer than n (truncated) and one shorter (padded).
-        laws::<P256, Sha512>(&secret, &message, &other);
-        laws::<P521, Sha256>(&secret, &message, &other);
+        for hash in Algorithm::ALL {
+            let run = Laws { secret: &secret, message: &message, other: &other };
+            hash.with(LawsOn::<P256>(run, core::marker::PhantomData));
+            hash.with(LawsOn::<P384>(run, core::marker::PhantomData));
+            hash.with(LawsOn::<P521>(run, core::marker::PhantomData));
+        }
+    }
+
+    /// The DER decoder of signatures, and the decoder of public keys, are
+    /// canonical: on arbitrary bytes, and on a valid encoding with one bit
+    /// flipped, whatever decodes re-encodes to the same bytes.
+    #[test]
+    fn decoders_are_canonical(
+        bytes in prop::collection::vec(any::<u8>(), 0..80),
+        message in prop::collection::vec(any::<u8>(), 0..64),
+        bit in any::<usize>(),
+    ) {
+        canonical::<Signature<C1>>(&bytes);
+        canonical::<PublicKey<C1>>(&bytes);
+        let pair =
+            EcKeyPair::<C1>::from_secret_opt(<C1 as Curve>::Scalar::from_u64(3))
+                .unwrap();
+        let valid = [
+            Ecdsa::<C1, Sha256>::sign(&pair, &message).unwrap().encode(),
+            pair.public().encode(),
+        ];
+        for encoding in valid {
+            canonical::<Signature<C1>>(&encoding);
+            canonical::<PublicKey<C1>>(&encoding);
+            let mut flipped = encoding.clone();
+            let i = (bit / 8) % flipped.len();
+            flipped[i] ^= 1 << (bit % 8);
+            canonical::<Signature<C1>>(&flipped);
+            canonical::<PublicKey<C1>>(&flipped);
+        }
+    }
+}
+
+/// The inputs of [`laws`].
+#[derive(Clone, Copy)]
+struct Laws<'a> {
+    secret: &'a [u8],
+    message: &'a [u8],
+    other: &'a [u8],
+}
+
+/// [`laws`] on the curve `C`, with the hash a run-time name gives.
+struct LawsOn<'a, C>(Laws<'a>, core::marker::PhantomData<C>)
+where
+    C: ShortWeierstrass;
+
+impl<C> WithHash for LawsOn<'_, C>
+where
+    C: ShortWeierstrass,
+{
+    type Output = ();
+
+    fn run<H>(self)
+    where
+        H: DrbgHash,
+    {
+        laws::<C, H>(self.0.secret, self.0.message, self.0.other);
     }
 }
 
@@ -932,17 +997,14 @@ fn hex_int(digits: &str) -> Vec<u8> {
 }
 
 /// The point `04 || x || y`, when it is one of the curve.
-fn point_opt<C>(
-    x: &str,
-    y: &str,
-) -> Option<crate::models::weierstrass::affine::Affine<C>>
+fn point_opt<C>(x: &str, y: &str) -> Option<PublicKey<C>>
 where
     C: ShortWeierstrass,
 {
     let mut bytes = vec![0x04];
     bytes.extend(coordinate::<C>(x));
     bytes.extend(coordinate::<C>(y));
-    crate::models::weierstrass::affine::Affine::<C>::decode_opt(&bytes)
+    PublicKey::<C>::decode_opt(&bytes)
 }
 
 /// The scalar a hexadecimal integer is, when it is in $[0, n - 1]$.
@@ -953,7 +1015,7 @@ where
     let digits = hex_int(hex_be);
     let mut bytes = vec![0u8; C::Scalar::BYTES.checked_sub(digits.len())?];
     bytes.extend(digits);
-    let (s, valid) = C::Scalar::from_bytes_be(&bytes);
+    let (s, valid) = C::Scalar::from_bytes_be(&bytes).into_parts();
     valid.to_bool_vartime().then_some(s)
 }
 
@@ -1009,7 +1071,7 @@ where
     for (i, r) in records.iter().enumerate() {
         let d = scalar_opt::<C>(field(r, "d")).unwrap();
         let pair = EcKeyPair::<C>::from_secret_opt(d).unwrap();
-        let (qx, qy) = pair.public().coordinates_opt().unwrap();
+        let (qx, qy) = pair.public().point().coordinates_opt().unwrap();
         assert_eq!(
             qx.to_bytes_be(),
             coordinate::<C>(field(r, "Qx")),
@@ -1020,11 +1082,13 @@ where
             coordinate::<C>(field(r, "Qy")),
             "{section} {i} Qy"
         );
-        let digest = super::reduce_once::<C>(&bits2int::<C>(&H::digest(&hex(
-            field(r, "Msg"),
-        ))));
-        let k = scalar_opt::<C>(field(r, "k")).unwrap();
-        let signature = Ecdsa::<C, H>::sign_with_opt(&d, &digest, &k).unwrap();
+        let digest = super::reduce_once_vartime::<C>(&bits2int::<C>(
+            &H::digest(&hex(field(r, "Msg"))),
+        ));
+        let k = SecretScalar::new(scalar_opt::<C>(field(r, "k")).unwrap());
+        let signature =
+            Ecdsa::<C, H>::sign_with_opt(&SecretScalar::new(d), &digest, &k)
+                .unwrap();
         assert_eq!(
             *signature.r(),
             scalar_opt::<C>(field(r, "R")).unwrap(),
@@ -1096,10 +1160,7 @@ where
             continue;
         }
         let message = if f[2] == "-" { Vec::new() } else { hex(f[2]) };
-        let key = crate::models::weierstrass::affine::Affine::<C>::decode_opt(
-            &hex(f[3]),
-        )
-        .unwrap();
+        let key = PublicKey::<C>::decode_opt(&hex(f[3])).unwrap();
         let signature = Signature::<C>::decode(&hex(f[4])).unwrap();
         assert!(Ecdsa::<C, H>::verify(&key, &message, &signature), "{line}");
         assert_eq!(signature.encode(), hex(f[4]), "re-encodes: {line}");

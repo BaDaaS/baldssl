@@ -144,14 +144,19 @@ use baldssl_crypto::{
     algebra::{
         curve::{Curve, ShortWeierstrass},
         field::PrimeField,
-        model::AffineModel,
     },
     instances::{P256, P384, P521},
     keys::{EcKeyPair, EdDsaKeyPair},
-    models::weierstrass::{affine::Affine, compressed::Compressed},
+    models::weierstrass::{
+        COMPRESSED_EVEN, COMPRESSED_ODD, UNCOMPRESSED, affine::Affine,
+        compressed::Compressed,
+    },
     os_rng::{self, RngError},
     secret::SecretBytes,
-    signature::eddsa::{Ed25519, Ed25519Parameters},
+    signature::{
+        ecdsa::PublicKey as EcdsaPublicKey,
+        eddsa::{Ed25519, Ed25519Parameters},
+    },
 };
 
 use crate::asn1::{
@@ -222,16 +227,18 @@ impl EcCurve {
 /// A public point of the curve `C` in either SEC 1 form, as
 /// [`EcCurve::decode_point_opt`] reads it, as a point: `None` for the
 /// identity and for whatever is not a point.
-pub(crate) fn point_opt<C>(bytes: &[u8]) -> Option<Affine<C>>
+pub(crate) fn point_opt<C>(bytes: &[u8]) -> Option<EcdsaPublicKey<C>>
 where
     C: ShortWeierstrass,
 {
-    let point = match bytes.first()? {
-        0x04 => Affine::<C>::decode_opt(bytes)?,
-        0x02 | 0x03 => Compressed::<C>::decode_opt(bytes)?.0,
+    let point = match *bytes.first()? {
+        UNCOMPRESSED => Affine::<C>::decode_opt(bytes)?,
+        COMPRESSED_EVEN | COMPRESSED_ODD => {
+            Compressed::<C>::decode_opt(bytes)?.0
+        }
         _ => return None,
     };
-    (!point.is_identity().to_bool_vartime()).then_some(point)
+    EcdsaPublicKey::new_opt(point)
 }
 
 impl Algorithm {
@@ -360,7 +367,7 @@ where
 {
     const ALGORITHM: Algorithm = <C as NamedCurve>::ALGORITHM;
     type KeyPair = EcKeyPair<C>;
-    type PublicKey = Affine<C>;
+    type PublicKey = EcdsaPublicKey<C>;
 
     fn generate<F, E>(fill: F) -> core::result::Result<EcKeyPair<C>, E>
     where
@@ -373,15 +380,16 @@ where
         if secret.len() != C::Scalar::BYTES {
             return Err(Error::invalid("private key length"));
         }
-        let (d, valid) = C::Scalar::from_bytes_be(secret);
-        if !valid.to_bool_vartime() {
-            return Err(Error::invalid("private scalar not in [1, n - 1]"));
-        }
+        let d = C::Scalar::from_bytes_be(secret)
+            .into_vartime_opt()
+            .ok_or_else(|| {
+                Error::invalid("private scalar not in [1, n - 1]")
+            })?;
         EcKeyPair::from_secret_opt(d)
             .ok_or_else(|| Error::invalid("private scalar not in [1, n - 1]"))
     }
 
-    fn public_key(pair: &EcKeyPair<C>) -> &Affine<C> {
+    fn public_key(pair: &EcKeyPair<C>) -> &EcdsaPublicKey<C> {
         pair.public()
     }
 
@@ -395,7 +403,7 @@ where
             &(
                 1,
                 (
-                    pair.secret().to_bytes_be(),
+                    pair.secret().expose().to_bytes_be(),
                     (None, (Some(pair.public().encode()), ())),
                 ),
             ),
@@ -419,7 +427,7 @@ where
             &(
                 1,
                 (
-                    pair.secret().to_bytes_be(),
+                    pair.secret().expose().to_bytes_be(),
                     (
                         Some(RawTlv::encode(&ObjectIdentifier, &C::OID)),
                         (Some(pair.public().encode()), ()),
@@ -430,7 +438,7 @@ where
     }
 
     fn secret(pair: &EcKeyPair<C>) -> SecretBytes {
-        SecretBytes::new(pair.secret().to_bytes_be())
+        SecretBytes::new(pair.secret().expose().to_bytes_be())
     }
 }
 
@@ -457,11 +465,11 @@ impl KeyAlgorithm for Ed25519 {
     }
 
     fn public_key(pair: &EdDsaKeyPair<Ed25519Parameters>) -> &[u8] {
-        pair.public()
+        pair.public().as_bytes()
     }
 
     fn public_key_bytes(pair: &EdDsaKeyPair<Ed25519Parameters>) -> Vec<u8> {
-        pair.public().to_vec()
+        pair.public().as_bytes().to_vec()
     }
 
     fn pkcs8(pair: &EdDsaKeyPair<Ed25519Parameters>) -> Vec<u8> {
@@ -489,7 +497,7 @@ fn rng_error(e: RngError) -> Error {
         RngError::Unsupported => {
             Error::unsupported("key generation: no source of randomness")
         }
-        RngError::Os(_) => Error::Io {
+        RngError::Os(_) | RngError::Unexpected => Error::Io {
             context: "reading randomness".into(),
             message: e.to_string(),
         },
@@ -504,7 +512,7 @@ fn rng_error(e: RngError) -> Error {
 /// use baldssl_pkey::PrivateKey;
 /// let a = PrivateKey::<P256>::generate().unwrap();
 /// let b = PrivateKey::<P384>::generate().unwrap();
-/// // Affine<P256> and Affine<P384> are different types.
+/// // PublicKey<P256> and PublicKey<P384> are different types.
 /// assert_eq!(a.public_key(), b.public_key());
 /// ```
 pub struct PrivateKey<A>

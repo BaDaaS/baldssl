@@ -38,7 +38,8 @@ use crate::ct::{Choice, CtEq, CtSelect};
 /// An abelian group with constant-time operations. See the module
 /// documentation for the laws.
 pub trait Group:
-    Copy
+    crate::sealed::Sealed
+    + Copy
     + CtEq
     + CtSelect
     + Add<Output = Self>
@@ -60,7 +61,9 @@ pub trait Group:
 /// An abelian group with variable-time operations: correct for every input,
 /// but the running time depends on the points, so only for public ones
 /// (signature verification, decoding).
-pub trait GroupVartime: Copy + CtEq + Neg<Output = Self> {
+pub trait GroupVartime:
+    crate::sealed::Sealed + Copy + CtEq + Neg<Output = Self>
+{
     /// The neutral element $O$.
     #[must_use]
     fn identity() -> Self;

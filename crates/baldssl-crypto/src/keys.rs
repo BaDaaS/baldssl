@@ -24,20 +24,23 @@
 //! # Secrets
 //!
 //! The secret is never printed (`Debug` shows the public part only) and is
-//! overwritten when the pair is dropped. That is best effort: without
-//! `unsafe` (volatile writes) the compiler may elide the writes, and copies
-//! made earlier (by moves, or in registers) are not reached.
+//! overwritten when the pair is dropped: the EC scalar is a [`SecretScalar`],
+//! the EdDSA seed is overwritten by the pair's `Drop`. That is best effort:
+//! without `unsafe` (volatile writes) the compiler may elide the writes, and
+//! copies made earlier (by moves, or in registers) are not reached.
 
 use crate::{
     algebra::{
-        curve::ShortWeierstrass,
+        curve::{Curve, ShortWeierstrass},
         field::{Field, PrimeField},
         model::{CurveModel, ProjectiveModel},
     },
-    models::weierstrass::{affine::Affine, projective::Projective},
+    models::edwards::{affine::Affine as EdwardsAffine, extended::Extended},
+    secret::SecretScalar,
     signature::{
         DigitalSignature,
-        eddsa::{EdDSA, EddsaParameters},
+        ecdsa::PublicKey as EcdsaPublicKey,
+        eddsa::{EdDSA, EddsaParameters, PublicKey as EddsaPublicKey},
     },
 };
 
@@ -47,8 +50,8 @@ pub struct EcKeyPair<C>
 where
     C: ShortWeierstrass,
 {
-    secret: C::Scalar,
-    public: Affine<C>,
+    secret: SecretScalar<C::Scalar>,
+    public: EcdsaPublicKey<C>,
 }
 
 impl<C> EcKeyPair<C>
@@ -63,8 +66,12 @@ where
 
     /// The pair of a nonzero `d`: $Q = d G$.
     fn of_nonzero(d: C::Scalar) -> Self {
-        let public =
-            C::scalar_mul(&Projective::<C>::generator(), &d).to_affine();
+        Self::of_nonzero_secret(SecretScalar::new(d))
+    }
+
+    /// The pair of a nonzero secret `d`: $Q = d G$.
+    fn of_nonzero_secret(d: SecretScalar<C::Scalar>) -> Self {
+        let public = EcdsaPublicKey::of_nonzero(&d);
         EcKeyPair { secret: d, public }
     }
 
@@ -77,18 +84,18 @@ where
     where
         F: FnMut(&mut [u8]) -> Result<(), E>,
     {
-        Ok(Self::of_nonzero(C::Scalar::random_nonzero(fill)?))
+        Ok(Self::of_nonzero_secret(C::Scalar::random_nonzero(fill)?))
     }
 
     /// The secret scalar $d$.
     #[must_use]
-    pub fn secret(&self) -> &C::Scalar {
+    pub fn secret(&self) -> &SecretScalar<C::Scalar> {
         &self.secret
     }
 
-    /// The public point $Q = d G$.
+    /// The public key $Q = d G$.
     #[must_use]
-    pub fn public(&self) -> &Affine<C> {
+    pub fn public(&self) -> &EcdsaPublicKey<C> {
         &self.public
     }
 }
@@ -106,17 +113,6 @@ where
     }
 }
 
-/// Overwrites the secret (best effort; see the module documentation).
-impl<C> Drop for EcKeyPair<C>
-where
-    C: ShortWeierstrass,
-{
-    fn drop(&mut self) {
-        self.secret = C::Scalar::ZERO;
-        core::hint::black_box(&self.secret);
-    }
-}
-
 /// An EdDSA key pair for the parameters `P`: a seed and its public key.
 pub struct EdDsaKeyPair<P>
 where
@@ -124,7 +120,7 @@ where
     P::Seed: AsMut<[u8]>,
 {
     seed: P::Seed,
-    public: Vec<u8>,
+    public: EddsaPublicKey<P>,
 }
 
 impl<P> EdDsaKeyPair<P>
@@ -135,8 +131,17 @@ where
     /// The pair of a seed. Every seed is a secret key.
     #[must_use]
     pub fn from_seed(seed: P::Seed) -> Self {
-        let public = EdDSA::<P>::public_key(&seed);
-        EdDsaKeyPair { seed, public }
+        let s = EdDSA::<P>::secret_scalar(&seed);
+        let point: EdwardsAffine<P::Curve> =
+            <P::Curve as Curve>::scalar_mul_bytes(
+                &Extended::<P::Curve>::generator(),
+                s.expose(),
+            )
+            .to_affine();
+        EdDsaKeyPair {
+            seed,
+            public: EddsaPublicKey::from_point(&point),
+        }
     }
 
     /// A pair with a uniformly random seed, drawn from `fill`.
@@ -160,9 +165,9 @@ where
         &self.seed
     }
 
-    /// The public key, as RFC 8032 encodes it (little-endian).
+    /// The public key, encoded as RFC 8032 encodes it (little-endian).
     #[must_use]
-    pub fn public(&self) -> &[u8] {
+    pub fn public(&self) -> &EddsaPublicKey<P> {
         &self.public
     }
 }

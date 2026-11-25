@@ -70,7 +70,7 @@ where
     };
     let x3 = lambda.square() - x1 - x2;
     let y3 = lambda * (x1 - x3) - y1;
-    let (point, on_curve) = Affine::from_coordinates(x3, y3);
+    let (point, on_curve) = Affine::from_coordinates(x3, y3).into_parts();
     assert!(on_curve.to_bool_vartime(), "reference left the curve");
     point
 }
@@ -225,7 +225,7 @@ where
     if let Some(first) = b.first_mut() {
         *first &= 0xff >> spare;
     }
-    let (s, valid) = C::Scalar::from_bytes_be(&b);
+    let (s, valid) = C::Scalar::from_bytes_be(&b).into_parts();
     valid.to_bool_vartime().then_some(s)
 }
 
@@ -336,7 +336,8 @@ where
     let (off_point, on_curve) = Affine::<C>::from_coordinates(
         ap.coordinates_opt().unwrap().0,
         ap.coordinates_opt().unwrap().1 + C::Base::ONE,
-    );
+    )
+    .into_parts();
     assert!(!on_curve.to_bool_vartime());
     assert_eq!(off_point, Affine::identity());
 }
@@ -555,12 +556,12 @@ fn check_sqrt<C>(a: C::Base)
 where
     C: ShortWeierstrass,
 {
-    let (root, is_square) = a.square().sqrt();
+    let (root, is_square) = a.square().sqrt().into_parts();
     assert!(is_square.to_bool_vartime(), "{}: a^2 is a square", C::NAME);
     assert!(root == a || root == -a, "{}: the root of a^2", C::NAME);
     if !a.is_zero().to_bool_vartime() {
         assert!(
-            !(-a.square()).sqrt().1.to_bool_vartime(),
+            !(-a.square()).sqrt().is_some().to_bool_vartime(),
             "{}: -a^2",
             C::NAME
         );
@@ -573,9 +574,9 @@ where
 {
     let p = C::Base::modulus_be();
     assert_eq!(p.last().map(|b| b & 3), Some(3), "{}: p = 3 mod 4", C::NAME);
-    let (zero, ok) = C::Base::ZERO.sqrt();
+    let (zero, ok) = C::Base::ZERO.sqrt().into_parts();
     assert!(ok.to_bool_vartime() && zero.is_zero().to_bool_vartime());
-    assert!(!(-C::Base::ONE).sqrt().1.to_bool_vartime(), "-1");
+    assert!(!(-C::Base::ONE).sqrt().is_some().to_bool_vartime(), "-1");
     check_sqrt::<C>(C::Base::ONE);
     check_sqrt::<C>(-C::Base::ONE);
     for v in 2..64 {

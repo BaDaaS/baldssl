@@ -193,7 +193,8 @@ where
     M: Modulus<N>,
 {
     let (x, valid) =
-        Fp::<M, N>::from_bytes_be(&value.to_bytes_be(Fp::<M, N>::BYTES));
+        Fp::<M, N>::from_bytes_be(&value.to_bytes_be(Fp::<M, N>::BYTES))
+            .into_parts();
     assert!(valid.to_bool_vartime(), "{} not below the modulus", M::NAME);
     x
 }
@@ -279,20 +280,33 @@ where
     assert!(!F::<M, N>::ONE.is_zero().to_bool_vartime());
     for bad in [p.clone(), p.add(&Nat::from_u64(1))] {
         let (x, valid) =
-            F::<M, N>::from_bytes_be(&bad.to_bytes_be(F::<M, N>::BYTES));
+            F::<M, N>::from_bytes_be(&bad.to_bytes_be(F::<M, N>::BYTES))
+                .into_parts();
         assert!(!valid.to_bool_vartime(), "{}: accepted p or p + 1", M::NAME);
         assert_eq!(x, F::<M, N>::ZERO);
         let mut le = bad.to_bytes_be(F::<M, N>::BYTES);
         le.reverse();
-        assert!(!F::<M, N>::from_bytes_le(&le).1.to_bool_vartime());
+        assert!(!F::<M, N>::from_bytes_le(&le).is_some().to_bool_vartime());
     }
-    assert!(!F::<M, N>::from_bytes_le(&[0u8; 3]).1.to_bool_vartime());
+    assert!(
+        !F::<M, N>::from_bytes_le(&[0u8; 3])
+            .is_some()
+            .to_bool_vartime()
+    );
     // -1 = p - 1 is even, 1 is odd.
     assert!(!top.is_odd().to_bool_vartime());
     assert!(F::<M, N>::ONE.is_odd().to_bool_vartime());
     let all_ones = vec![0xffu8; F::<M, N>::BYTES];
-    assert!(!F::<M, N>::from_bytes_be(&all_ones).1.to_bool_vartime());
-    assert!(!F::<M, N>::from_bytes_be(&[0u8; 3]).1.to_bool_vartime());
+    assert!(
+        !F::<M, N>::from_bytes_be(&all_ones)
+            .is_some()
+            .to_bool_vartime()
+    );
+    assert!(
+        !F::<M, N>::from_bytes_be(&[0u8; 3])
+            .is_some()
+            .to_bool_vartime()
+    );
 }
 
 #[test]
@@ -347,7 +361,7 @@ where
     let mut le = ra.to_bytes_be(Fp::<M, N>::BYTES);
     le.reverse();
     assert_eq!(a.to_bytes_le(), le, "{} le bytes", M::NAME);
-    let (back, ok) = Fp::<M, N>::from_bytes_le(&le);
+    let (back, ok) = Fp::<M, N>::from_bytes_le(&le).into_parts();
     assert!(
         ok.to_bool_vartime() && back == a,
         "{} le round trip",

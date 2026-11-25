@@ -12,7 +12,10 @@
 //!
 //! [sec1]: https://www.secg.org/sec1-v2.pdf
 
-use super::affine::{Affine, rhs};
+use super::{
+    COMPRESSED_EVEN, COMPRESSED_ODD, IDENTITY,
+    affine::{Affine, rhs},
+};
 use crate::algebra::{
     curve::ShortWeierstrass,
     encoding::{Decodable, Encodable, InvalidEncoding},
@@ -67,13 +70,13 @@ where
 
     fn encode(&self) -> Vec<u8> {
         let Some((x, y)) = self.0.coordinates_opt() else {
-            return vec![0x00];
+            return vec![IDENTITY];
         };
         let mut out = Vec::with_capacity(1 + C::Base::BYTES);
         out.push(if y.is_odd().to_bool_vartime() {
-            0x03
+            COMPRESSED_ODD
         } else {
-            0x02
+            COMPRESSED_EVEN
         });
         out.extend(x.to_bytes_be());
         out
@@ -92,20 +95,25 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
-        if bytes == [0x00] {
+        if bytes == [IDENTITY] {
             return Ok(Compressed(Affine::identity()));
         }
         let prefix = *bytes.first().ok_or(InvalidEncoding)?;
-        if bytes.len() != 1 + C::Base::BYTES || !matches!(prefix, 0x02 | 0x03) {
+        let want_odd = match prefix {
+            COMPRESSED_EVEN => false,
+            COMPRESSED_ODD => true,
+            _ => return Err(InvalidEncoding),
+        };
+        if bytes.len() != 1 + C::Base::BYTES {
             return Err(InvalidEncoding);
         }
-        let (x, x_ok) =
-            C::Base::from_bytes_be(bytes.get(1..).ok_or(InvalidEncoding)?);
-        let (root, is_square) = rhs::<C>(x).sqrt();
-        if !(x_ok & is_square).to_bool_vartime() {
-            return Err(InvalidEncoding);
-        }
-        let want_odd = prefix == 0x03;
+        let x = C::Base::from_bytes_be(bytes.get(1..).ok_or(InvalidEncoding)?)
+            .into_vartime_opt()
+            .ok_or(InvalidEncoding)?;
+        let root = rhs::<C>(x)
+            .sqrt()
+            .into_vartime_opt()
+            .ok_or(InvalidEncoding)?;
         let y = if root.is_odd().to_bool_vartime() == want_odd {
             root
         } else {
@@ -115,10 +123,9 @@ where
             // y = 0 = -0 is even, so 03 has no point.
             return Err(InvalidEncoding);
         }
-        let (point, on_curve) = Affine::<C>::from_coordinates(x, y);
-        on_curve
-            .to_bool_vartime()
-            .then_some(Compressed(point))
+        Affine::<C>::from_coordinates(x, y)
+            .into_vartime_opt()
+            .map(Compressed)
             .ok_or(InvalidEncoding)
     }
 }

@@ -1,12 +1,15 @@
 //! SHA-1, [FIPS 180-4][fips180] sections 5.3.1 and 6.1.
 //!
-//! SHA-1 is collision-broken (Stevens et al., "The first collision for full
-//! SHA-1", CRYPTO 2017; Leurent and Peyrin, "SHA-1 is a Shambles", USENIX
-//! Security 2020). It is provided only for fingerprints and for reading
+//! SHA-1 is collision-broken (Stevens, Bursztein, Karpman, Albertini and
+//! Markov, [*The first collision for full SHA-1*][stevens], CRYPTO 2017;
+//! Leurent and Peyrin, [*SHA-1 is a Shambles*][shambles], USENIX Security
+//! 2020). It is provided only for fingerprints and for reading
 //! legacy signatures, never for producing new ones.
 //! Single-letter names (`a` to `h`, `w`, `t`) are the specification's.
 //!
 //! [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+//! [stevens]: https://doi.org/10.1007/978-3-319-63688-7_19
+//! [shambles]: https://www.usenix.org/conference/usenixsecurity20/presentation/leurent
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
@@ -15,8 +18,12 @@
 
 use baldssl_core::num::usize_to_u64;
 
-use crate::Digest;
+use super::PADDING_START;
+use crate::{Digest, secret::wipe};
 
+/// The initial hash value $H^{(0)}$ ([FIPS 180-4][fips180], section 5.3.1).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
 const H: [u32; 5] = [
     0x6745_2301,
     0xefcd_ab89,
@@ -25,7 +32,19 @@ const H: [u32; 5] = [
     0xc3d2_e1f0,
 ];
 
-fn compress(h: &mut [u32; 5], block: &[u8; 64]) {
+/// The constants $K_t$ of rounds 0 to 19, 20 to 39, 40 to 59 and 60 to 79
+/// ([FIPS 180-4][fips180], section 4.2.1).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+const K: [u32; 4] = [0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc, 0xca62_c1d6];
+
+/// The block length in bytes, 512 bits.
+const BLOCK: usize = 64;
+
+/// The compression function ([FIPS 180-4][fips180], section 6.1.2).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+fn compress(h: &mut [u32; 5], block: &[u8; BLOCK]) {
     let mut w = [0u32; 80];
     for t in 0..16 {
         w[t] = u32::from_be_bytes([
@@ -41,10 +60,10 @@ fn compress(h: &mut [u32; 5], block: &[u8; 64]) {
     let [mut a, mut b, mut c, mut d, mut e] = *h;
     for (t, &wt) in w.iter().enumerate() {
         let (f, k) = match t {
-            0..=19 => ((b & c) | (!b & d), 0x5a82_7999),
-            20..=39 => (b ^ c ^ d, 0x6ed9_eba1),
-            40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1b_bcdc),
-            _ => (b ^ c ^ d, 0xca62_c1d6),
+            0..=19 => ((b & c) | (!b & d), K[0]),
+            20..=39 => (b ^ c ^ d, K[1]),
+            40..=59 => ((b & c) | (b & d) | (c & d), K[2]),
+            _ => (b ^ c ^ d, K[3]),
         };
         let temp = a
             .rotate_left(5)
@@ -61,15 +80,26 @@ fn compress(h: &mut [u32; 5], block: &[u8; 64]) {
     for (x, v) in h.iter_mut().zip([a, b, c, d, e]) {
         *x = x.wrapping_add(v);
     }
+    wipe(&mut w);
 }
 
 /// SHA-1.
 #[derive(Clone)]
 pub struct Sha1 {
     h: [u32; 5],
-    buf: [u8; 64],
+    buf: [u8; BLOCK],
     buf_len: usize,
     len: u64,
+}
+
+impl crate::sealed::Sealed for Sha1 {}
+
+/// Overwrites the chaining value and the buffer.
+impl Drop for Sha1 {
+    fn drop(&mut self) {
+        wipe(&mut self.h);
+        wipe(&mut self.buf);
+    }
 }
 
 impl Digest for Sha1 {
@@ -96,8 +126,7 @@ impl Digest for Sha1 {
             if self.buf_len < 64 {
                 return;
             }
-            let block = self.buf;
-            compress(&mut self.h, &block);
+            compress(&mut self.h, &self.buf);
             self.buf_len = 0;
         }
         let (blocks, rest) = data.as_chunks::<64>();
@@ -111,7 +140,7 @@ impl Digest for Sha1 {
     fn finalize(mut self) -> Vec<u8> {
         let bits = self.len.wrapping_mul(8);
         let mut pad = [0u8; 64];
-        pad[0] = 0x80;
+        pad[0] = PADDING_START;
         let zeros = (119 - self.buf_len) % 64;
         let mut tail = Vec::with_capacity(zeros + 9);
         tail.extend_from_slice(&pad[..=zeros]);

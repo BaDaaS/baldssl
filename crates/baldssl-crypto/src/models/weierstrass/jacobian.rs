@@ -89,6 +89,8 @@ where
 /// Those equations hold trivially when one side is the identity (stored as
 /// $(0, 0, 0)$), so the identity is compared on its own: two points are
 /// equal when both are the identity, or neither is and the equations hold.
+impl<C> crate::sealed::Sealed for Jacobian<C> where C: ShortWeierstrass {}
+
 impl<C> CtEq for Jacobian<C>
 where
     C: ShortWeierstrass,
@@ -289,14 +291,18 @@ where
             return Err(InvalidEncoding);
         }
         let mut chunks = bytes.chunks(C::Base::BYTES);
-        let (x, x_ok) =
-            C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?);
-        let (y, y_ok) =
-            C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?);
-        let (z, z_ok) =
-            C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?);
+        let x = C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?)
+            .into_vartime_opt()
+            .ok_or(InvalidEncoding)?;
+        let y = C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?)
+            .into_vartime_opt()
+            .ok_or(InvalidEncoding)?;
+        let z = C::Base::from_bytes_be(chunks.next().ok_or(InvalidEncoding)?)
+            .into_vartime_opt()
+            .ok_or(InvalidEncoding)?;
         let candidate = Jacobian::<C>::new(x, y, z);
-        (x_ok & y_ok & z_ok & candidate.is_on_curve())
+        candidate
+            .is_on_curve()
             .to_bool_vartime()
             .then_some(candidate)
             .ok_or(InvalidEncoding)

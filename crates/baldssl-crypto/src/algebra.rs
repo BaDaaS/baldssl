@@ -22,13 +22,17 @@
 //!
 //! The structures relate as follows: a field $K$ is an object of the
 //! category of fields; an elliptic curve $E$ over $K$ is a group object in
-//! the category of varieties over $K$ (the group law is a morphism, Silverman
-//! III.3.6), so its rational points $E(K)$ form an abelian group; the models
+//! the category of varieties over $K$ (the group law is a morphism,
+//! Silverman, [*The Arithmetic of Elliptic Curves*][silverman], III.3.6), so
+//! its rational points $E(K)$ form an abelian group; the models
 //! of $E$ (affine, projective, Jacobian) are isomorphic representations of
 //! that one group object, and the maps between them form a groupoid; and an
 //! abelian group is a $\mathbb{Z}$-module in exactly one way, since
 //! $\mathbb{Z}$ is the initial ring, which is why scalar multiplication is
 //! defined once for every group.
+
+//!
+//! [silverman]: https://doi.org/10.1007/978-0-387-09494-6
 
 pub mod curve;
 pub mod encoding;

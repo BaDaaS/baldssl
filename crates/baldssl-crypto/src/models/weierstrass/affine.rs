@@ -10,7 +10,7 @@
 
 use core::{marker::PhantomData, ops::Neg};
 
-use super::projective::Projective;
+use super::{IDENTITY, UNCOMPRESSED, projective::Projective};
 
 use crate::{
     algebra::{
@@ -19,7 +19,7 @@ use crate::{
         field::{Field, PrimeField},
         model::{AffineModel, Base, CurveModel},
     },
-    ct::{Choice, CtEq, CtSelect},
+    ct::{Choice, CtEq, CtOption, CtSelect},
 };
 
 /// A point of the curve `C` in affine coordinates, or the identity.
@@ -85,6 +85,8 @@ where
         _curve: PhantomData,
     }
 }
+
+impl<C> crate::sealed::Sealed for Affine<C> where C: ShortWeierstrass {}
 
 /// Equality of points: both identities are equal whatever the stored
 /// coordinates, and otherwise the coordinates are compared.
@@ -184,12 +186,12 @@ where
         self.infinity
     }
 
-    /// The point $(x, y)$, and whether it is on the curve. When it is not,
-    /// the identity is returned with a false [`Choice`].
-    fn from_coordinates(x: Base<Self>, y: Base<Self>) -> (Self, Choice) {
+    /// The point $(x, y)$, present when it is on the curve; the
+    /// placeholder is the identity.
+    fn from_coordinates(x: Base<Self>, y: Base<Self>) -> CtOption<Self> {
         let candidate = point(x, y);
         let on_curve = candidate.is_on_curve();
-        (
+        CtOption::new(
             Self::select(&Self::identity(), &candidate, on_curve),
             on_curve,
         )
@@ -214,10 +216,10 @@ where
 
     fn encode(&self) -> Vec<u8> {
         if self.infinity.to_bool_vartime() {
-            return vec![0x00];
+            return vec![IDENTITY];
         }
         let mut out = Vec::with_capacity(1 + 2 * C::Base::BYTES);
-        out.push(0x04);
+        out.push(UNCOMPRESSED);
         out.extend(self.x.to_bytes_be());
         out.extend(self.y.to_bytes_be());
         out
@@ -237,22 +239,25 @@ where
     type Error = InvalidEncoding;
 
     fn decode(bytes: &[u8]) -> Result<Self, InvalidEncoding> {
-        if bytes == [0x00] {
+        if bytes == [IDENTITY] {
             return Ok(Affine::<C>::identity());
         }
         let len = C::Base::BYTES;
-        if bytes.len() != 1 + 2 * len || bytes.first() != Some(&0x04) {
+        if bytes.len() != 1 + 2 * len || bytes.first() != Some(&UNCOMPRESSED) {
             return Err(InvalidEncoding);
         }
-        let (x, x_ok) =
+        let x =
             C::Base::from_bytes_be(bytes.get(1..=len).ok_or(InvalidEncoding)?);
-        let (y, y_ok) = C::Base::from_bytes_be(
+        let y = C::Base::from_bytes_be(
             bytes.get(1 + len..).ok_or(InvalidEncoding)?,
         );
-        let (point, on_curve) = Affine::<C>::from_coordinates(x, y);
-        (x_ok & y_ok & on_curve)
+        let point = Affine::<C>::from_coordinates(
+            x.unwrap_or_ct(&C::Base::ZERO),
+            y.unwrap_or_ct(&C::Base::ZERO),
+        );
+        (x.is_some() & y.is_some() & point.is_some())
             .to_bool_vartime()
-            .then_some(point)
+            .then(|| point.unwrap_or_ct(&Affine::identity()))
             .ok_or(InvalidEncoding)
     }
 }
