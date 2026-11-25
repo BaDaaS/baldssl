@@ -74,7 +74,16 @@ pub mod write;
 
 use core::fmt::Write as _;
 
-use self::syntax::RawTlv;
+use self::{
+    civil::{
+        CENTURY, CENTURY_BUT_ONE_DAY, DAYS_PER_ERA, DAYS_PER_FIVE_MONTHS,
+        DAYS_PER_YEAR, END_OF_9999, EPOCH_FROM_ERA_START, ERA_LAST_DAY,
+        FIVE_MONTHS, FOUR_YEARS_BUT_ONE_DAY, LEAP_EVERY, MARCH, MONTH_OFFSET,
+        MONTHS_PER_YEAR, SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE,
+        YEARS_PER_ERA,
+    },
+    syntax::RawTlv,
+};
 
 use crate::Error;
 
@@ -762,6 +771,61 @@ fn days_in_month(year: u16, month: u8) -> u8 {
     }
 }
 
+/// The constants of Howard Hinnant's civil calendar algorithms
+/// ([`civil_from_days` and `days_from_civil`][hinnant]), which count days in
+/// a proleptic Gregorian calendar shifted to start each year on 1 March, so
+/// that a leap day ends its year.
+///
+/// [hinnant]: https://howardhinnant.github.io/date_algorithms.html
+mod civil {
+    /// Seconds in a day, as POSIX time counts them (no leap seconds).
+    pub(super) const SECONDS_PER_DAY: i64 = 86_400;
+    /// Seconds in an hour.
+    pub(super) const SECONDS_PER_HOUR: i64 = 3_600;
+    /// Seconds in a minute.
+    pub(super) const SECONDS_PER_MINUTE: i64 = 60;
+    /// The last second a four-digit year can write, 9999-12-31T23:59:59Z.
+    pub(super) const END_OF_9999: i64 = 253_402_300_799;
+    /// Years in an era: the Gregorian calendar repeats every 400 years.
+    pub(super) const YEARS_PER_ERA: i64 = 400;
+    /// Days in an era: 400 years of 365 days, and 97 leap days.
+    pub(super) const DAYS_PER_ERA: i64 = 146_097;
+    /// Days in a common year.
+    pub(super) const DAYS_PER_YEAR: i64 = 365;
+    /// A leap year every four years ...
+    pub(super) const LEAP_EVERY: i64 = 4;
+    /// ... except at a century ...
+    pub(super) const CENTURY: i64 = 100;
+    /// Days in four years but the last, after which the era's day count
+    /// gains a leap day.
+    pub(super) const FOUR_YEARS_BUT_ONE_DAY: i64 = 1_460;
+    /// Days in a century but its leap day, after which a century loses one.
+    pub(super) const CENTURY_BUT_ONE_DAY: i64 = 36_524;
+    /// The era's last day, where the 400-year leap day falls.
+    pub(super) const ERA_LAST_DAY: i64 = 146_096;
+    /// Days from 0000-03-01, where the shifted calendar starts, to the Unix
+    /// epoch, 1970-01-01.
+    pub(super) const EPOCH_FROM_ERA_START: i64 = 719_468;
+    /// The month formula: from March, every 5 months span 153 days
+    /// (31, 30, 31, 30, 31), and an offset of 2 days rounds to the month's
+    /// first day.
+    pub(super) const DAYS_PER_FIVE_MONTHS: i64 = 153;
+    /// See [`DAYS_PER_FIVE_MONTHS`].
+    pub(super) const FIVE_MONTHS: i64 = 5;
+    /// See [`DAYS_PER_FIVE_MONTHS`].
+    pub(super) const MONTH_OFFSET: i64 = 2;
+    /// March, the first month of the shifted year.
+    pub(super) const MARCH: i64 = 3;
+    /// Months in a year.
+    pub(super) const MONTHS_PER_YEAR: i64 = 12;
+}
+
+/// The first year RFC 5280 writes as a GeneralizedTime rather than a
+/// UTCTime ([section 4.1.2.5]).
+///
+/// [section 4.1.2.5]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
+const FIRST_GENERALIZED_YEAR: u16 = 2050;
+
 impl Time {
     /// The time `seconds` after the Unix epoch, in the encoding RFC 5280
     /// requires of a certificate ([section 4.1.2.5]): UTCTime through 2049,
@@ -782,23 +846,32 @@ impl Time {
                   doy < 366) keep each subtraction non-negative"
     )]
     pub fn from_unix_seconds(seconds: u64) -> Self {
-        let seconds = seconds.min(253_402_300_799);
-        let days = seconds / 86_400;
-        let rest = seconds % 86_400;
-        // Shift the era to start on 0000-03-01, so leap days end a year.
-        let z = days + 719_468;
-        let era = z / 146_097;
-        let doe = z % 146_097;
-        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let day = doy - (153 * mp + 2) / 5 + 1;
-        let month = if mp < 10 { mp + 3 } else { mp - 9 };
-        let year = yoe + era * 400 + u64::from(month <= 2);
-        let narrow = |v: u64| u8::try_from(v).unwrap_or(u8::MAX);
+        let seconds =
+            i64::try_from(seconds).map_or(END_OF_9999, |s| s.min(END_OF_9999));
+        let days = seconds / SECONDS_PER_DAY;
+        let rest = seconds % SECONDS_PER_DAY;
+        let z = days + EPOCH_FROM_ERA_START;
+        let era = z / DAYS_PER_ERA;
+        let doe = z % DAYS_PER_ERA;
+        let yoe = (doe - doe / FOUR_YEARS_BUT_ONE_DAY
+            + doe / CENTURY_BUT_ONE_DAY
+            - doe / ERA_LAST_DAY)
+            / DAYS_PER_YEAR;
+        let doy =
+            doe - (DAYS_PER_YEAR * yoe + yoe / LEAP_EVERY - yoe / CENTURY);
+        let mp = (FIVE_MONTHS * doy + MONTH_OFFSET) / DAYS_PER_FIVE_MONTHS;
+        let day =
+            doy - (DAYS_PER_FIVE_MONTHS * mp + MONTH_OFFSET) / FIVE_MONTHS + 1;
+        let month = if mp + MARCH <= MONTHS_PER_YEAR {
+            mp + MARCH
+        } else {
+            mp + MARCH - MONTHS_PER_YEAR
+        };
+        let year = yoe + era * YEARS_PER_ERA + i64::from(month <= 2);
+        let narrow = |v: i64| u8::try_from(v).unwrap_or(u8::MAX);
         let year = u16::try_from(year).unwrap_or(u16::MAX);
         Time {
-            kind: if year < 2050 {
+            kind: if year < FIRST_GENERALIZED_YEAR {
                 TimeKind::Utc
             } else {
                 TimeKind::Generalized
@@ -806,11 +879,39 @@ impl Time {
             year,
             month: narrow(month),
             day: narrow(day),
-            hour: narrow(rest / 3_600),
-            minute: narrow(rest % 3_600 / 60),
-            second: narrow(rest % 60),
+            hour: narrow(rest / SECONDS_PER_HOUR),
+            minute: narrow(rest % SECONDS_PER_HOUR / SECONDS_PER_MINUTE),
+            second: narrow(rest % SECONDS_PER_MINUTE),
             fraction: String::new(),
         }
+    }
+
+    /// Seconds after the Unix epoch, negative before it: the inverse of
+    /// [`Time::from_unix_seconds`] on what it gives (a fraction is
+    /// dropped). The date is Howard Hinnant's [`days_from_civil`].
+    ///
+    /// [`days_from_civil`]: https://howardhinnant.github.io/date_algorithms.html#days_from_civil
+    #[must_use]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the year is at most 9999 and the other fields are \
+                  bounded by parsing, so every value stays far below 2^40"
+    )]
+    pub fn to_unix_seconds(&self) -> i64 {
+        let (month, day) = (i64::from(self.month), i64::from(self.day));
+        // Years start on 1 March, so a leap day ends one.
+        let year = i64::from(self.year) - i64::from(month <= 2);
+        let era = year.div_euclid(YEARS_PER_ERA);
+        let yoe = year.rem_euclid(YEARS_PER_ERA);
+        let mp = (month + MONTHS_PER_YEAR - MARCH) % MONTHS_PER_YEAR;
+        let doy =
+            (DAYS_PER_FIVE_MONTHS * mp + MONTH_OFFSET) / FIVE_MONTHS + day - 1;
+        let doe = yoe * DAYS_PER_YEAR + yoe / LEAP_EVERY - yoe / CENTURY + doy;
+        let days = era * DAYS_PER_ERA + doe - EPOCH_FROM_ERA_START;
+        days * SECONDS_PER_DAY
+            + i64::from(self.hour) * SECONDS_PER_HOUR
+            + i64::from(self.minute) * SECONDS_PER_MINUTE
+            + i64::from(self.second)
     }
 
     /// The DER of the time, one TLV: a UTCTime (`YYMMDDHHMMSSZ`, tag 23)
@@ -1158,6 +1259,13 @@ mod tests {
     }
 
     proptest! {
+        /// `to_unix_seconds` inverts `from_unix_seconds`.
+        #[test]
+        fn unix_seconds_round_trip(seconds in 0u64..=253_402_300_799) {
+            let back = Time::from_unix_seconds(seconds).to_unix_seconds();
+            prop_assert_eq!(u64::try_from(back).ok(), Some(seconds));
+        }
+
         /// Every time written reads back to itself.
         #[test]
         fn times_round_trip(seconds in 0u64..=253_402_300_799) {

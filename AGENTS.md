@@ -40,6 +40,30 @@ practices" says what the project does; this file says how to work in it.
   `baldssl-fs`, generic over `io::Write`; who may read a file is decided where
   it is opened (`create_owner_only`). A module holds one concern: no file
   handling in a command's key generation, no printing in a parser.
+- Every magic number and magic string has a named `const` (or an enum
+  discriminant) whose documentation says what it is and where it comes from: the
+  standard and its section, or the OpenSSL source file. Code uses the name,
+  never the literal (`HANDLED_CRITICAL`, `civil::DAYS_PER_ERA`,
+  `VERIFY_FAILED`).
+- Identifiers compare as values, never as text: match an `Oid` against
+  `ObjectId` constants (`e.oid == ID_CE_KEY_USAGE`), and convert with `From`.
+  Dotted text is for messages and tests only.
+- Codes and categories are enums, not integers: what OpenSSL returns as `0`,
+  `1`, `3` or `4` (`X509_check_ca`) is a `CaKind`, and an enum mirroring
+  OpenSSL's numbers carries them as discriminants (`#[repr(u32)]`).
+- A value with named parts that crosses a function boundary is a struct, not a
+  tuple (`Reported { error, depth }`, not `(VerifyError, usize)`).
+- No `Result<Result<..>>`. An early exit that is not a failure of the function
+  (verification ends here) shares one type with the errors, with a `From` impl,
+  so that `?` serves both; the public result is an enum of the outcomes
+  (`Verification::Verified` or `Verification::Failed`).
+- A structure is decoded once, into its type, and reused. A second decoder of
+  the same structure exists only with the reason in its documentation (the
+  `-text` printer accepts the malformed values OpenSSL prints, which the typed
+  decoding refuses).
+- A command returns what it writes on standard output and never writes standard
+  output itself; a failure that has output carries it
+  (`Error::Reported { code, output }`).
 - Constant-time code takes `Choice`, never `bool`, and never branches or indexes
   on secret data. Name the property: `_ct` for constant time, `_vartime` for
   variable time.

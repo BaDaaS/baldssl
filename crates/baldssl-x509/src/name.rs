@@ -16,7 +16,7 @@
 
 use baldssl_core::{
     Error, Result,
-    der::{Oid, Reader, Tlv, tag},
+    der::{Oid, Reader, Tlv, syntax::RawTlv, tag},
 };
 
 use crate::objects;
@@ -80,6 +80,54 @@ impl<'a> Name<'a> {
             rdns.push(rdn);
         }
         Ok(Name { rdns })
+    }
+
+    /// The name as OpenSSL compares names (`X509_NAME_cmp` over
+    /// `x509_name_canon`): each RDN as the sorted DER of its attributes,
+    /// where a string value (UTF8String, BMPString, UniversalString,
+    /// PrintableString, T61String, IA5String, VisibleString) becomes a
+    /// UTF8String with ASCII letters lowercased, leading and trailing
+    /// spaces dropped and inner runs of spaces made one (`asn1_string_canon`),
+    /// and any other value stays as it is. Two names are the same name for
+    /// chaining exactly when their canonical forms are equal.
+    ///
+    /// # Errors
+    ///
+    /// A string that does not convert to UTF-8.
+    pub(crate) fn canonical(&self) -> Result<CanonicalName> {
+        self.rdns
+            .iter()
+            .map(|rdn| {
+                let mut entries = rdn
+                    .iter()
+                    .map(|a| {
+                        let value =
+                            if CANONICAL_STRINGS.contains(&a.value.octet()) {
+                                let mut utf8 = Vec::new();
+                                string_to_utf8(&a.value, &mut utf8)?;
+                                RawTlv::from_tag_and_contents(
+                                    tag::UTF8_STRING,
+                                    &canonical_text(&utf8),
+                                )
+                            } else {
+                                RawTlv::parse(a.value.encoded)?
+                            };
+                        let mut entry = RawTlv::from_tag_and_contents(
+                            tag::OID,
+                            a.oid.as_bytes(),
+                        )
+                        .as_bytes()
+                        .to_vec();
+                        entry.extend_from_slice(value.as_bytes());
+                        Ok(RawTlv::from_tag_and_contents(tag::SEQUENCE, &entry))
+                    })
+                    .collect::<Result<Vec<RawTlv>>>()?;
+                // A SET OF in DER order: the RDN's entries as a set.
+                entries.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+                Ok(entries)
+            })
+            .collect::<Result<_>>()
+            .map(CanonicalName)
     }
 
     /// The OpenSSL default (`-nameopt` unset) one-line rendering.
@@ -177,6 +225,55 @@ fn push_utf8(c: u32, out: &mut Vec<u8>) -> Result<()> {
         _ => return Err(Error::unsupported("UniversalString above U+10FFFF")),
     }
     Ok(())
+}
+
+/// A name in the form OpenSSL compares names in ([`Name::canonical`]):
+/// for each RDN, the DER of its attributes in DER order. Two names chain
+/// exactly when their canonical forms are equal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CanonicalName(Vec<Vec<RawTlv>>);
+
+/// The string types OpenSSL canonicalizes in names (`ASN1_MASK_CANON`);
+/// NumericString is not one of them.
+const CANONICAL_STRINGS: [u8; 7] = [
+    tag::UTF8_STRING,
+    tag::BMP_STRING,
+    tag::UNIVERSAL_STRING,
+    tag::PRINTABLE_STRING,
+    tag::T61_STRING,
+    tag::IA5_STRING,
+    tag::VISIBLE_STRING,
+];
+
+/// The control characters OpenSSL's `ossl_isspace` counts as spaces, with
+/// the space itself: tab, line feed, vertical tab, form feed and carriage
+/// return (`crypto/ctype.c`).
+const CONTROL_SPACES: core::ops::RangeInclusive<u8> = 0x09..=0x0d;
+
+/// `asn1_string_canon` on UTF-8 text: leading and trailing spaces dropped,
+/// each inner run of spaces made one, ASCII letters lowercased; bytes of
+/// multi-byte characters are left alone, as OpenSSL leaves them.
+fn canonical_text(text: &[u8]) -> Vec<u8> {
+    let space = |b: &u8| *b == b' ' || CONTROL_SPACES.contains(b);
+    let start = text.iter().position(|b| !space(b)).unwrap_or(text.len());
+    let end = text
+        .iter()
+        .rposition(|b| !space(b))
+        .map_or(start, |i| i.saturating_add(1));
+    let mut out = Vec::with_capacity(end.saturating_sub(start));
+    let mut in_space = false;
+    for b in text.get(start..end).unwrap_or_default() {
+        if space(b) {
+            if !in_space {
+                out.push(b' ');
+            }
+            in_space = true;
+        } else {
+            out.push(b.to_ascii_lowercase());
+            in_space = false;
+        }
+    }
+    out
 }
 
 /// Converts an ASN.1 string to the bytes OpenSSL prints with
@@ -292,5 +389,64 @@ mod tests {
             prop_assume!(units.len() < 128);
             prop_assert_eq!(render(tag::BMP_STRING, &units).unwrap(), s.as_bytes());
         }
+    }
+
+    /// Names compare as OpenSSL compares them: string types, case and
+    /// spaces aside, and the entries of an RDN as a set.
+    #[test]
+    fn canonical_names() {
+        // SEQUENCE { SET { SEQUENCE { OID cn, <value> } } ... }
+        let name = |rdns: &[&[(u8, &[u8])]]| -> Vec<u8> {
+            let mut out = Vec::new();
+            for rdn in rdns {
+                let mut set = Vec::new();
+                for (tag, value) in *rdn {
+                    let mut atv = vec![0x06, 0x03, 0x55, 0x04, 0x03];
+                    atv.push(*tag);
+                    atv.push(u8::try_from(value.len()).unwrap());
+                    atv.extend_from_slice(value);
+                    set.push(0x30);
+                    set.push(u8::try_from(atv.len()).unwrap());
+                    set.extend(atv);
+                }
+                out.push(0x31);
+                out.push(u8::try_from(set.len()).unwrap());
+                out.extend(set);
+            }
+            let mut seq = vec![0x30, u8::try_from(out.len()).unwrap()];
+            seq.extend(out);
+            seq
+        };
+        let canonical = |der: &[u8]| {
+            Name::from_contents(
+                Reader::new(der).expect(tag::SEQUENCE).unwrap().value,
+            )
+            .unwrap()
+            .canonical()
+            .unwrap()
+        };
+        let printable = name(&[&[(tag::PRINTABLE_STRING, b"  Foo   Bar ")]]);
+        let utf8 = name(&[&[(tag::UTF8_STRING, b"foo bar")]]);
+        assert_eq!(canonical(&printable), canonical(&utf8));
+        assert_ne!(
+            canonical(&utf8),
+            canonical(&name(&[&[(tag::UTF8_STRING, b"foo baz")]]))
+        );
+        // NumericString is not canonicalized.
+        assert_ne!(
+            canonical(&name(&[&[(tag::NUMERIC_STRING, b"12")]])),
+            canonical(&name(&[&[(tag::UTF8_STRING, b"12")]]))
+        );
+        // The entries of a multi-valued RDN compare as a set.
+        assert_eq!(
+            canonical(&name(&[&[
+                (tag::UTF8_STRING, b"a"),
+                (tag::UTF8_STRING, b"b")
+            ]])),
+            canonical(&name(&[&[
+                (tag::UTF8_STRING, b"b"),
+                (tag::UTF8_STRING, b"a")
+            ]]))
+        );
     }
 }

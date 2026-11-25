@@ -69,14 +69,35 @@ pub(crate) fn parse(
     specs: &[Spec],
     extra: impl Fn(&str) -> bool,
 ) -> Result<Vec<Opt>> {
+    let (opts, operands) = parse_with_operands(command, args, specs, extra)?;
+    match operands.first() {
+        Some(arg) => Err(Error::Usage(format!(
+            "{command}: Extra option: \"{}\"",
+            arg.to_string_lossy()
+        ))),
+        None => Ok(opts),
+    }
+}
+
+/// As [`parse`], also taking arguments that are not options (the files of
+/// `verify`), returned in order.
+///
+/// # Errors
+///
+/// As [`parse`], except for positional arguments.
+pub(crate) fn parse_with_operands(
+    command: &str,
+    args: &[OsString],
+    specs: &[Spec],
+    extra: impl Fn(&str) -> bool,
+) -> Result<(Vec<Opt>, Vec<OsString>)> {
     let mut out = Vec::new();
+    let mut operands = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let Some((name, inline)) = split_option_opt(arg) else {
-            return Err(Error::Usage(format!(
-                "{command}: Extra option: \"{}\"",
-                arg.to_string_lossy()
-            )));
+            operands.push(arg.clone());
+            continue;
         };
         match specs.iter().find(|s| s.name == name) {
             Some(spec) if spec.kind == Kind::Value => {
@@ -111,7 +132,7 @@ pub(crate) fn parse(
             }
         }
     }
-    Ok(out)
+    Ok((out, operands))
 }
 
 /// The `-help` text.

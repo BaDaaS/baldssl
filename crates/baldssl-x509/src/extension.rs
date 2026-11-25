@@ -26,7 +26,8 @@ use baldssl_core::{
     Error, Result,
     der::syntax::{
         Any, Boolean, Implicit, NamedBits, ObjectId, ObjectIdentifier,
-        OctetString, RawTlv, Sequence, SequenceOf, Small, WithDefault,
+        OctetString, Optional, RawTlv, Sequence, SequenceOf, Small,
+        WithDefault, decode,
     },
 };
 
@@ -37,21 +38,25 @@ use crate::{
 };
 
 /// `subjectKeyIdentifier`, 2.5.29.14.
-const ID_CE_SUBJECT_KEY_IDENTIFIER: ObjectId =
+pub(crate) const ID_CE_SUBJECT_KEY_IDENTIFIER: ObjectId =
     ObjectId::from_static(&[0x55, 0x1d, 0x0e]);
 /// `keyUsage`, 2.5.29.15.
-const ID_CE_KEY_USAGE: ObjectId = ObjectId::from_static(&[0x55, 0x1d, 0x0f]);
+pub(crate) const ID_CE_KEY_USAGE: ObjectId =
+    ObjectId::from_static(&[0x55, 0x1d, 0x0f]);
 /// `subjectAltName`, 2.5.29.17.
-const ID_CE_SUBJECT_ALT_NAME: ObjectId =
+pub(crate) const ID_CE_SUBJECT_ALT_NAME: ObjectId =
     ObjectId::from_static(&[0x55, 0x1d, 0x11]);
 /// `basicConstraints`, 2.5.29.19.
-const ID_CE_BASIC_CONSTRAINTS: ObjectId =
+pub(crate) const ID_CE_BASIC_CONSTRAINTS: ObjectId =
     ObjectId::from_static(&[0x55, 0x1d, 0x13]);
 /// `authorityKeyIdentifier`, 2.5.29.35.
-const ID_CE_AUTHORITY_KEY_IDENTIFIER: ObjectId =
+pub(crate) const ID_CE_AUTHORITY_KEY_IDENTIFIER: ObjectId =
     ObjectId::from_static(&[0x55, 0x1d, 0x23]);
+/// `nameConstraints`, 2.5.29.30.
+pub(crate) const ID_CE_NAME_CONSTRAINTS: ObjectId =
+    ObjectId::from_static(&[0x55, 0x1d, 0x1e]);
 /// `extKeyUsage`, 2.5.29.37.
-const ID_CE_EXT_KEY_USAGE: ObjectId =
+pub(crate) const ID_CE_EXT_KEY_USAGE: ObjectId =
     ObjectId::from_static(&[0x55, 0x1d, 0x25]);
 
 /// The named bits of key usage ([RFC 5280 section 4.2.1.3]), in bit order:
@@ -70,6 +75,13 @@ pub(crate) const KEY_USAGE_BITS: [(&str, &str); 9] = [
     ("encipherOnly", "Encipher Only"),
     ("decipherOnly", "Decipher Only"),
 ];
+
+/// The nine bits of key usage [RFC 5280 section 4.2.1.3] names
+/// (`digitalSignature(0)` to `decipherOnly(8)`); any other bit names
+/// nothing.
+///
+/// [RFC 5280 section 4.2.1.3]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3
+const NAMED_KEY_USAGE_BITS: u64 = 0x1ff;
 
 /// A set of key usages: a subset of the nine named bits of
 /// [RFC 5280 section 4.2.1.3], bit `i` for the `i`-th. Sets form a Boolean
@@ -487,7 +499,9 @@ impl Extension {
 }
 
 /// An extension as read from a certificate or a request, kept opaque
-/// ([`ExtensionValue::Other`]): what copying needs.
+/// ([`ExtensionValue::Other`]): what copying needs, since a typed value
+/// would re-encode, and a copy must keep the original bytes even where
+/// they are not the canonical encoding.
 ///
 /// # Errors
 ///
@@ -496,14 +510,46 @@ impl TryFrom<&ExtensionView<'_>> for Extension {
     type Error = Error;
 
     fn try_from(view: &ExtensionView<'_>) -> Result<Self> {
-        let oid = ObjectId::from_dotted_opt(&view.oid.to_dotted()?)
-            .ok_or_else(|| Error::invalid("extension identifier"))?;
         Ok(Extension {
             critical: view.critical,
             value: ExtensionValue::Other {
-                oid,
+                oid: view.oid.into(),
                 der: RawTlv::parse(view.value)?,
             },
+        })
+    }
+}
+
+/// What an extension read from a certificate says, for the kinds baldssl
+/// reads (basic constraints and key usage, in DER), and opaque for the
+/// others. The `-text` printer does not use it: it prints what OpenSSL
+/// prints, malformed values included, which this refuses.
+///
+/// # Errors
+///
+/// A basic constraints or key usage value that is not their DER, a path
+/// length beyond 64 bits, and an other value that is not one DER TLV.
+impl TryFrom<&ExtensionView<'_>> for ExtensionValue {
+    type Error = Error;
+
+    fn try_from(view: &ExtensionView<'_>) -> Result<Self> {
+        if view.oid == ID_CE_BASIC_CONSTRAINTS {
+            let syntax = Sequence((
+                WithDefault::new(Boolean, false),
+                (Optional(Small), ()),
+            ));
+            let (ca, (path_length, ())) = decode(&syntax, view.value)?;
+            return Ok(ExtensionValue::BasicConstraints { ca, path_length });
+        }
+        if view.oid == ID_CE_KEY_USAGE {
+            let bits = decode(&NamedBits, view.value)?;
+            let named = u16::try_from(bits & NAMED_KEY_USAGE_BITS)
+                .map_err(|_| Error::invalid("keyUsage"))?;
+            return Ok(ExtensionValue::KeyUsage(KeyUsage(named)));
+        }
+        Ok(ExtensionValue::Other {
+            oid: view.oid.into(),
+            der: RawTlv::parse(view.value)?,
         })
     }
 }

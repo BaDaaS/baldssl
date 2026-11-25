@@ -17,7 +17,7 @@ use super::{
     Signed, Small, Syntax, Unsigned, WithDefault, decode, encode,
     laws::{canonical, laws, round_trip},
 };
-use crate::der::{DerError, Integer};
+use crate::der::{DerError, Integer, Oid};
 
 /// An INTEGER value as [`Integer::parse`] returns it: a sign and a
 /// magnitude without leading zeros, never a negative zero.
@@ -459,4 +459,14 @@ proptest! {
             prop_assert_eq!(encode(&NamedBits, &v), bytes);
         }
     }
+}
+
+/// A view converts to the identifier it is, and compares equal to it only.
+#[test]
+fn views_and_owned_identifiers() {
+    let id = ObjectId::from_static(&[0x55, 0x1d, 0x13]);
+    let view = Oid::parse(&[0x55, 0x1d, 0x13]).unwrap();
+    assert_eq!(ObjectId::from(view), id);
+    assert_eq!(view, id);
+    assert_ne!(Oid::parse(&[0x55, 0x1d, 0x0f]).unwrap(), id);
 }

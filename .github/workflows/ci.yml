@@ -298,13 +298,23 @@ jobs:
           copyback: false
           prepare: pkg install -y rust gmake
           run: gmake test-os-rng-system-rust
+      # The packages come from the release's own tree on the NetBSD CDN,
+      # then on ftp.jaist.ac.jp: the action's hook writes PKG_PATH from the
+      # mirrors that answer, and some of those trees lack rust (on
+      # 2026-11-25, ftp.fr.netbsd.org listed no 10.2 or 11.1 packages and
+      # ftp.jaist.ac.jp no rust for 10.2), so pkg_add found none. `uname
+      # -p` is the tree's architecture (x86_64), `uname -r` the release.
       - name: Test os_rng on NetBSD
         if: matrix.os == 'netbsd'
         uses: vmactions/netbsd-vm@5957cf330aef2e6ddc63c604364c99ce2e02b91d # v1.5.3
         with:
           release: ${{ matrix.release }}
           copyback: false
-          prepare: /usr/sbin/pkg_add -u rust gmake
+          prepare: |
+            tree="pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r)/All"
+            PKG_PATH="https://cdn.NetBSD.org/$tree;https://ftp.jaist.ac.jp/$tree"
+            export PKG_PATH
+            /usr/sbin/pkg_add -u rust gmake
           run: gmake test-os-rng-system-rust
       - name: Test os_rng on OpenBSD
         if: matrix.os == 'openbsd'

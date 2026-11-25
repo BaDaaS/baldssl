@@ -57,50 +57,100 @@ fn boundary_opt<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     line.strip_prefix(prefix)?.strip_suffix(DASHES)
 }
 
-/// Returns the first block whose label is in `labels`.
-///
-/// # Errors
-///
-/// [`PemError::NoBlock`] when there is none, or the error of the first
-/// matching block that fails to decode.
-pub fn decode_first(
+/// One block as read, before its body is decoded.
+struct RawBlock {
+    /// The label of its BEGIN and END lines.
+    label: Vec<u8>,
+    /// The base64 body, spaces removed.
+    body: Vec<u8>,
+}
+
+/// The blocks of `input`, in order: each between a BEGIN and the matching
+/// END boundary, text outside them ignored, as OpenSSL's PEM reader skips
+/// it.
+fn blocks(
     input: &[u8],
-    labels: &[&str],
-) -> Result<PemBlock, PemError> {
+) -> impl Iterator<Item = Result<RawBlock, PemError>> + '_ {
     let mut lines = input.split(|&b| b == b'\n').map(trim_cr);
-    while let Some(line) = lines.next() {
-        let Some(label) = boundary_opt(line, BEGIN) else {
-            continue;
-        };
+    core::iter::from_fn(move || {
+        let label =
+            lines.by_ref().find_map(|line| boundary_opt(line, BEGIN))?;
         let mut body = Vec::new();
-        let mut terminated = false;
         for inner in lines.by_ref() {
             if let Some(end) = boundary_opt(inner, END) {
                 if end != label {
-                    return Err(PemError::Unterminated);
+                    return Some(Err(PemError::Unterminated));
                 }
-                terminated = true;
-                break;
+                return Some(Ok(RawBlock {
+                    label: label.to_vec(),
+                    body,
+                }));
             }
             if inner.contains(&b':') {
-                return Err(PemError::HeadersUnsupported);
+                return Some(Err(PemError::HeadersUnsupported));
             }
             body.extend(
                 inner.iter().filter(|b| !matches!(b, b' ' | b'\t' | b'\r')),
             );
         }
-        if !terminated {
-            return Err(PemError::Unterminated);
-        }
-        if labels.iter().any(|l| l.as_bytes() == label) {
-            let contents = base64::decode(&body).map_err(PemError::Base64)?;
-            return Ok(PemBlock {
-                label: String::from_utf8_lossy(label).into_owned(),
+        Some(Err(PemError::Unterminated))
+    })
+}
+
+/// A block, decoded, when its label is in `labels`.
+fn matching_opt(
+    RawBlock { label, body }: RawBlock,
+    labels: &[&str],
+) -> Option<Result<PemBlock, PemError>> {
+    labels.iter().any(|l| l.as_bytes() == label).then(|| {
+        base64::decode(&body)
+            .map_err(PemError::Base64)
+            .map(|contents| PemBlock {
+                label: String::from_utf8_lossy(&label).into_owned(),
                 contents,
-            });
+            })
+    })
+}
+
+/// Returns the first block whose label is in `labels`.
+///
+/// # Errors
+///
+/// [`PemError::NoBlock`] when there is none, or the error of the first
+/// matching block that fails to decode, or of a malformed block before it.
+pub fn decode_first(
+    input: &[u8],
+    labels: &[&str],
+) -> Result<PemBlock, PemError> {
+    for block in blocks(input) {
+        if let Some(found) = matching_opt(block?, labels) {
+            return found;
         }
     }
     Err(PemError::NoBlock)
+}
+
+/// Every block whose label is in `labels`, in order: a file of several
+/// certificates, as `-CAfile` and `-untrusted` take them.
+///
+/// # Errors
+///
+/// [`PemError::NoBlock`] when there is none; a malformed block, or a
+/// matching block that fails to decode.
+pub fn decode_all(
+    input: &[u8],
+    labels: &[&str],
+) -> Result<Vec<PemBlock>, PemError> {
+    let mut out = Vec::new();
+    for block in blocks(input) {
+        if let Some(found) = matching_opt(block?, labels) {
+            out.push(found?);
+        }
+    }
+    if out.is_empty() {
+        return Err(PemError::NoBlock);
+    }
+    Ok(out)
 }
 
 /// Encodes a PEM block with 64-column lines and LF line endings, as
@@ -220,5 +270,30 @@ mod tests {
         fn never_panics(data in prop::collection::vec(any::<u8>(), 0..200)) {
             let _ = decode_first(&data, CERT);
         }
+    }
+
+    /// Every matching block, in order, with text between them ignored;
+    /// the first malformed block is an error.
+    #[test]
+    fn all_blocks() {
+        let input = format!(
+            "intro\n{}between\n{}{}",
+            encode("CERTIFICATE", b"one"),
+            encode("PRIVATE KEY", b"skipped"),
+            encode("CERTIFICATE", b"two"),
+        );
+        let blocks = decode_all(input.as_bytes(), &["CERTIFICATE"]).unwrap();
+        let contents: Vec<&[u8]> =
+            blocks.iter().map(|b| b.contents.as_slice()).collect();
+        assert_eq!(contents, [&b"one"[..], b"two"]);
+        assert_eq!(
+            decode_all(b"no blocks", &["CERTIFICATE"]),
+            Err(PemError::NoBlock)
+        );
+        let broken = "-----BEGIN CERTIFICATE-----\nAAAA\n";
+        assert_eq!(
+            decode_all(broken.as_bytes(), &["CERTIFICATE"]),
+            Err(PemError::Unterminated)
+        );
     }
 }

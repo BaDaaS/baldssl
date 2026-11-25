@@ -568,6 +568,22 @@ impl ObjectId {
     }
 }
 
+/// The owned identifier of a view. Total: an [`Oid`]'s contents were
+/// checked when it was parsed.
+impl From<Oid<'_>> for ObjectId {
+    fn from(oid: Oid<'_>) -> Self {
+        ObjectId(Cow::Owned(oid.as_bytes().to_vec()))
+    }
+}
+
+/// A view and an owned identifier are the same identifier exactly when
+/// their contents octets are equal (DER writes each identifier one way).
+impl PartialEq<ObjectId> for Oid<'_> {
+    fn eq(&self, other: &ObjectId) -> bool {
+        self.as_bytes() == other.0.as_ref()
+    }
+}
+
 /// OBJECT IDENTIFIER.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectIdentifier;

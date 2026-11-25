@@ -13,6 +13,7 @@ mod issuing;
 mod keygen;
 mod pkey;
 mod req;
+mod verify;
 mod x509;
 
 use std::{
@@ -30,6 +31,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("help", "List the commands"),
     ("pkey", "Read, convert, print and check keys"),
     ("req", "Create, read and verify certificate requests"),
+    ("verify", "Verify certificate chains"),
     ("version", "Print the baldssl version"),
     ("x509", "Display X.509 certificates"),
 ];
@@ -51,6 +53,7 @@ fn dispatch(args: &[OsString]) -> Result<(Vec<u8>, Option<OsString>), Error> {
         Some("genpkey") => genpkey::render(rest),
         Some("pkey") => pkey::render(rest),
         Some("req") => req::render(rest),
+        Some("verify") => verify::render(rest),
         Some("x509") => x509::render(rest),
         Some("version") => Ok((
             format!("baldssl {}\n", env!("CARGO_PKG_VERSION")).into_bytes(),
@@ -89,6 +92,14 @@ fn main() -> ExitCode {
         .and_then(|(out, path)| write_output(&out, path.as_ref()));
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        // A command that reported its failure itself adds nothing to
+        // standard error; what it had for standard output still goes there.
+        Err(Error::Reported { code, output }) => {
+            match write_output(&output, None) {
+                Ok(()) => ExitCode::from(code),
+                Err(e) => ExitCode::from(e.exit_code()),
+            }
+        }
         Err(e) => {
             let command = args
                 .first()

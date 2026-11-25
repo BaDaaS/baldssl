@@ -175,7 +175,7 @@
       "section": "tasks",
       "title": "Verify a certificate against a CA",
       "explanation": "Checks the signature and the validity period, and prints cert.crt: OK when the chain is valid.",
-      "status": "not-yet",
+      "status": "supported",
       "deterministic": true,
       "lines": ["openssl verify -CAfile ca.crt \\", "  cert.crt"]
     },

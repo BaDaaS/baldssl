@@ -48,6 +48,7 @@ OPENSSL_VERSION=$("$OPENSSL" version | awk '{print $2}')
 # The release line baldssl imitates, as in scripts/interop.sh.
 case "$OPENSSL_VERSION" in
     3.0.*) BALDSSL_OPENSSL_COMPAT=3.0 ;;
+    3.6.*) BALDSSL_OPENSSL_COMPAT=3.6 ;;
     *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
 esac
 export BALDSSL_OPENSSL_COMPAT
