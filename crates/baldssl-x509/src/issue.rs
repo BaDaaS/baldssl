@@ -49,6 +49,7 @@ use std::str::FromStr;
 
 use baldssl_core::{
     Error, Result,
+    compat::Compat,
     der::{
         Time,
         syntax::{
@@ -64,7 +65,7 @@ use baldssl_crypto::{
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
 
 use crate::{
-    Certificate, CertificationRequest, Compat,
+    Certificate, CertificationRequest,
     algorithm::{ALGORITHM_IDENTIFIER, identifier},
     cert::Validity,
     dn::DistinguishedName,

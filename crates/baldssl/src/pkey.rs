@@ -21,14 +21,13 @@ use std::{ffi::OsString, io::Write as _, path::Path};
 
 use baldssl_core::{
     Error, Result,
+    compat::Compat,
     encoding::{Decodable, Encodable},
     pem::Pem,
 };
-use baldssl_fs::{create_owner_only, write_error};
+use baldssl_fs::{WriteText as _, create_owner_only, write_error};
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
-use baldssl_x509::{
-    Compat, Format, print_private_key_text, print_public_key_text,
-};
+use baldssl_x509::Format;
 
 use crate::{
     args::{self, Kind, Spec},
@@ -273,13 +272,10 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     match (o.text, &key) {
         (Text::Nothing, _) => {}
         (Text::AsRead, Key::Private(k)) => {
-            out.extend_from_slice(&print_private_key_text(k, compat)?);
+            k.write_text(compat, &mut out)?;
         }
         (Text::AsRead | Text::Public, _) => {
-            out.extend_from_slice(&print_public_key_text(
-                &key.public(),
-                compat,
-            )?);
+            key.public().write_text(compat, &mut out)?;
         }
     }
     // A private key goes to a file only its owner can read, as OpenSSL's

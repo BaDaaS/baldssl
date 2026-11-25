@@ -130,9 +130,11 @@
 mod asn1;
 mod parse;
 mod sign;
+mod text;
 
 pub use parse::PublicKey;
 pub use sign::Signing;
+pub use text::{AlgorithmIdentifier, KeyLayout, SubjectPublicKeyInfo};
 
 use baldssl_core::{
     Error, Result,

@@ -3,6 +3,7 @@
 //! the lines OpenSSL 3.5.9 and 4.1.0 print for them.
 
 use baldssl_core::{
+    compat::Compat,
     der::{
         Integer,
         syntax::laws::{laws, round_trip},
@@ -17,7 +18,7 @@ use baldssl_test_utils::{
 use proptest::prelude::*;
 
 use super::{Version, version_field};
-use crate::{cert::Certificate, text::Compat};
+use crate::cert::Certificate;
 
 fn version() -> impl Strategy<Value = Version> {
     sign_magnitude(12).prop_map(|(negative, magnitude)| {
