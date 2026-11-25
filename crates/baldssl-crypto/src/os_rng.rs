@@ -71,6 +71,23 @@ impl core::fmt::Display for RngError {
 
 impl std::error::Error for RngError {}
 
+/// What a caller drawing randomness reports: no source on this target is
+/// [`Unsupported`](baldssl_core::Error::Unsupported), a failing source an
+/// [`Io`](baldssl_core::Error::Io) error with this error's message.
+impl From<RngError> for baldssl_core::Error {
+    fn from(e: RngError) -> Self {
+        match e {
+            RngError::Unsupported => baldssl_core::Error::unsupported(
+                "key generation: no source of randomness",
+            ),
+            RngError::Os(_) | RngError::Unexpected => baldssl_core::Error::Io {
+                context: "reading randomness".into(),
+                message: e.to_string(),
+            },
+        }
+    }
+}
+
 /// The error the system reported, or [`RngError::Unexpected`] when it
 /// reported none.
 #[cfg(any(
