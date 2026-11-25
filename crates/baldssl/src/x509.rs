@@ -42,12 +42,12 @@ use std::{
     io::Write as _,
 };
 
-use baldssl_core::{Error, Result, pem};
+use baldssl_core::{Error, Result, compat::Compat, pem};
 use baldssl_crypto::Algorithm;
 use baldssl_fs::WriteText as _;
 use baldssl_x509::{
-    Certificate, CertificateTemplate, Compat, Config, CopyExtensions,
-    Extensions, Format, IssuedExtensions, certificate_der, fingerprint_line,
+    Certificate, CertificateTemplate, Config, CopyExtensions, Extensions,
+    Format, IssuedExtensions, NameStyle, certificate_der, fingerprint_line,
     serial_line, time_rfc822,
 };
 
@@ -509,7 +509,9 @@ fn issue(o: &Options, compat: Compat) -> Result<Vec<u8>> {
     note(b"Certificate request self-signature ok");
     let mut subject = b"subject=".to_vec();
     subject.extend_from_slice(
-        &request.subject_name()?.to_openssl(compat.name_style())?,
+        &request
+            .subject_name()?
+            .to_openssl(NameStyle::from(compat))?,
     );
     note(&subject);
     let ca_path = s
@@ -554,7 +556,7 @@ pub(crate) const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
 pub(crate) fn compat() -> Result<Compat> {
     match std::env::var(COMPAT_ENV) {
         Err(_) => Ok(Compat::default()),
-        Ok(v) => Compat::from_version_opt(&v).ok_or_else(|| {
+        Ok(v) => v.parse().map_err(|_| {
             Error::Usage(format!(
                 "{COMPAT_ENV}: expected 3.0, 3 or 4, got {v:?}"
             ))
@@ -587,14 +589,14 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
             Print::Issuer => {
                 out.extend_from_slice(b"issuer=");
                 out.extend_from_slice(
-                    &cert.issuer.to_openssl(compat.name_style())?,
+                    &cert.issuer.to_openssl(NameStyle::from(compat))?,
                 );
                 out.push(b'\n');
             }
             Print::Subject => {
                 out.extend_from_slice(b"subject=");
                 out.extend_from_slice(
-                    &cert.subject.to_openssl(compat.name_style())?,
+                    &cert.subject.to_openssl(NameStyle::from(compat))?,
                 );
                 out.push(b'\n');
             }

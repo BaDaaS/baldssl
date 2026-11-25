@@ -16,6 +16,7 @@
 
 use baldssl_core::{
     Error, Result,
+    compat::Compat,
     der::{Oid, Reader, Tlv, tag},
 };
 
@@ -28,6 +29,17 @@ pub enum NameStyle {
     Utf8,
     /// OpenSSL 3.0 (`XN_FLAG_ONELINE`): `CN = x`, escaped and quoted.
     Oneline,
+}
+
+/// How a release line prints names: OpenSSL 3.0 in the older escaped
+/// one-line style, later lines in UTF-8.
+impl From<Compat> for NameStyle {
+    fn from(compat: Compat) -> Self {
+        match compat {
+            Compat::V30 => NameStyle::Oneline,
+            Compat::V3 | Compat::V4 => NameStyle::Utf8,
+        }
+    }
 }
 
 /// `AttributeTypeAndValue`.

@@ -8,86 +8,18 @@
 
 use baldssl_core::{
     Error, Result,
-    der::{Integer, Reader, Time, TimeKind, tag},
+    compat::Compat,
+    der::{BitString, Integer, Reader, Time, TimeKind},
+    encoding::Encodable,
     hex::{self, Case},
     text::Text,
 };
-
-use baldssl_core::{der::BitString, encoding::Encodable};
-use baldssl_pkey::{AnyPrivateKey, PublicKey};
+use baldssl_pkey::{AlgorithmIdentifier, KeyLayout, SubjectPublicKeyInfo};
 
 use crate::{
-    CertificationRequest, algorithm,
-    cert::{AlgorithmIdentifier, Certificate, SubjectPublicKeyInfo},
-    ext,
-    name::NameStyle,
-    objects,
-    version::Version,
+    CertificationRequest, algorithm, cert::Certificate, ext, name::NameStyle,
+    objects, version::Version,
 };
-
-/// Which OpenSSL release line's `-text` layout to reproduce. The two lines
-/// differ only in hex-dump geometry and the EC key header; everything else
-/// is shared. `scripts/interop.sh` checks each profile against real
-/// binaries of that line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Compat {
-    /// OpenSSL 3.0, whose names use the older escaped style
-    /// ([`NameStyle::Oneline`]).
-    V30,
-    /// OpenSSL 3.2 to 3.6.
-    #[default]
-    V3,
-    /// OpenSSL 4.0 and later.
-    V4,
-}
-
-impl Compat {
-    /// Bytes per line in `ASN1_buf_print` (keys, modulus).
-    fn key_bytes_per_line(self) -> usize {
-        match self {
-            Compat::V30 | Compat::V3 => 15,
-            Compat::V4 => 16,
-        }
-    }
-
-    /// Bytes per line in `X509_signature_dump`.
-    fn signature_bytes_per_line(self) -> usize {
-        match self {
-            Compat::V30 | Compat::V3 => 18,
-            Compat::V4 => 24,
-        }
-    }
-
-    /// Whether a bignum with its top bit set is printed with a leading
-    /// `00:` (the two's-complement sign byte).
-    fn bn_sign_byte(self) -> bool {
-        self != Compat::V4
-    }
-
-    /// How this release line prints names.
-    #[must_use]
-    pub fn name_style(self) -> NameStyle {
-        match self {
-            Compat::V30 => NameStyle::Oneline,
-            Compat::V3 | Compat::V4 => NameStyle::Utf8,
-        }
-    }
-
-    /// Parses a profile (`3.0`, `3` or `4`) or an OpenSSL version
-    /// (`3.0.22`, `3.5.9`, `4.1.0`).
-    #[must_use]
-    pub fn from_version_opt(s: &str) -> Option<Self> {
-        let s = s.trim();
-        if s == "3.0" || s.starts_with("3.0.") {
-            return Some(Compat::V30);
-        }
-        match s.split('.').next()? {
-            "3" => Some(Compat::V3),
-            "4" => Some(Compat::V4),
-            _ => None,
-        }
-    }
-}
 
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
@@ -112,63 +44,6 @@ pub fn time_rfc822(t: &Time) -> String {
         "{month} {:2} {:02}:{:02}:{:02}{frac} {} GMT",
         t.day, t.hour, t.minute, t.second, t.year
     )
-}
-
-/// `ASN1_buf_print`: `per_line` bytes per line, lower-case, `:`-separated.
-fn buf_print(out: &mut Vec<u8>, bytes: &[u8], indent: usize, per_line: usize) {
-    let pad = " ".repeat(indent);
-    let per_line = per_line.max(1);
-    for (i, b) in bytes.iter().enumerate() {
-        if i % per_line == 0 {
-            if i > 0 {
-                out.push(b'\n');
-            }
-            out.extend_from_slice(pad.as_bytes());
-        }
-        out.extend_from_slice(hex::plain(&[*b], Case::Lower).as_bytes());
-        if i.saturating_add(1) != bytes.len() {
-            out.push(b':');
-        }
-    }
-    out.push(b'\n');
-}
-
-/// `ASN1_bn_print`, with `BN_BYTES = 8`.
-fn bn_print(
-    out: &mut Vec<u8>,
-    label: &str,
-    n: &Integer,
-    indent: usize,
-    compat: Compat,
-) {
-    out.extend_from_slice(" ".repeat(indent).as_bytes());
-    let neg = if n.negative { "-" } else { "" };
-    if n.magnitude.is_empty() {
-        out.extend_from_slice(format!("{label} 0\n").as_bytes());
-        return;
-    }
-    if n.magnitude.len() <= 8 {
-        let v = n.magnitude_u128_opt().unwrap_or(0);
-        out.extend_from_slice(
-            format!("{label} {neg}{v} ({neg}0x{v:x})\n").as_bytes(),
-        );
-        return;
-    }
-    let tail = if n.negative { " (Negative)" } else { "" };
-    out.extend_from_slice(format!("{label}{tail}\n").as_bytes());
-    let mut buf = Vec::with_capacity(n.magnitude.len().saturating_add(1));
-    if compat.bn_sign_byte()
-        && n.magnitude.first().is_some_and(|b| b & 0x80 != 0)
-    {
-        buf.push(0);
-    }
-    buf.extend_from_slice(&n.magnitude);
-    buf_print(
-        out,
-        &buf,
-        indent.saturating_add(4),
-        compat.key_bytes_per_line(),
-    );
 }
 
 /// The serial number lines of `X509_print_ex`.
@@ -239,217 +114,6 @@ fn signature_name(alg: &AlgorithmIdentifier<'_>) -> Result<String> {
     }
 }
 
-/// A named curve baldssl supports.
-struct Curve {
-    oid: &'static str,
-    /// OpenSSL short name (`ASN1 OID:`).
-    sn: &'static str,
-    /// `NIST CURVE:`.
-    nist: &'static str,
-    /// Order bits, the 3.x `Public-Key: (N bit)`.
-    bits: usize,
-    /// Security level printed by 4.x (NIST SP 800-57 strengths, capped at
-    /// 256).
-    security: usize,
-}
-
-const CURVES: [Curve; 3] = [
-    Curve {
-        oid: "1.2.840.10045.3.1.7",
-        sn: "prime256v1",
-        nist: "P-256",
-        bits: 256,
-        security: 128,
-    },
-    Curve {
-        oid: "1.3.132.0.34",
-        sn: "secp384r1",
-        nist: "P-384",
-        bits: 384,
-        security: 192,
-    },
-    Curve {
-        oid: "1.3.132.0.35",
-        sn: "secp521r1",
-        nist: "P-521",
-        bits: 521,
-        security: 256,
-    },
-];
-
-fn field_bytes(bits: usize) -> usize {
-    bits.div_ceil(8)
-}
-
-/// What every key block shares: the key, the secret, the indentation, and
-/// the release line.
-struct KeyLayout<'a> {
-    /// The public key's bytes.
-    key: &'a [u8],
-    /// The secret, for a private key.
-    secret: Option<&'a [u8]>,
-    /// The header's indentation.
-    pad: String,
-    /// The hex dump's indentation.
-    data: usize,
-    /// Bytes per hex line.
-    per_line: usize,
-    /// `Private` or `Public`.
-    kind: &'a str,
-    /// The release line.
-    compat: Compat,
-}
-
-/// An EC key on a named curve.
-fn print_ec_key(
-    out: &mut Vec<u8>,
-    spki: &SubjectPublicKeyInfo<'_>,
-    layout: &KeyLayout<'_>,
-) -> Result<()> {
-    let KeyLayout {
-        key,
-        secret,
-        pad: pad16,
-        data,
-        per_line,
-        kind,
-        compat,
-    } = layout;
-    let (key, secret, data, per_line, compat) =
-        (*key, *secret, *data, *per_line, *compat);
-    let params = spki
-        .algorithm
-        .parameters
-        .ok_or_else(|| Error::invalid("EC key without parameters"))?;
-    if params.octet() != tag::OID {
-        return Err(Error::unsupported(
-            "explicit or implicit EC domain parameters",
-        ));
-    }
-    let curve_oid = baldssl_core::der::Oid::parse(params.value)?;
-    let curve = curve_oid.to_dotted()?;
-    let Some(c) = CURVES.iter().find(|c| c.oid == curve) else {
-        return Err(Error::unsupported(format!(
-            "EC curve {curve} ({})",
-            objects::short_name(&curve_oid)?
-        )));
-    };
-    let len = field_bytes(c.bits);
-    let well_formed = match key.first() {
-        Some(0x04) => key.len() == 2 * len + 1,
-        Some(0x02 | 0x03) => key.len() == len + 1,
-        _ => false,
-    };
-    // TODO(ec-point-validation): OpenSSL also rejects points that
-    // are not on the curve; that needs field arithmetic.
-    if !well_formed {
-        return Err(Error::invalid("EC point encoding"));
-    }
-    let size = match compat {
-        Compat::V30 | Compat::V3 => format!("{} bit", c.bits),
-        Compat::V4 => {
-            format!("{} bit field, {} bit security level", c.bits, c.security)
-        }
-    };
-    out.extend_from_slice(format!("{pad16}{kind}-Key: ({size})\n").as_bytes());
-    // EC_KEY_priv2buf: the scalar at the full length of the order, leading
-    // zeros kept, no sign byte, in every release line.
-    if let Some(secret) = secret {
-        out.extend_from_slice(format!("{pad16}priv:\n").as_bytes());
-        buf_print(out, secret, data, per_line);
-    }
-    out.extend_from_slice(format!("{pad16}pub:\n").as_bytes());
-    buf_print(out, key, data, per_line);
-    out.extend_from_slice(
-        format!("{pad16}ASN1 OID: {}\n{pad16}NIST CURVE: {}\n", c.sn, c.nist)
-            .as_bytes(),
-    );
-    Ok(())
-}
-
-/// A key as OpenSSL's text printers write it, at `indent` spaces (16 in a
-/// certificate, 0 for `pkey`): a header, the secret when there is one
-/// (`priv:`, at its full length), then the public
-/// key (`pub:`) and the curve.
-fn print_key(
-    out: &mut Vec<u8>,
-    spki: &SubjectPublicKeyInfo<'_>,
-    secret: Option<&[u8]>,
-    indent: usize,
-    compat: Compat,
-) -> Result<()> {
-    let per_line = compat.key_bytes_per_line();
-    let kind = if secret.is_some() {
-        "Private"
-    } else {
-        "Public"
-    };
-    let data = indent.saturating_add(4);
-    let alg = spki.algorithm.oid.to_dotted()?;
-    let key = spki.public_key.bytes;
-    if spki.public_key.unused != 0 {
-        return Err(Error::invalid("public key BIT STRING with unused bits"));
-    }
-    let pad16 = " ".repeat(indent);
-    let layout = KeyLayout {
-        key,
-        secret,
-        pad: pad16.clone(),
-        data,
-        per_line,
-        kind,
-        compat,
-    };
-    match alg.as_str() {
-        // rsaEncryption: RSAPublicKey ::= SEQUENCE { n INTEGER, e INTEGER }
-        "1.2.840.113549.1.1.1" => {
-            if secret.is_some() {
-                return Err(Error::unsupported("RSA private keys"));
-            }
-            if let Some(p) = &spki.algorithm.parameters
-                && (p.octet() != tag::NULL || !p.value.is_empty())
-            {
-                return Err(Error::invalid("rsaEncryption parameters"));
-            }
-            let mut outer = Reader::new(key);
-            let mut seq = outer.sequence()?;
-            outer.finish()?;
-            let n = Integer::parse(seq.expect(tag::INTEGER)?.value)?;
-            let e = Integer::parse(seq.expect(tag::INTEGER)?.value)?;
-            seq.finish()?;
-            out.extend_from_slice(
-                format!("{pad16}Public-Key: ({} bit)\n", n.bits()).as_bytes(),
-            );
-            bn_print(out, "Modulus:", &n, indent, compat);
-            bn_print(out, "Exponent:", &e, indent, compat);
-        }
-        // id-ecPublicKey with a named curve.
-        "1.2.840.10045.2.1" => print_ec_key(out, spki, &layout)?,
-        // Ed25519 (RFC 8410): no parameters, 32-byte key.
-        "1.3.101.112" => {
-            if spki.algorithm.parameters.is_some() || key.len() != 32 {
-                return Err(Error::invalid("Ed25519 public key"));
-            }
-            out.extend_from_slice(
-                format!("{pad16}ED25519 {kind}-Key:\n").as_bytes(),
-            );
-            if let Some(secret) = secret {
-                out.extend_from_slice(format!("{pad16}priv:\n").as_bytes());
-                buf_print(out, secret, data, per_line);
-            }
-            out.extend_from_slice(format!("{pad16}pub:\n").as_bytes());
-            buf_print(out, key, data, per_line);
-        }
-        _ => {
-            return Err(Error::unsupported(format!(
-                "public key algorithm {alg} ({})",
-                objects::long_name(&spki.algorithm.oid)?
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// The version line, as OpenSSL prints it: `n+1 (0xn)` for v1 to v3,
 /// otherwise `Unknown (n)` with `n` the value as a signed 64-bit integer,
 /// or -1 when it does not fit (OpenSSL's `ASN1_INTEGER_get` result).
@@ -493,13 +157,13 @@ fn print_certificate(
     out.extend_from_slice(b"        Signature Algorithm: ");
     out.extend_from_slice(signature_name(&cert.tbs_signature)?.as_bytes());
     out.extend_from_slice(b"\n        Issuer: ");
-    out.extend_from_slice(&cert.issuer.to_openssl(compat.name_style())?);
+    out.extend_from_slice(&cert.issuer.to_openssl(NameStyle::from(compat))?);
     out.extend_from_slice(b"\n        Validity\n            Not Before: ");
     out.extend_from_slice(time_rfc822(&cert.validity.not_before).as_bytes());
     out.extend_from_slice(b"\n            Not After : ");
     out.extend_from_slice(time_rfc822(&cert.validity.not_after).as_bytes());
     out.extend_from_slice(b"\n        Subject: ");
-    out.extend_from_slice(&cert.subject.to_openssl(compat.name_style())?);
+    out.extend_from_slice(&cert.subject.to_openssl(NameStyle::from(compat))?);
     out.push(b'\n');
     print_subject_public_key_info(&mut out, &cert.spki, compat)?;
     ext::print_extensions(&mut out, &cert.extensions)?;
@@ -518,46 +182,8 @@ fn print_subject_public_key_info(
     );
     out.extend_from_slice(objects::long_name(&spki.algorithm.oid)?.as_bytes());
     out.push(b'\n');
-    print_key(out, spki, None, 16, compat)
-}
-
-/// `openssl pkey -text`: a private key as OpenSSL prints it, by release
-/// line.
-///
-/// # Errors
-///
-/// As for a certificate's key (the [`Text`] of [`Certificate`]).
-pub fn print_private_key_text(
-    key: &AnyPrivateKey,
-    compat: Compat,
-) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    let der = PublicKey::from(key).encode();
-    let mut r = Reader::new(&der);
-    let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
-    r.finish()?;
-    let secret = key.secret();
-    print_key(&mut out, &spki, Some(secret.expose()), 0, compat)?;
-    Ok(out)
-}
-
-/// `openssl pkey -text_pub` (or `-pubin -text`): a public key as OpenSSL
-/// prints it, by release line.
-///
-/// # Errors
-///
-/// As for a certificate's key (the [`Text`] of [`Certificate`]).
-pub fn print_public_key_text(
-    key: &PublicKey,
-    compat: Compat,
-) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    let der = key.encode();
-    let mut r = Reader::new(&der);
-    let spki = SubjectPublicKeyInfo::try_from(r.read()?)?;
-    r.finish()?;
-    print_key(&mut out, &spki, None, 0, compat)?;
-    Ok(out)
+    out.extend(spki.to_text(KeyLayout { compat, indent: 16 })?);
+    Ok(())
 }
 
 /// The outer part of X.509's `SIGNED{ToBeSigned}` ([X.509] section 6.2),
@@ -603,7 +229,7 @@ impl Text for CertificationRequest {
             b"Certificate Request:\n    Data:\n        Version: 1 (0x0)\n        Subject: ",
         );
         out.extend_from_slice(
-            &self.subject_name()?.to_openssl(compat.name_style())?,
+            &self.subject_name()?.to_openssl(NameStyle::from(compat))?,
         );
         out.push(b'\n');
         let key = self.public_key().encode();
@@ -720,40 +346,8 @@ mod tests {
     #[test]
     fn dumps() {
         let mut out = Vec::new();
-        buf_print(&mut out, &[0xab; 16], 2, 15);
-        assert_eq!(
-            out,
-            b"  ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:\n  ab\n"
-        );
-        let mut out = Vec::new();
         signature_dump(&mut out, &[0x01; 19], 1, 18);
         assert_eq!(out.iter().filter(|&&b| b == b'\n').count(), 2);
-        let mut out = Vec::new();
-        bn_print(
-            &mut out,
-            "Exponent:",
-            &int(&[0x01, 0x00, 0x01]),
-            0,
-            Compat::V3,
-        );
-        assert_eq!(out, b"Exponent: 65537 (0x10001)\n");
-        let mut out = Vec::new();
-        bn_print(&mut out, "Modulus:", &int(&[0x00]), 0, Compat::V3);
-        assert_eq!(out, b"Modulus: 0\n");
-        let mut big = vec![0x00];
-        big.extend([0x80; 9]);
-        let mut out = Vec::new();
-        bn_print(&mut out, "Modulus:", &int(&big), 0, Compat::V3);
-        assert!(out.starts_with(b"Modulus:\n    00:80:"));
-        let mut out = Vec::new();
-        bn_print(&mut out, "Modulus:", &int(&big), 0, Compat::V4);
-        assert!(out.starts_with(b"Modulus:\n    80:80:"));
-        assert_eq!(Compat::from_version_opt("4.1.0"), Some(Compat::V4));
-        assert_eq!(Compat::from_version_opt("3"), Some(Compat::V3));
-        assert_eq!(Compat::from_version_opt("1.1.1"), None);
-        assert_eq!(Compat::from_version_opt("3.0"), Some(Compat::V30));
-        assert_eq!(Compat::from_version_opt("3.0.22"), Some(Compat::V30));
-        assert_eq!(Compat::from_version_opt("3.5.9"), Some(Compat::V3));
     }
 
     /// `req -noout -text` against what each release line of OpenSSL prints

@@ -11,6 +11,7 @@
 #![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
 
 pub mod base64;
+pub mod compat;
 pub mod der;
 pub mod encoding;
 pub mod error;

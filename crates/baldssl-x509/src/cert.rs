@@ -13,78 +13,14 @@ use baldssl_core::{
     },
     encoding::Encodable,
 };
-use baldssl_pkey::{AnyPrivateKey, PublicKey};
+use baldssl_pkey::{
+    AlgorithmIdentifier, AnyPrivateKey, PublicKey, SubjectPublicKeyInfo,
+};
 
 use crate::{
     name::Name,
     version::{Version, version_field},
 };
-
-/// `AlgorithmIdentifier ::= SEQUENCE { algorithm OID, parameters ANY OPTIONAL }`
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AlgorithmIdentifier<'a> {
-    /// The algorithm.
-    pub(crate) oid: Oid<'a>,
-    /// The raw parameters, if present.
-    pub(crate) parameters: Option<Tlv<'a>>,
-}
-
-impl<'a> AlgorithmIdentifier<'a> {
-    /// Decodes one AlgorithmIdentifier from `r`.
-    ///
-    /// # Errors
-    ///
-    /// On malformed DER.
-    pub(crate) fn read(r: &mut Reader<'a>) -> Result<Self> {
-        let mut seq = r.sequence()?;
-        let oid = Oid::parse(seq.expect(tag::OID)?.value)?;
-        let parameters = if seq.is_empty() {
-            None
-        } else {
-            Some(seq.read()?)
-        };
-        seq.finish()?;
-        Ok(AlgorithmIdentifier { oid, parameters })
-    }
-}
-
-/// `SubjectPublicKeyInfo`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SubjectPublicKeyInfo<'a> {
-    /// The key algorithm and its parameters.
-    pub(crate) algorithm: AlgorithmIdentifier<'a>,
-    /// The `subjectPublicKey` BIT STRING.
-    pub(crate) public_key: BitString<'a>,
-}
-
-/// The view of a DER `SubjectPublicKeyInfo` ([RFC 5280] section 4.1),
-/// which certificates and requests share.
-///
-/// # Errors
-///
-/// A TLV that is not a SEQUENCE, or malformed contents.
-///
-/// [RFC 5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1
-impl<'a> TryFrom<Tlv<'a>> for SubjectPublicKeyInfo<'a> {
-    type Error = Error;
-
-    fn try_from(tlv: Tlv<'a>) -> Result<Self> {
-        if tlv.octet() != tag::SEQUENCE {
-            return Err(DerError::UnexpectedTag {
-                expected: tag::SEQUENCE,
-                found: tlv.octet(),
-            }
-            .into());
-        }
-        let mut r = Reader::new(tlv.value);
-        let spki = SubjectPublicKeyInfo {
-            algorithm: AlgorithmIdentifier::read(&mut r)?,
-            public_key: BitString::parse(r.expect(tag::BIT_STRING)?.value)?,
-        };
-        r.finish()?;
-        Ok(spki)
-    }
-}
 
 /// One `Extension`.
 #[derive(Debug, Clone, PartialEq, Eq)]

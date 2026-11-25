@@ -9,6 +9,7 @@
 //! `TBSCertificate`, and each side's signature verifies.
 
 use baldssl_core::{
+    compat::Compat,
     der::syntax::{Any, BitString, RawTlv, Sequence, decode},
     encoding::Decodable,
 };
@@ -19,7 +20,7 @@ use super::{
     CertificateTemplate, CopyExtensions, IssuedExtensions, SerialNumber,
 };
 use crate::{
-    Certificate, CertificationRequest, Compat, SignatureAlgorithm,
+    Certificate, CertificationRequest, SignatureAlgorithm,
     cert::Validity,
     dn::{DistinguishedName, InputEncoding, UTF8_ONLY},
     extension::{ExtensionValue, Extensions},

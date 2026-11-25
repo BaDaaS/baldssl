@@ -3,8 +3,8 @@
 
 use std::{fs, path::Path};
 
-use baldssl_core::text::Text as _;
-use baldssl_x509::{Certificate, Compat, Format, certificate_der};
+use baldssl_core::{compat::Compat, text::Text as _};
+use baldssl_x509::{Certificate, Format, certificate_der};
 use proptest::prelude::*;
 
 fn fixture_ders() -> Vec<Vec<u8>> {
