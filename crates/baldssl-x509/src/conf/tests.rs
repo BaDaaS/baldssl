@@ -5,6 +5,8 @@ use std::str::FromStr as _;
 
 use baldssl_core::Error;
 
+use proptest::prelude::*;
+
 use super::{ConfValue, Config, replace_push};
 use crate::extension::{Extension, ExtensionValue, GeneralName, Ia5String};
 
@@ -97,4 +99,48 @@ fn refusals() {
     }
     let config = Config::from_str("subjectAltName = @none\n").unwrap();
     assert!(config.extensions("default").is_err());
+}
+
+/// The fold law of `replace_push`, stated directly: folding a list keeps,
+/// of each class, its last item, in the order of those last items.
+fn fold_spec(items: &[(u8, u8)]) -> Vec<(u8, u8)> {
+    items
+        .iter()
+        .enumerate()
+        .filter(|(i, (class, _))| {
+            !items
+                .get(i.saturating_add(1)..)
+                .unwrap_or_default()
+                .iter()
+                .any(|(later, _)| later == class)
+        })
+        .map(|(_, item)| *item)
+        .collect()
+}
+
+proptest! {
+    /// Items are `(class, payload)`; two items are the same when their
+    /// classes are.
+    #[test]
+    fn replace_push_fold(items in prop::collection::vec((0u8..4, any::<u8>()), 0..24)) {
+        let mut folded = Vec::new();
+        for item in &items {
+            replace_push(&mut folded, *item, |a: &(u8, u8), b| a.0 == b.0);
+        }
+        prop_assert_eq!(folded, fold_spec(&items));
+    }
+
+    /// Folding is idempotent: folding the result again changes nothing.
+    #[test]
+    fn replace_push_idempotent(items in prop::collection::vec((0u8..4, any::<u8>()), 0..24)) {
+        let fold = |list: &[(u8, u8)]| {
+            let mut out = Vec::new();
+            for item in list {
+                replace_push(&mut out, *item, |a: &(u8, u8), b| a.0 == b.0);
+            }
+            out
+        };
+        let once = fold(&items);
+        prop_assert_eq!(fold(&once), once);
+    }
 }
