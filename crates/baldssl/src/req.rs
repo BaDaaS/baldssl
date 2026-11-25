@@ -20,12 +20,14 @@
 //!   OpenSSL; with `-x509`, an `-addext` replaces the default extension of
 //!   its kind, which then comes after the others, as in OpenSSL;
 //! - reading one: `-in <file>` (standard input without it), `-inform`;
-//! - `-verify` (the message on standard error, exit 1 on failure, as
-//!   OpenSSL), `-text` (the request, or the `-x509` certificate, as OpenSSL
+//! - `-verify` (a failure on standard error, exit 1; success on standard
+//!   error with OpenSSL 3.0 and on standard output from 3.2, see
+//!   [`baldssl_x509::Compat::request_verified_stream`]), `-text` (the request, or the `-x509` certificate, as OpenSSL
 //!   prints it, before the PEM or DER), `-out`, `-outform PEM|DER`,
 //!   `-noout`;
 //! - a self-signed certificate instead of a request: `-x509`, which
-//!   implies `-new` as in OpenSSL 3, with `-days` (30 by default),
+//!   implies `-new` as in OpenSSL 3, with `-days` (30 by default,
+//!   `DEFAULT_DAYS` in `apps/req.c`),
 //!   `-set_serial` (decimal, or hexadecimal after `0x`; 159 random bits by
 //!   default, as OpenSSL draws them), `-not_before` and `-not_after`
 //!   (`YYMMDDHHMMSSZ`, `YYYYMMDDHHMMSSZ` or `today`; `-not_after` wins over
@@ -43,166 +45,262 @@
 //! serials, the interactive prompts (a request is created only with
 //! `-subj`), and encrypted keys.
 
-use std::{
-    ffi::{OsStr, OsString},
-    path::Path,
-};
+use std::ffi::{OsStr, OsString};
 
 use baldssl_core::{
     Error, Result,
     encoding::Encodable,
     pem::{self, Pem},
+    text::Text as _,
 };
 use baldssl_crypto::Algorithm as Digest;
-use baldssl_fs::{
-    WritePem as _, WriteText as _, create_owner_only, write_error,
-};
+use baldssl_fs::Access;
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
-    Certificate, CertificateTemplate, CertificationRequest, DistinguishedName,
-    Extension, Extensions, Format, InputEncoding, ParsedSubject, RdnMode,
-    RdnPosition, SubjWarning, UTF8_ONLY,
+    Certificate, CertificateTemplate, CertificationRequest, Compat,
+    DistinguishedName, Extension, Extensions, Format, InputEncoding,
+    ParsedSubject, RdnMode, RdnPosition, Stream, SubjWarning, UTF8_ONLY,
 };
 
 use crate::{
-    args::{self, Kind, Spec},
-    input::{parse_format, read_key, read_request},
+    args::{self, Kind, Spec, Unknown},
+    input::{OutputForm, compat, format_value, read_key, read_request},
     issuing::{
-        Lifetime, SerialSource, parse_serial, parse_time, signature_algorithm,
+        Lifetime, SerialSource, set_serial, signature_algorithm,
+        signing_digest_opt, validity_time,
     },
     keygen::{KeyParameters, utf8},
+    outputs::Outputs,
 };
 
+/// The name of the command.
+const COMMAND: &str = "req";
+
+/// The file a generated key is written to without `-keyout`:
+/// `default_keyfile` in the `req` section of OpenSSL's default
+/// configuration file, `apps/openssl.cnf`.
+const DEFAULT_KEYFILE: &str = "privkey.pem";
+
+/// What OpenSSL's `apps/req.c` prints on standard error once it has
+/// generated a key.
+const KEY_GENERATED: &str = "-----";
+
+/// `-verify`'s message when the signature verifies (`apps/req.c`).
+const VERIFY_OK: &str = "Certificate request self-signature verify OK";
+
+/// `-verify`'s message when it does not (`apps/req.c`).
+const VERIFY_FAILURE: &str =
+    "Certificate request self-signature verify failure";
+
+/// `-addext`'s message for a name given twice (`apps/req.c`).
+const DUPLICATE_EXTENSION: &str = "Duplicate extension name";
+
+/// The warnings of `parse_name` in OpenSSL's `apps/lib/apps.c`, after
+/// `req `, for an attribute `-subj` skips.
+mod subj {
+    /// An attribute name OpenSSL does not know.
+    pub(super) const UNKNOWN_ATTRIBUTE: &str =
+        "warning: Skipping unknown subject name attribute";
+    /// After an unknown attribute that follows a `+`.
+    pub(super) const PLUS_HINT: &str = "hint: a '+' in a value string needs \
+        be escaped using '\\' else a new member of a multi-valued RDN is \
+        expected";
+    /// An attribute without a value: before and after its name.
+    pub(super) const EMPTY_VALUE: (&str, &str) = (
+        "warning: No value provided for subject name attribute",
+        "skipped",
+    );
+}
+
+/// An option of `baldssl req`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Opt {
+    /// `-help`.
+    Help,
+    /// `-new`.
+    New,
+    /// `-key`.
+    Key(OsString),
+    /// `-keyform`.
+    Keyform(OsString),
+    /// `-subj`.
+    Subj(OsString),
+    /// `-utf8`.
+    Utf8,
+    /// `-multivalue-rdn`.
+    MultivalueRdn,
+    /// `-in`.
+    In(OsString),
+    /// `-inform`.
+    Inform(OsString),
+    /// `-out`.
+    Out(OsString),
+    /// `-outform`.
+    Outform(OsString),
+    /// `-noout`.
+    Noout,
+    /// `-verify`.
+    Verify,
+    /// `-text`.
+    Text,
+    /// `-newkey`.
+    Newkey(OsString),
+    /// `-pkeyopt`.
+    Pkeyopt(OsString),
+    /// `-keyout`.
+    Keyout(OsString),
+    /// `-noenc`.
+    Noenc,
+    /// `-nodes`.
+    Nodes,
+    /// `-x509`.
+    X509,
+    /// `-days`.
+    Days(OsString),
+    /// `-set_serial`.
+    SetSerial(OsString),
+    /// `-not_before`.
+    NotBefore(OsString),
+    /// `-not_after`.
+    NotAfter(OsString),
+    /// `-config`.
+    Config(OsString),
+    /// `-addext`.
+    Addext(OsString),
+    /// `-<digest>`.
+    Digest(Digest),
+}
+
 /// Every option `baldssl req` accepts, besides the digests.
-pub(crate) const SPECS: &[Spec] = &[
+pub(crate) const SPECS: &[Spec<Opt>] = &[
     Spec {
         name: "help",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Help),
         help: "Display this summary",
     },
     Spec {
         name: "new",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::New),
         help: "Create a new request",
     },
     Spec {
         name: "key",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Key),
         help: "Key to sign the new request with",
     },
     Spec {
         name: "keyform",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Keyform),
         help: "Key file format: PEM or DER (detected by default)",
     },
     Spec {
         name: "subj",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Subj),
         help: "Subject of the new request, /type0=value0/type1=value1...",
     },
     Spec {
         name: "utf8",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Utf8),
         help: "Read -subj as UTF-8 (Latin-1 by default)",
     },
     Spec {
         name: "multivalue-rdn",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::MultivalueRdn),
         help: "Accepted; multi-valued RDNs are always on",
     },
     Spec {
         name: "in",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::In),
         help: "Request to read (default stdin)",
     },
     Spec {
         name: "inform",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Inform),
         help: "Input format: PEM or DER (detected by default)",
     },
     Spec {
         name: "out",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Out),
         help: "Output file (default stdout)",
     },
     Spec {
         name: "outform",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Outform),
         help: "Output format: PEM or DER (default PEM)",
     },
     Spec {
         name: "noout",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Noout),
         help: "Do not output the request",
     },
     Spec {
         name: "verify",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Verify),
         help: "Verify the request's self-signature",
     },
     Spec {
         name: "text",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Text),
         help: "Print the request (or the -x509 certificate) in text form",
     },
     Spec {
         name: "newkey",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Newkey),
         help: "Generate a key: ec (with -pkeyopt), ec:<paramfile> or ed25519",
     },
     Spec {
         name: "pkeyopt",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Pkeyopt),
         help: "Key generation option: ec_paramgen_curve:<curve>",
     },
     Spec {
         name: "keyout",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Keyout),
         help: "File the generated key is written to (default privkey.pem)",
     },
     Spec {
         name: "noenc",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Noenc),
         help: "Do not encrypt the generated key",
     },
     Spec {
         name: "nodes",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Nodes),
         help: "Same as -noenc",
     },
     Spec {
         name: "x509",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::X509),
         help: "Write a self-signed certificate instead of a request",
     },
     Spec {
         name: "days",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Days),
         help: "Days the certificate is valid for (default 30)",
     },
     Spec {
         name: "set_serial",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::SetSerial),
         help: "Serial number of the certificate (default random)",
     },
     Spec {
         name: "not_before",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::NotBefore),
         help: "Start of validity: YYMMDDHHMMSSZ, YYYYMMDDHHMMSSZ or today",
     },
     Spec {
         name: "not_after",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::NotAfter),
         help: "End of validity, overriding -days: as -not_before",
     },
     Spec {
         name: "config",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Config),
         help: "Configuration file (not supported)",
     },
     Spec {
         name: "addext",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Addext),
         help: "Extension to add: name=value, as in a configuration file",
     },
 ];
@@ -227,25 +325,42 @@ enum Product {
     Certificate,
 }
 
-/// How `req` writes what it produces.
+/// Whether the request's signature is checked (`-verify`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Output {
-    /// PEM.
+enum Verify {
+    /// It is not.
     #[default]
-    Pem,
-    /// DER.
-    Der,
-    /// Nothing (`-noout`).
-    Nothing,
+    Skipped,
+    /// It is, and the outcome printed.
+    SelfSignature,
 }
 
-/// The options, once read.
+/// Whether the text form is printed (`-text`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Text {
+    /// It is not.
+    #[default]
+    Omitted,
+    /// It is, before the PEM or DER.
+    Printed,
+}
+
+/// Whether a generated key is encrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum KeyEncryption {
+    /// It is, OpenSSL's default, which baldssl does not do.
+    #[default]
+    Encrypted,
+    /// It is not (`-noenc`, `-nodes`).
+    Plain,
+}
+
 /// A key `-newkey` generates, and where it is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NewKey {
     /// `-newkey` and `-pkeyopt`.
     parameters: KeyParameters,
-    /// `-keyout`; OpenSSL's default `privkey.pem` without it.
+    /// `-keyout`, or [`DEFAULT_KEYFILE`].
     keyout: OsString,
 }
 
@@ -258,6 +373,7 @@ enum KeySource {
     New(NewKey),
 }
 
+/// The options, once read.
 struct Options {
     mode: Mode,
     product: Product,
@@ -270,9 +386,9 @@ struct Options {
     input: Option<OsString>,
     inform: Option<Format>,
     output_path: Option<OsString>,
-    output: Output,
-    verify: bool,
-    text: bool,
+    output: OutputForm,
+    verify: Verify,
+    text: Text,
     extensions: Extensions,
     digest: Option<Digest>,
 }
@@ -291,50 +407,39 @@ impl Default for Options {
             input: None,
             inform: None,
             output_path: None,
-            output: Output::default(),
-            verify: false,
-            text: false,
+            output: OutputForm::default(),
+            verify: Verify::default(),
+            text: Text::default(),
             extensions: Extensions::new(),
             digest: None,
         }
     }
 }
 
-/// The digests a request can be signed with.
-fn digest_opt(name: &str) -> Option<Digest> {
-    match Digest::from_name_opt(name)? {
-        Digest::Sha1 => None,
-        d @ (Digest::Sha224
-        | Digest::Sha256
-        | Digest::Sha384
-        | Digest::Sha512) => Some(d),
-    }
-}
-
-/// Prints OpenSSL's warning for an attribute `-subj` skipped.
-fn warn(warning: &SubjWarning) {
+/// Records OpenSSL's warning for an attribute `-subj` skipped.
+fn warn(warning: &SubjWarning, out: &mut Outputs) {
     match warning {
         SubjWarning::UnknownAttribute { name, position } => {
-            eprintln!(
-                "req warning: Skipping unknown subject name attribute \"{name}\""
-            );
+            out.diagnostic(format!(
+                "{COMMAND} {} \"{name}\"",
+                subj::UNKNOWN_ATTRIBUTE
+            ));
             match position {
-                RdnPosition::Further => eprintln!(
-                    "req hint: a '+' in a value string needs be escaped using \
-                     '\\' else a new member of a multi-valued RDN is expected"
-                ),
+                RdnPosition::Further => {
+                    out.diagnostic(format!("{COMMAND} {}", subj::PLUS_HINT));
+                }
                 RdnPosition::First => {}
             }
         }
-        SubjWarning::EmptyValue { name } => eprintln!(
-            "req warning: No value provided for subject name attribute \
-             \"{name}\", skipped"
-        ),
+        SubjWarning::EmptyValue { name } => {
+            let (before, after) = subj::EMPTY_VALUE;
+            out.diagnostic(format!("{COMMAND} {before} \"{name}\", {after}"));
+        }
     }
 }
 
-/// The subject of `-subj`, its warnings printed.
-fn subject(o: &Options) -> Result<DistinguishedName> {
+/// The subject of `-subj`, its warnings recorded.
+fn subject(o: &Options, out: &mut Outputs) -> Result<DistinguishedName> {
     let subj = o.subj.as_deref().ok_or_else(|| {
         Error::unsupported("req -new without -subj (interactive prompts)")
     })?;
@@ -347,15 +452,15 @@ fn subject(o: &Options) -> Result<DistinguishedName> {
         RdnMode::MultiValued,
         UTF8_ONLY,
     )
-    .map_err(|e| Error::Usage(format!("req: {e}")))?;
+    .map_err(|e| Error::Usage(format!("{COMMAND}: {e}")))?;
     for w in &warnings {
-        warn(w);
+        warn(w, out);
     }
     Ok(subject)
 }
 
-/// The key of `-key`.
-fn key(o: &Options) -> Result<AnyPrivateKey> {
+/// The key of `-key`, or the one `-newkey` generates, written to its file.
+fn key(o: &Options, out: &mut Outputs) -> Result<AnyPrivateKey> {
     match &o.key {
         None => Err(Error::unsupported(
             "req -new without -key or -newkey (a key from the configuration)",
@@ -363,23 +468,21 @@ fn key(o: &Options) -> Result<AnyPrivateKey> {
         Some(KeySource::File(path)) => read_key(path, o.keyform),
         Some(KeySource::New(new)) => {
             let key =
-                AnyPrivateKey::generate(new.parameters.algorithm("req")?)?;
-            // OpenSSL's progress line for a generated key, the same for
-            // every algorithm baldssl generates.
-            eprintln!("-----");
-            let path = Path::new(&new.keyout);
-            key.write_pem(create_owner_only(path)?)
-                .map_err(|e| write_error(path, &e))?;
+                AnyPrivateKey::generate(new.parameters.algorithm(COMMAND)?)?;
+            // OpenSSL's line for a generated key, the same for every
+            // algorithm baldssl generates.
+            out.diagnostic(KEY_GENERATED);
+            out.file(&new.keyout, Access::OwnerOnly, key.to_pem());
             Ok(key)
         }
     }
 }
 
 /// A new request, from `-key` and `-subj`.
-fn create(o: &Options) -> Result<CertificationRequest> {
-    let key = key(o)?;
+fn create(o: &Options, out: &mut Outputs) -> Result<CertificationRequest> {
+    let key = key(o, out)?;
     CertificationRequest::sign(
-        &subject(o)?,
+        &subject(o, out)?,
         &key,
         signature_algorithm(&key, o.digest),
         &o.extensions,
@@ -388,15 +491,19 @@ fn create(o: &Options) -> Result<CertificationRequest> {
 
 /// A new self-signed certificate, DER, from `-key`, `-subj` and the
 /// validity and serial options.
-fn self_sign(o: &Options) -> Result<Vec<u8>> {
-    let key = key(o)?;
-    let subject = subject(o)?;
+fn self_sign(
+    o: &Options,
+    compat: Compat,
+    out: &mut Outputs,
+) -> Result<Vec<u8>> {
+    let key = key(o, out)?;
+    let subject = subject(o, out)?;
     let mut template = CertificateTemplate::self_signed(
         &subject,
         &(&key).into(),
-        o.serial.next("req")?,
-        o.lifetime.validity("req")?,
-        crate::x509::compat()?,
+        o.serial.next(COMMAND, out)?,
+        o.lifetime.validity(COMMAND)?,
+        compat,
     );
     // -addext replaces v3_ca's extension of the same kind (which moves to
     // the end) and adds the others, as OpenSSL's replace mode does.
@@ -412,168 +519,215 @@ fn add_extension(
     names: &mut Vec<String>,
     value: &OsStr,
 ) -> Result<()> {
-    let line = utf8("req", "addext", value)?;
+    let line = utf8(COMMAND, "addext", value)?;
+    // A line without `=` is all name; parsing it as an extension then
+    // fails, as OpenSSL refuses it.
     let name = line.split_once('=').map_or(line, |(n, _)| n).trim();
     if names.iter().any(|n| n == name) {
-        return Err(Error::Usage(format!("Duplicate extension name: {name}")));
+        return Err(Error::Usage(format!("{DUPLICATE_EXTENSION}: {name}")));
     }
     names.push(name.to_string());
     extensions.push_new(line.parse::<Extension>()?)
 }
 
-/// Reads the options.
+/// The digest of a `-<digest>` option: one OpenSSL's `opt_md` knows, to
+/// be refused later if baldssl does not sign with it.
+fn digest_option_opt(name: &str) -> Option<Opt> {
+    Digest::from_name_opt(name).map(Opt::Digest)
+}
+
+/// Where the key comes from: `-key`, or `-newkey` (with `-pkeyopt`,
+/// `-keyout`, and `-noenc`, which baldssl requires), or neither.
+fn key_source(
+    key_file: Option<OsString>,
+    parameters: KeyParameters,
+    keyout: Option<OsString>,
+    encryption: KeyEncryption,
+) -> Result<Option<KeySource>> {
+    match (key_file, parameters.is_named(), encryption) {
+        (Some(_), true, _) => Err(Error::Usage(
+            "req: -key and -newkey exclude each other".into(),
+        )),
+        (Some(path), false, _) => Ok(Some(KeySource::File(path))),
+        (None, true, KeyEncryption::Encrypted) => Err(Error::unsupported(
+            "req -newkey without -noenc (encrypting the key)",
+        )),
+        (None, true, KeyEncryption::Plain) => {
+            Ok(Some(KeySource::New(NewKey {
+                parameters,
+                keyout: keyout.unwrap_or_else(|| DEFAULT_KEYFILE.into()),
+            })))
+        }
+        (None, false, _) => Ok(None),
+    }
+}
+
+/// Reads the options; `None` for `-help`.
 fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
     let opts =
-        args::parse("req", raw, SPECS, |n| Digest::from_name_opt(n).is_some())?;
+        args::parse(COMMAND, raw, SPECS, Unknown::Digests(digest_option_opt))?;
     let mut o = Options::default();
     let mut key_file: Option<OsString> = None;
     let mut parameters = KeyParameters::default();
-    let mut newkey = false;
     let mut keyout: Option<OsString> = None;
-    let mut noenc = false;
+    let mut encryption = KeyEncryption::default();
     let mut addext_names: Vec<String> = Vec::new();
-    for opt in opts {
-        let value = opt.value.clone().unwrap_or_default();
-        match opt.name.as_str() {
-            "help" => return Ok(None),
-            "new" => o.mode = Mode::Create,
-            "key" => key_file = Some(value),
-            "newkey" => {
-                parameters.set_newkey("req", &value)?;
-                newkey = true;
+    for given in opts {
+        match given.option {
+            Opt::Help => return Ok(None),
+            Opt::New => o.mode = Mode::Create,
+            Opt::Key(v) => key_file = Some(v),
+            Opt::Newkey(v) => parameters.set_newkey(COMMAND, &v)?,
+            Opt::Pkeyopt(v) => parameters.pkeyopt(COMMAND, &v)?,
+            Opt::Keyout(v) => keyout = Some(v),
+            Opt::Noenc | Opt::Nodes => encryption = KeyEncryption::Plain,
+            Opt::Keyform(v) => {
+                o.keyform = Some(format_value(&v, COMMAND, "keyform")?);
             }
-            "pkeyopt" => parameters.pkeyopt("req", &value)?,
-            "keyout" => keyout = Some(value),
-            "noenc" | "nodes" => noenc = true,
-            "keyform" => {
-                o.keyform = Some(parse_format(&value, "req", "keyform")?);
+            Opt::Subj(v) => o.subj = Some(v),
+            Opt::Utf8 => o.encoding = InputEncoding::Utf8,
+            Opt::MultivalueRdn => {}
+            Opt::In(v) => o.input = Some(v),
+            Opt::Inform(v) => {
+                o.inform = Some(format_value(&v, COMMAND, "inform")?);
             }
-            "subj" => o.subj = Some(value),
-            "utf8" => o.encoding = InputEncoding::Utf8,
-            "in" => o.input = Some(value),
-            "inform" => o.inform = Some(parse_format(&value, "req", "inform")?),
-            "out" => o.output_path = Some(value),
-            // -noout wins over -outform, wherever it comes.
-            "outform" if o.output != Output::Nothing => {
-                o.output = match parse_format(&value, "req", "outform")? {
-                    Format::Pem => Output::Pem,
-                    Format::Der => Output::Der,
-                };
+            Opt::Out(v) => o.output_path = Some(v),
+            Opt::Outform(v) => {
+                o.output =
+                    o.output.with_format(format_value(&v, COMMAND, "outform")?);
             }
-            "outform" => {
-                parse_format(&value, "req", "outform")?;
+            Opt::Noout => o.output = OutputForm::Nothing,
+            Opt::Verify => o.verify = Verify::SelfSignature,
+            Opt::X509 => o.product = Product::Certificate,
+            Opt::Days(v) => o.lifetime.set_days(COMMAND, &v)?,
+            Opt::SetSerial(v) => {
+                o.serial = SerialSource::Given(set_serial(COMMAND, &v)?);
             }
-            "noout" => o.output = Output::Nothing,
-            "verify" => o.verify = true,
-            "x509" => o.product = Product::Certificate,
-            "days" => o.lifetime.set_days("req", &value)?,
-            "set_serial" => {
-                o.serial = SerialSource::Given(parse_serial("req", &value)?);
-            }
-            "not_before" => {
+            Opt::NotBefore(v) => {
                 o.lifetime.not_before =
-                    Some(parse_time("req", "not_before", &value)?);
+                    Some(validity_time(COMMAND, "not_before", &v)?);
             }
-            "not_after" => {
+            Opt::NotAfter(v) => {
                 o.lifetime.not_after =
-                    Some(parse_time("req", "not_after", &value)?);
+                    Some(validity_time(COMMAND, "not_after", &v)?);
             }
-            "text" => o.text = true,
-            "addext" => {
-                add_extension(&mut o.extensions, &mut addext_names, &value)?;
+            Opt::Text => o.text = Text::Printed,
+            Opt::Addext(v) => {
+                add_extension(&mut o.extensions, &mut addext_names, &v)?;
             }
-            "config" => {
-                return Err(Error::unsupported(format!("req -{}", opt.name)));
+            Opt::Config(_) => {
+                return Err(Error::unsupported(format!(
+                    "{COMMAND} -{}",
+                    given.name
+                )));
             }
-            name => {
-                o.digest = Some(digest_opt(name).ok_or_else(|| {
-                    Error::unsupported(format!("req: digest {name}"))
+            Opt::Digest(d) => {
+                o.digest = Some(signing_digest_opt(d).ok_or_else(|| {
+                    Error::unsupported(format!(
+                        "{COMMAND}: digest {}",
+                        given.name
+                    ))
                 })?);
             }
         }
     }
-    o.key = match (key_file, newkey) {
-        (Some(_), true) => {
-            return Err(Error::Usage(
-                "req: -key and -newkey exclude each other".into(),
-            ));
-        }
-        (Some(path), false) => Some(KeySource::File(path)),
-        (None, true) => {
-            if !noenc {
-                return Err(Error::unsupported(
-                    "req -newkey without -noenc (encrypting the key)",
-                ));
-            }
-            // As in OpenSSL, -newkey creates a request.
-            o.mode = Mode::Create;
-            Some(KeySource::New(NewKey {
-                parameters,
-                keyout: keyout.unwrap_or_else(|| "privkey.pem".into()),
-            }))
-        }
-        (None, false) => None,
-    };
-    if o.product == Product::Certificate {
-        if o.input.is_some() {
-            return Err(Error::unsupported("req -x509 -in"));
-        }
-        if o.verify {
-            return Err(Error::unsupported("req -x509 -verify"));
-        }
+    o.key = key_source(key_file, parameters, keyout, encryption)?;
+    // As in OpenSSL, -newkey and -x509 create a request.
+    if let Some(KeySource::New(_)) = o.key {
         o.mode = Mode::Create;
+    }
+    match o.product {
+        Product::Request => {}
+        Product::Certificate => {
+            if o.input.is_some() {
+                return Err(Error::unsupported("req -x509 -in"));
+            }
+            match o.verify {
+                Verify::Skipped => {}
+                Verify::SelfSignature => {
+                    return Err(Error::unsupported("req -x509 -verify"));
+                }
+            }
+            o.mode = Mode::Create;
+        }
     }
     Ok(Some(o))
 }
 
-/// Renders the request, and where to write it.
+/// `-verify`: the outcome, on the stream the release line prints it on.
+fn verify(
+    request: &CertificationRequest,
+    compat: Compat,
+    out: &mut Outputs,
+) -> Result<()> {
+    if !request.verify() {
+        out.diagnostic(VERIFY_FAILURE);
+        return Err(Error::invalid(
+            "certificate request self-signature verify failure",
+        ));
+    }
+    match compat.request_verified_stream() {
+        Stream::Stderr => out.diagnostic(VERIFY_OK),
+        Stream::Stdout => out.stdout(format!("{VERIFY_OK}\n")),
+    }
+    Ok(())
+}
+
+/// Creates or reads the request (or creates the certificate), and records
+/// what `req` writes.
 ///
 /// # Errors
 ///
 /// Usage errors, unreadable keys or requests, unsupported options, and a
 /// failed `-verify`.
-pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
+pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
     let Some(o) = parse_options(raw)? else {
-        return Ok((args::usage("req", SPECS).into_bytes(), None));
+        out.stdout(args::usage(COMMAND, SPECS));
+        return Ok(());
     };
-    let compat = crate::x509::compat()?;
+    let compat = compat()?;
     let mut bytes = Vec::new();
-    if o.product == Product::Certificate {
-        let der = self_sign(&o)?;
-        if o.text {
-            Certificate::from_der(&der)?.write_text(compat, &mut bytes)?;
+    match o.product {
+        Product::Certificate => {
+            let der = self_sign(&o, compat, out)?;
+            match o.text {
+                Text::Omitted => {}
+                Text::Printed => {
+                    bytes.extend(Certificate::from_der(&der)?.to_text(compat)?);
+                }
+            }
+            match o.output {
+                OutputForm::Nothing => {}
+                OutputForm::Der => bytes.extend_from_slice(&der),
+                OutputForm::Pem => bytes.extend_from_slice(
+                    pem::encode(Certificate::LABEL, &der).as_bytes(),
+                ),
+            }
         }
-        match o.output {
-            Output::Nothing => {}
-            Output::Der => bytes.extend_from_slice(&der),
-            Output::Pem => bytes
-                .extend_from_slice(pem::encode("CERTIFICATE", &der).as_bytes()),
+        Product::Request => {
+            let request = match o.mode {
+                Mode::Create => create(&o, out)?,
+                Mode::Read => read_request(o.input.as_deref(), o.inform)?,
+            };
+            match o.verify {
+                Verify::Skipped => {}
+                Verify::SelfSignature => verify(&request, compat, out)?,
+            }
+            match o.text {
+                Text::Omitted => {}
+                Text::Printed => bytes.extend(request.to_text(compat)?),
+            }
+            match o.output {
+                OutputForm::Nothing => {}
+                OutputForm::Der => bytes.extend_from_slice(&request.encode()),
+                OutputForm::Pem => {
+                    bytes.extend_from_slice(request.to_pem().as_bytes());
+                }
+            }
         }
-        return Ok((bytes, o.output_path));
     }
-    let request = match o.mode {
-        Mode::Create => create(&o)?,
-        Mode::Read => read_request(o.input.as_deref(), o.inform)?,
-    };
-    if o.verify {
-        if request.verify() {
-            eprintln!("Certificate request self-signature verify OK");
-        } else {
-            eprintln!("Certificate request self-signature verify failure");
-            return Err(Error::invalid(
-                "certificate request self-signature verify failure",
-            ));
-        }
-    }
-    if o.text {
-        request.write_text(compat, &mut bytes)?;
-    }
-    match o.output {
-        Output::Nothing => {}
-        Output::Der => bytes.extend_from_slice(&request.encode()),
-        Output::Pem => bytes.extend_from_slice(request.to_pem().as_bytes()),
-    }
-    Ok((bytes, o.output_path))
+    out.output(o.output_path.as_deref(), Access::Default, bytes);
+    Ok(())
 }
 
 #[cfg(test)]

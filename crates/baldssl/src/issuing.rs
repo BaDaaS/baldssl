@@ -1,138 +1,179 @@
 //! The options that set the fields of a certificate baldssl signs, shared
 //! by `req -x509` and `x509 -req`: the serial number (`-set_serial`, or a
-//! serial file) and the validity (`-days`, `-not_before`, `-not_after`).
+//! serial file), the validity (`-days`, `-not_before`, `-not_after`), and
+//! the digest it is signed with.
 
 use std::{
     ffi::OsStr,
-    fs,
     path::{Path, PathBuf},
+    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use baldssl_core::{
     Error, Result,
     der::{Time, TimeKind},
-    hex::{self, Case},
 };
 use baldssl_crypto::Algorithm as Digest;
+use baldssl_fs::{Access, read_if_present};
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{SerialNumber, SignatureAlgorithm, Validity};
 
-/// Big-endian bytes of the number written with `digits` in `radix` (10 or
-/// 16), without leading zeros; `None` on a character that is not a digit.
-fn digits_be_opt(digits: &str, radix: u16) -> Option<Vec<u8>> {
-    let mut bytes: Vec<u8> = Vec::new();
-    for c in digits.chars() {
-        let mut carry = u16::try_from(c.to_digit(radix.into())?).ok()?;
-        for byte in bytes.iter_mut().rev() {
-            let v = u16::from(*byte).checked_mul(radix)?.checked_add(carry)?;
-            *byte = v.to_be_bytes()[1];
-            carry = v >> 8;
-        }
-        if carry != 0 {
-            bytes.insert(0, carry.to_be_bytes()[1]);
-        }
+use crate::outputs::Outputs;
+
+/// The validity in days without `-days`: `DEFAULT_DAYS` in OpenSSL's
+/// `apps/req.c` and `apps/x509.c`.
+pub(crate) const DEFAULT_DAYS: u64 = 30;
+
+/// Seconds in a day: the unit `-days` is counted in.
+const SECONDS_PER_DAY: u64 = 86_400;
+
+/// The value of `-not_before` and `-not_after` that means now
+/// (`ASN1_TIME_set_string_X509` is skipped for it in OpenSSL's
+/// `set_cert_times`, `apps/lib/apps.c`).
+const TODAY: &str = "today";
+
+/// The length of a UTCTime written `YYMMDDHHMMSSZ` ([RFC 5280 section
+/// 4.1.2.5.1]).
+///
+/// [RFC 5280 section 4.1.2.5.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5.1
+const UTC_TIME_LEN: usize = 13;
+
+/// The length of a GeneralizedTime written `YYYYMMDDHHMMSSZ` ([RFC 5280
+/// section 4.1.2.5.2]).
+///
+/// [RFC 5280 section 4.1.2.5.2]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5.2
+const GENERALIZED_TIME_LEN: usize = 15;
+
+/// `error` with `prefix` before its message, for the errors of the
+/// `FromStr` impls, which do not know the command or the option.
+fn prefixed(prefix: &str, error: Error) -> Error {
+    match error {
+        Error::Usage(m) => Error::Usage(format!("{prefix}: {m}")),
+        Error::Unsupported(m) => Error::Unsupported(format!("{prefix}: {m}")),
+        Error::Invalid(m) => Error::Invalid(format!("{prefix}: {m}")),
+        e @ (Error::Reported { .. }
+        | Error::NotFound { .. }
+        | Error::Io { .. }
+        | Error::Base64(_)
+        | Error::Pem(_)
+        | Error::Der(_)) => e,
     }
-    Some(bytes)
 }
 
-/// A serial number of at most 20 octets, positive, or the error saying so.
-fn serial(command: &str, text: &str, bytes: &[u8]) -> Result<SerialNumber> {
-    SerialNumber::new_opt(bytes).ok_or_else(|| {
-        Error::unsupported(format!(
-            "{command}: serial {text}: a serial must be positive and at most \
-             20 octets"
-        ))
-    })
-}
-
-/// The serial number of `-set_serial`: decimal digits, or hexadecimal ones
-/// after `0x`, as OpenSSL's `s2i_ASN1_INTEGER` reads them.
+/// The serial number of `-set_serial` (see the `FromStr` of
+/// [`SerialNumber`]).
 ///
 /// # Errors
 ///
-/// A usage error on anything else; unsupported for zero, negative numbers
-/// and serials longer than 20 octets.
-pub(crate) fn parse_serial(
-    command: &str,
-    value: &OsStr,
-) -> Result<SerialNumber> {
-    let invalid = || {
+/// A usage error on what is not a number; unsupported for zero, negative
+/// numbers and serials longer than 20 octets.
+pub(crate) fn set_serial(command: &str, value: &OsStr) -> Result<SerialNumber> {
+    let text = value.to_str().ok_or_else(|| {
         Error::Usage(format!(
             "{command}: invalid serial number {}",
             value.display()
         ))
-    };
-    let text = value.to_str().ok_or_else(invalid)?;
-    let (digits, radix) =
-        match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-            Some(hex) => (hex, 16),
-            None => (text, 10),
-        };
-    if digits.is_empty() {
-        return Err(invalid());
-    }
-    let bytes = digits_be_opt(digits, radix).ok_or_else(invalid)?;
-    serial(command, text, &bytes)
+    })?;
+    text.parse().map_err(|e| prefixed(command, e))
 }
 
 /// Seconds since the Unix epoch, now.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-/// A `-not_before` or `-not_after` time: `today`, or a UTCTime or
-/// GeneralizedTime, written as RFC 5280 requires (UTCTime through 2049),
-/// as OpenSSL's `ASN1_TIME_set_string_X509` does.
 ///
 /// # Errors
 ///
-/// A usage error on any other text.
-pub(crate) fn parse_time(
+/// [`Error::Invalid`] when the clock is before 1970, which no certificate
+/// time baldssl writes can start from.
+pub(crate) fn unix_now() -> Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|_| Error::invalid("the system clock is before 1970"))
+}
+
+/// A `-not_before` or `-not_after` time: now, or a given time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ValidityTime {
+    /// `today`: the time the certificate is made.
+    Today,
+    /// A UTCTime or GeneralizedTime.
+    At(Time),
+}
+
+/// `today`, or a UTCTime or GeneralizedTime without fraction, written as
+/// RFC 5280 requires (UTCTime through 2049), as OpenSSL's
+/// `ASN1_TIME_set_string_X509` does.
+///
+/// # Errors
+///
+/// [`Error::Usage`] on any other text.
+impl FromStr for ValidityTime {
+    type Err = Error;
+
+    fn from_str(text: &str) -> Result<Self> {
+        let invalid = || Error::Usage(format!("invalid time {text}"));
+        if text == TODAY {
+            return Ok(ValidityTime::Today);
+        }
+        let kind = match text.len() {
+            UTC_TIME_LEN => TimeKind::Utc,
+            GENERALIZED_TIME_LEN => TimeKind::Generalized,
+            _ => return Err(invalid()),
+        };
+        let time = Time::parse(kind, text.as_bytes()).map_err(|_| invalid())?;
+        if !time.fraction().is_empty() {
+            return Err(invalid());
+        }
+        Ok(ValidityTime::At(time.to_rfc5280()))
+    }
+}
+
+impl ValidityTime {
+    /// The time, `now` being the time the certificate is made.
+    fn at(&self, now: u64) -> Time {
+        match self {
+            ValidityTime::Today => Time::from_unix_seconds(now),
+            ValidityTime::At(t) => t.clone(),
+        }
+    }
+}
+
+/// The value of `-<option>` of `command`, a [`ValidityTime`].
+///
+/// # Errors
+///
+/// A usage error on what is not one.
+pub(crate) fn validity_time(
     command: &str,
     option: &str,
     value: &OsStr,
-) -> Result<Time> {
-    let invalid = || {
-        Error::Usage(format!(
-            "{command}: -{option}: invalid time {}",
-            value.display()
-        ))
-    };
-    let bytes = value.as_encoded_bytes();
-    if bytes == b"today" {
-        return Ok(Time::from_unix_seconds(now()));
-    }
-    let kind = match bytes.len() {
-        13 => TimeKind::Utc,
-        15 => TimeKind::Generalized,
-        _ => return Err(invalid()),
-    };
-    let time = Time::parse(kind, bytes).map_err(|_| invalid())?;
-    if !time.fraction().is_empty() {
-        return Err(invalid());
-    }
-    Ok(time.to_rfc5280())
+) -> Result<ValidityTime> {
+    let prefix = format!("{command}: -{option}");
+    value
+        .to_str()
+        .ok_or_else(|| {
+            Error::Usage(format!("{prefix}: invalid time {}", value.display()))
+        })?
+        .parse()
+        .map_err(|e| prefixed(&prefix, e))
 }
 
-/// The validity options: `-days` (30 by default, as in OpenSSL), and the
-/// explicit times, which win over it.
+/// The validity options: `-days` ([`DEFAULT_DAYS`] by default, as in
+/// OpenSSL), and the explicit times, which win over it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Lifetime {
     /// `-days`.
     pub(crate) days: u64,
     /// `-not_before`.
-    pub(crate) not_before: Option<Time>,
+    pub(crate) not_before: Option<ValidityTime>,
     /// `-not_after`.
-    pub(crate) not_after: Option<Time>,
+    pub(crate) not_after: Option<ValidityTime>,
 }
 
 impl Default for Lifetime {
     fn default() -> Self {
         Lifetime {
-            days: 30,
+            days: DEFAULT_DAYS,
             not_before: None,
             not_after: None,
         }
@@ -164,19 +205,20 @@ impl Lifetime {
     ///
     /// # Errors
     ///
-    /// When `-days` takes the end past what a time can hold.
+    /// When `-days` takes the end past what a time can hold, or the clock
+    /// is before 1970.
     pub(crate) fn validity(&self, command: &str) -> Result<Validity> {
-        let start = now();
+        let now = unix_now()?;
         let not_before = self
             .not_before
-            .clone()
-            .unwrap_or_else(|| Time::from_unix_seconds(start));
+            .as_ref()
+            .map_or_else(|| Time::from_unix_seconds(now), |t| t.at(now));
         let not_after = match &self.not_after {
-            Some(t) => t.clone(),
+            Some(t) => t.at(now),
             None => Time::from_unix_seconds(
                 self.days
-                    .checked_mul(86_400)
-                    .and_then(|d| d.checked_add(start))
+                    .checked_mul(SECONDS_PER_DAY)
+                    .and_then(|d| d.checked_add(now))
                     .ok_or_else(|| {
                         Error::Usage(format!(
                             "{command}: -days {} too large",
@@ -192,6 +234,16 @@ impl Lifetime {
     }
 }
 
+/// What a missing serial file means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum MissingSerialFile {
+    /// An error.
+    #[default]
+    Refused,
+    /// A new file, starting from a random number (`-CAcreateserial`).
+    Created,
+}
+
 /// Where the serial number of a certificate comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum SerialSource {
@@ -202,13 +254,12 @@ pub(crate) enum SerialSource {
     Given(SerialNumber),
     /// A serial file (`-CAserial`, or the CA's file name with `.srl`), as
     /// OpenSSL's `x509` keeps it: the number read is incremented, used, and
-    /// written back. A missing file is an error unless `create`
-    /// (`-CAcreateserial`), which starts from a random number.
+    /// written back.
     File {
         /// The file.
         path: PathBuf,
-        /// `-CAcreateserial`.
-        create: bool,
+        /// When it does not exist.
+        missing: MissingSerialFile,
     },
 }
 
@@ -219,73 +270,64 @@ pub(crate) fn default_serial_file(ca: &OsStr) -> PathBuf {
     Path::new(ca).with_extension("srl")
 }
 
-/// The serial file's number, as `a2i_ASN1_INTEGER` reads it: hexadecimal
-/// digits, upper or lower case.
-fn read_serial_file(command: &str, path: &Path, text: &str) -> Result<Vec<u8>> {
-    digits_be_opt(text.trim(), 16)
-        .filter(|b| !b.is_empty() || !text.trim().is_empty())
-        .ok_or_else(|| {
-            Error::Usage(format!(
-                "{command}: {}: unable to load number",
-                path.display()
-            ))
-        })
-}
-
-/// One more than the big-endian `bytes`.
-fn increment(bytes: &[u8]) -> Vec<u8> {
-    let mut out = bytes.to_vec();
-    for byte in out.iter_mut().rev() {
-        let (v, overflow) = byte.overflowing_add(1);
-        *byte = v;
-        if !overflow {
-            return out;
-        }
-    }
-    out.insert(0, 1);
-    out
-}
-
 impl SerialSource {
-    /// The serial number to use, after updating the serial file.
+    /// The serial number to use; a serial file's new contents go to
+    /// `out`, written before the certificate is signed, as OpenSSL's
+    /// `x509_load_serial` saves it.
     ///
     /// # Errors
     ///
-    /// A missing file without `create`, an unreadable one, or one that
-    /// cannot be written.
-    pub(crate) fn next(&self, command: &str) -> Result<SerialNumber> {
+    /// A missing file that is not to be created, an unreadable one, or one
+    /// that holds no number.
+    pub(crate) fn next(
+        &self,
+        command: &str,
+        out: &mut Outputs,
+    ) -> Result<SerialNumber> {
         match self {
             SerialSource::Random => SerialNumber::random(),
             SerialSource::Given(s) => Ok(s.clone()),
-            SerialSource::File { path, create } => {
-                let used = match fs::read_to_string(path) {
-                    Ok(text) => {
-                        increment(&read_serial_file(command, path, &text)?)
+            SerialSource::File { path, missing } => {
+                let shown = path.display().to_string();
+                let serial = match (read_if_present(path)?, missing) {
+                    (Some(bytes), _) => {
+                        let text =
+                            std::str::from_utf8(&bytes).map_err(|_| {
+                                Error::Usage(format!(
+                                    "{command}: {shown}: unable to load number"
+                                ))
+                            })?;
+                        SerialNumber::following_file(text).map_err(|e| {
+                            prefixed(&format!("{command}: {shown}"), e)
+                        })?
                     }
-                    Err(e)
-                        if *create
-                            && e.kind() == std::io::ErrorKind::NotFound =>
-                    {
-                        SerialNumber::random()?.as_be_bytes().to_vec()
+                    (None, MissingSerialFile::Created) => {
+                        SerialNumber::random()?
                     }
-                    Err(e) => {
+                    (None, MissingSerialFile::Refused) => {
                         return Err(Error::Io {
-                            context: path.display().to_string(),
-                            message: e.to_string(),
+                            context: shown,
+                            message: "No such file or directory".into(),
                         });
                     }
                 };
-                let serial =
-                    serial(command, &path.display().to_string(), &used)?;
-                let mut text = hex::plain(serial.as_be_bytes(), Case::Upper);
-                text.push('\n');
-                fs::write(path, text).map_err(|e| Error::Io {
-                    context: path.display().to_string(),
-                    message: e.to_string(),
-                })?;
+                out.file(path, Access::Default, serial.to_serial_file());
                 Ok(serial)
             }
         }
+    }
+}
+
+/// The digest a certificate can be signed with: every digest baldssl has
+/// but SHA-1, which baldssl does not sign with. `None` for SHA-1.
+#[must_use]
+pub(crate) fn signing_digest_opt(digest: Digest) -> Option<Digest> {
+    match digest {
+        Digest::Sha1 => None,
+        d @ (Digest::Sha224
+        | Digest::Sha256
+        | Digest::Sha384
+        | Digest::Sha512) => Some(d),
     }
 }
 

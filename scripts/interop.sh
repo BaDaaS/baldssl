@@ -109,9 +109,11 @@ for cert in "${CERTS[@]}"; do
     fi
 done
 
-# genpkey: OpenSSL must accept every key baldssl generates, and the key
-# must have exactly the structure of one OpenSSL generates (the random
-# bytes masked out of the asn1parse listing).
+# genpkey: OpenSSL must accept every key baldssl generates, the key must
+# have exactly the structure of one OpenSSL generates (the random bytes
+# masked out of the asn1parse listing), and its file the same mode
+# (readable by its owner only, as bio_open_owner creates it).
+mode() { perl -e 'printf "%o", (stat shift)[2] & 0777' "$1"; }
 structure() {
     "$OPENSSL" asn1parse -in "$1" -i | sed -E 's/\[HEX DUMP\]:[0-9A-F]+//'
 }
@@ -121,13 +123,18 @@ for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
     args=(-algorithm "$alg")
     [[ -n "$opt" ]] && args+=(-pkeyopt "$opt")
     label="genpkey/${opt:-$alg}"
+    # A file that exists keeps its mode, so each run starts without one.
+    rm -f "$WORK/b-key.pem" "$WORK/o-key.pem"
     if ! "$BALDSSL" genpkey "${args[@]}" -out "$WORK/b-key.pem"; then
         echo "FAIL $label: baldssl genpkey failed"
         fail=$((fail + 1))
         continue
     fi
     "$OPENSSL" genpkey "${args[@]}" -out "$WORK/o-key.pem"
-    if ! "$OPENSSL" pkey -in "$WORK/b-key.pem" -noout -check >/dev/null; then
+    if [[ "$(mode "$WORK/b-key.pem")" != "$(mode "$WORK/o-key.pem")" ]]; then
+        echo "FAIL $label: key file mode $(mode "$WORK/b-key.pem")"
+        fail=$((fail + 1))
+    elif ! "$OPENSSL" pkey -in "$WORK/b-key.pem" -noout -check >/dev/null; then
         echo "FAIL $label: OpenSSL rejects the key"
         fail=$((fail + 1))
     elif ! cmp -s <(structure "$WORK/b-key.pem") \

@@ -15,11 +15,7 @@
 //! `-CAstore`, CRLs, policies and purposes, and the chains
 //! [`baldssl_x509::TrustStore::verify`] refuses.
 
-use std::{
-    ffi::OsString,
-    io::Write as _,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::ffi::OsString;
 
 use baldssl_core::{Error, Result, der::syntax::RawTlv};
 use baldssl_x509::{
@@ -28,35 +24,58 @@ use baldssl_x509::{
 };
 
 use crate::{
-    args::{self, Kind, Spec},
-    input::read_input,
+    args::{self, Kind, Spec, Unknown},
+    input::{compat, read_input},
+    issuing::unix_now,
+    outputs::Outputs,
 };
 
+/// The name of the command.
+const COMMAND: &str = "verify";
+
+/// The label of standard input in `verify`'s messages (`apps/verify.c`).
+const STDIN_LABEL: &str = "stdin";
+
+/// An option of `baldssl verify`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Opt {
+    /// `-help`.
+    Help,
+    /// `-CAfile`.
+    CaFile(OsString),
+    /// `-untrusted`.
+    Untrusted(OsString),
+    /// `-CApath`.
+    CaPath(OsString),
+    /// `-CAstore`.
+    CaStore(OsString),
+}
+
 /// Every option `baldssl verify` accepts.
-pub(crate) const SPECS: &[Spec] = &[
+pub(crate) const SPECS: &[Spec<Opt>] = &[
     Spec {
         name: "help",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Help),
         help: "Display this summary",
     },
     Spec {
         name: "CAfile",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::CaFile),
         help: "A file of trusted certificates",
     },
     Spec {
         name: "untrusted",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Untrusted),
         help: "A file of untrusted (intermediate) certificates",
     },
     Spec {
         name: "CApath",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::CaPath),
         help: "A directory of trusted certificates (not supported)",
     },
     Spec {
         name: "CAstore",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::CaStore),
         help: "A store of trusted certificates (not supported)",
     },
 ];
@@ -81,45 +100,42 @@ fn parse_all(ders: &[RawTlv]) -> Result<Vec<Certificate<'_>>> {
         .collect()
 }
 
-/// Writes `bytes` on standard error.
-fn note(bytes: &[u8]) {
-    // Nothing to do if standard error is gone.
-    let _ = std::io::stderr().write_all(bytes);
-}
-
-/// Verifies each certificate named, and renders what `verify` writes on
-/// standard output.
+/// Verifies each certificate named, and records what `verify` writes.
 ///
 /// # Errors
 ///
 /// Usage errors, unreadable files, what baldssl cannot check, and
 /// [`Error::Reported`] with exit code 2 when a certificate does not
 /// verify, as OpenSSL exits.
-pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
+pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
     let (opts, files) =
-        args::parse_with_operands("verify", raw, SPECS, |_| false)?;
+        args::parse_with_operands(COMMAND, raw, SPECS, Unknown::Refused)?;
     let mut trusted_paths = Vec::new();
     let mut untrusted_paths = Vec::new();
-    for opt in opts {
-        let value = opt.value.clone().unwrap_or_default();
-        match opt.name.as_str() {
-            "help" => {
-                return Ok((args::usage("verify", SPECS).into_bytes(), None));
+    for given in opts {
+        match given.option {
+            Opt::Help => {
+                outputs.stdout(args::usage(COMMAND, SPECS));
+                return Ok(());
             }
-            "CAfile" => trusted_paths.push(value),
-            "untrusted" => untrusted_paths.push(value),
-            name => return Err(Error::unsupported(format!("verify -{name}"))),
+            Opt::CaFile(v) => trusted_paths.push(v),
+            Opt::Untrusted(v) => untrusted_paths.push(v),
+            Opt::CaPath(_) | Opt::CaStore(_) => {
+                return Err(Error::unsupported(format!(
+                    "{COMMAND} -{}",
+                    given.name
+                )));
+            }
         }
     }
-    let compat = crate::x509::compat()?;
+    let compat = compat()?;
     let trusted_ders = load_all(&trusted_paths)?;
     let untrusted_ders = load_all(&untrusted_paths)?;
     let trusted = parse_all(&trusted_ders)?;
     let untrusted = parse_all(&untrusted_ders)?;
     let store = TrustStore::new(&trusted, &untrusted)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let now = i64::try_from(unix_now()?)
+        .map_err(|_| Error::invalid("the system clock is past 64 bits"))?;
     let targets: Vec<Option<OsString>> = if files.is_empty() {
         vec![None]
     } else {
@@ -129,7 +145,7 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
     let mut failed = false;
     for path in targets {
         let label = path.as_ref().map_or_else(
-            || "stdin".into(),
+            || STDIN_LABEL.into(),
             |p| p.to_string_lossy().into_owned(),
         );
         let der = certificate_der(&read_input(path.as_deref())?, None)?;
@@ -142,6 +158,8 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
                 failed = true;
                 let mut report = Vec::new();
                 for Reported { error, depth } in &failure.errors {
+                    // An error at a depth past the chain built is about
+                    // the certificate being verified.
                     let cert =
                         failure.chain.get(*depth).copied().unwrap_or(&target);
                     report
@@ -158,7 +176,7 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
                 report.extend_from_slice(
                     format!("error {label}: verification failed\n").as_bytes(),
                 );
-                note(&report);
+                outputs.stderr(report);
             }
         }
     }
@@ -169,7 +187,8 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
             output: out,
         });
     }
-    Ok((out, None))
+    outputs.stdout(out);
+    Ok(())
 }
 
 #[cfg(test)]

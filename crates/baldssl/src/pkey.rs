@@ -6,110 +6,154 @@
 //! `-outform PEM|DER`, `-pubout` (write the public key; implied by
 //! `-pubin`), `-noout`, `-text` and `-text_pub` (the key as OpenSSL prints
 //! it, by the release line `BALDSSL_OPENSSL_COMPAT` names), `-check` and
-//! `-pubcheck`. A private key in DER is written as OpenSSL 3 writes it, in
-//! its traditional form when it has one (SEC1 for EC), and as OpenSSL 4
-//! does, in PKCS#8. As in OpenSSL, the check's "Key is valid" comes first, then
-//! the key, then the text, all on the output; a private key written to a
-//! file is created readable by its owner only (`bio_open_owner`).
+//! `-pubcheck`. A private key in DER is written as OpenSSL 3.0 to 3.5 write
+//! it, in its traditional form when it has one (SEC 1's ECPrivateKey for
+//! EC), and as 3.6 and 4 do, in PKCS#8, by the release line
+//! ([`baldssl_x509::Compat::private_key_der`]). As in OpenSSL, the check's
+//! "Key is valid" comes first, then the key, then the text, all on the
+//! output; a private key written to a file is created readable by its
+//! owner only (`bio_open_owner`).
 //!
 //! The keys baldssl reads are checked as they are read (a point on its
 //! curve, a scalar in range, the public key derived from the secret), so a
 //! key that reads is valid. Not supported, and reported as such: encrypted
 //! keys (`-passin`, `-passout`, a cipher), `-traditional`, and RSA keys.
 
-use std::{ffi::OsString, io::Write as _, path::Path};
+use std::ffi::OsString;
 
 use baldssl_core::{
     Error, Result,
     encoding::{Decodable, Encodable},
     pem::Pem,
 };
-use baldssl_fs::{create_owner_only, write_error};
+use baldssl_fs::Access;
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
 use baldssl_x509::{
     Format, PrivateKeyDer, print_private_key_text, print_public_key_text,
 };
 
 use crate::{
-    args::{self, Kind, Spec},
-    input::{is_pem, parse_format, read_input},
+    args::{self, Kind, Spec, Unknown},
+    input::{compat, format_value, read_input},
+    outputs::Outputs,
 };
 
+/// The name of the command.
+const COMMAND: &str = "pkey";
+
+/// What `-check` and `-pubcheck` print before the key (`apps/pkey.c`).
+const KEY_IS_VALID: &[u8] = b"Key is valid\n";
+
+/// An option of `baldssl pkey`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Opt {
+    /// `-help`.
+    Help,
+    /// `-in`.
+    In(OsString),
+    /// `-inform`.
+    Inform(OsString),
+    /// `-pubin`.
+    Pubin,
+    /// `-out`.
+    Out(OsString),
+    /// `-outform`.
+    Outform(OsString),
+    /// `-pubout`.
+    Pubout,
+    /// `-noout`.
+    Noout,
+    /// `-text`.
+    Text,
+    /// `-text_pub`.
+    TextPub,
+    /// `-check`.
+    Check,
+    /// `-pubcheck`.
+    Pubcheck,
+    /// `-passin`.
+    Passin(OsString),
+    /// `-passout`.
+    Passout(OsString),
+    /// `-traditional`.
+    Traditional,
+}
+
 /// Every option `baldssl pkey` accepts.
-pub(crate) const SPECS: &[Spec] = &[
+pub(crate) const SPECS: &[Spec<Opt>] = &[
     Spec {
         name: "help",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Help),
         help: "Display this summary",
     },
     Spec {
         name: "in",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::In),
         help: "Key input file (default stdin)",
     },
     Spec {
         name: "inform",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Inform),
         help: "Input format: PEM or DER (default: detect)",
     },
     Spec {
         name: "pubin",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Pubin),
         help: "The input is a public key",
     },
     Spec {
         name: "out",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Out),
         help: "Output file (default stdout)",
     },
     Spec {
         name: "outform",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Outform),
         help: "Output format: PEM or DER (default PEM)",
     },
     Spec {
         name: "pubout",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Pubout),
         help: "Write the public key",
     },
     Spec {
         name: "noout",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Noout),
         help: "Do not write the key",
     },
     Spec {
         name: "text",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Text),
         help: "Print the key in text form",
     },
     Spec {
         name: "text_pub",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::TextPub),
         help: "Print the public key in text form",
     },
     Spec {
         name: "check",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Check),
         help: "Check the key",
     },
     Spec {
         name: "pubcheck",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Pubcheck),
         help: "Check the public key",
     },
     Spec {
         name: "passin",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Passin),
         help: "Input pass phrase source (not supported)",
     },
     Spec {
         name: "passout",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Passout),
         help: "Output pass phrase source (not supported)",
     },
     Spec {
         name: "traditional",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Traditional),
         help: "Traditional format for private keys (not supported)",
     },
 ];
@@ -132,8 +176,20 @@ impl Key {
     }
 }
 
-/// Which key is written.
+/// What the input holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum KeyInput {
+    /// A private key.
+    #[default]
+    Private,
+    /// A public key (`-pubin`).
+    Public,
+}
+
+/// Which key is written. The options only move it up this order (no later
+/// option undoes `-pubout` or `-noout`, as in `apps/pkey.c`), so it is the
+/// maximum of what they ask for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 enum Written {
     /// The key as read.
     #[default]
@@ -144,8 +200,9 @@ enum Written {
     Nothing,
 }
 
-/// What is printed in text form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// What is printed in text form. As for [`Written`], the options only move
+/// it up: `-text_pub` wins over `-text`, in either order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 enum Text {
     /// Nothing.
     #[default]
@@ -156,122 +213,137 @@ enum Text {
     Public,
 }
 
+/// Whether the key is checked (`-check`, `-pubcheck`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Check {
+    /// It is not.
+    #[default]
+    Skipped,
+    /// "Key is valid" comes first.
+    Reported,
+}
+
 /// The options, once read.
 #[derive(Debug, Default)]
 struct Options {
     input: Option<OsString>,
     inform: Option<Format>,
-    public_input: bool,
+    key_input: KeyInput,
     output_path: Option<OsString>,
     outform: Option<Format>,
     written: Written,
     text: Text,
-    check: bool,
+    check: Check,
 }
 
+/// The options, or `None` for `-help`.
 fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
-    let opts = args::parse("pkey", raw, SPECS, |_| false)?;
+    let opts = args::parse(COMMAND, raw, SPECS, Unknown::Ciphers)?;
     let mut o = Options::default();
-    let mut pubout = false;
-    let mut noout = false;
-    for opt in opts {
-        let value = opt.value.clone().unwrap_or_default();
-        match opt.name.as_str() {
-            "help" => return Ok(None),
-            "in" => o.input = Some(value),
-            "inform" => {
-                o.inform = Some(parse_format(&value, "pkey", "inform")?);
+    for given in opts {
+        match given.option {
+            Opt::Help => return Ok(None),
+            Opt::In(v) => o.input = Some(v),
+            Opt::Inform(v) => {
+                o.inform = Some(format_value(&v, COMMAND, "inform")?);
             }
-            "pubin" => o.public_input = true,
-            "out" => o.output_path = Some(value),
-            "outform" => {
-                o.outform = Some(parse_format(&value, "pkey", "outform")?);
+            Opt::Pubin => o.key_input = KeyInput::Public,
+            Opt::Out(v) => o.output_path = Some(v),
+            Opt::Outform(v) => {
+                o.outform = Some(format_value(&v, COMMAND, "outform")?);
             }
-            "pubout" => pubout = true,
-            "noout" => noout = true,
-            "text" if o.text == Text::Nothing => o.text = Text::AsRead,
-            "text" => {}
-            "text_pub" => o.text = Text::Public,
-            "check" | "pubcheck" => o.check = true,
-            name => {
-                return Err(Error::unsupported(format!("pkey -{name}")));
+            Opt::Pubout => o.written = o.written.max(Written::Public),
+            Opt::Noout => o.written = o.written.max(Written::Nothing),
+            Opt::Text => o.text = o.text.max(Text::AsRead),
+            Opt::TextPub => o.text = o.text.max(Text::Public),
+            Opt::Check | Opt::Pubcheck => o.check = Check::Reported,
+            Opt::Passin(_) | Opt::Passout(_) | Opt::Traditional => {
+                return Err(Error::unsupported(format!(
+                    "{COMMAND} -{}",
+                    given.name
+                )));
             }
         }
     }
     // As in OpenSSL's pkey.c: -pubin implies -pubout and public text.
-    if o.public_input {
-        pubout = true;
-        if o.text == Text::AsRead {
-            o.text = Text::Public;
+    match o.key_input {
+        KeyInput::Private => {}
+        KeyInput::Public => {
+            o.written = o.written.max(Written::Public);
+            o.text = match o.text {
+                Text::Nothing => Text::Nothing,
+                Text::AsRead | Text::Public => Text::Public,
+            };
         }
     }
-    o.written = match (noout, pubout) {
-        (true, _) => Written::Nothing,
-        (false, true) => Written::Public,
-        (false, false) => Written::AsRead,
-    };
     Ok(Some(o))
 }
 
 /// The key of the input.
 fn read_key(o: &Options) -> Result<Key> {
     let bytes = read_input(o.input.as_deref())?;
-    let pem = o
-        .inform
-        .map_or_else(|| is_pem(&bytes), |f| f == Format::Pem);
-    Ok(match (o.public_input, pem) {
-        (true, true) => Key::Public(PublicKey::from_pem(&bytes)?),
-        (true, false) => Key::Public(PublicKey::decode(&bytes)?),
-        (false, true) => Key::Private(AnyPrivateKey::from_pem(&bytes)?),
-        (false, false) => Key::Private(AnyPrivateKey::decode(&bytes)?),
-    })
+    Ok(
+        match (o.key_input, Format::given_or_detected(o.inform, &bytes)) {
+            (KeyInput::Public, Format::Pem) => {
+                Key::Public(PublicKey::from_pem(&bytes)?)
+            }
+            (KeyInput::Public, Format::Der) => {
+                Key::Public(PublicKey::decode(&bytes)?)
+            }
+            (KeyInput::Private, Format::Pem) => {
+                Key::Private(AnyPrivateKey::from_pem(&bytes)?)
+            }
+            (KeyInput::Private, Format::Der) => {
+                Key::Private(AnyPrivateKey::decode(&bytes)?)
+            }
+        },
+    )
 }
 
-/// Renders what `pkey` writes, and where.
+/// Reads the key, and records what `pkey` writes.
 ///
 /// # Errors
 ///
 /// Usage errors, unreadable keys, and unsupported options or keys.
-pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
+pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
     let Some(o) = parse_options(raw)? else {
-        return Ok((args::usage("pkey", SPECS).into_bytes(), None));
+        outputs.stdout(args::usage(COMMAND, SPECS));
+        return Ok(());
     };
-    let compat = crate::x509::compat()?;
+    let compat = compat()?;
     let key = read_key(&o)?;
     let mut out = Vec::new();
-    if o.check {
-        out.extend_from_slice(b"Key is valid\n");
+    match o.check {
+        Check::Skipped => {}
+        Check::Reported => out.extend_from_slice(KEY_IS_VALID),
     }
-    let der = o.outform == Some(Format::Der);
-    let writes_private = match (o.written, &key) {
-        (Written::Nothing, _) => false,
-        (Written::AsRead, Key::Private(k)) => {
-            // OpenSSL 3.0 to 3.5 write a private key in DER in its
-            // algorithm's traditional form when it has one (SEC1 for EC);
-            // 3.6 and 4 write PKCS#8, as for PEM.
-            if der
-                && matches!(
-                    compat.private_key_der(),
-                    PrivateKeyDer::Traditional
-                )
-            {
-                let encoding = k.traditional_opt().unwrap_or_else(|| k.pkcs8());
-                out.extend_from_slice(encoding.expose());
-            } else if der {
-                out.extend_from_slice(k.pkcs8().expose());
-            } else {
-                out.extend_from_slice(k.to_pem().as_bytes());
-            }
-            true
+    // PEM without -outform, as `apps/pkey.c` starts from FORMAT_PEM.
+    let outform = o.outform.unwrap_or(Format::Pem);
+    // A private key goes to a file only its owner can read, as OpenSSL's
+    // bio_open_owner creates it.
+    let access = match (o.written, &key, outform) {
+        (Written::Nothing, _, _) => Access::Default,
+        (Written::AsRead, Key::Private(k), Format::Pem) => {
+            out.extend_from_slice(k.to_pem().as_bytes());
+            Access::OwnerOnly
         }
-        (Written::AsRead | Written::Public, _) => {
-            let public = key.public();
-            if der {
-                out.extend_from_slice(&public.encode());
-            } else {
-                out.extend_from_slice(public.to_pem().as_bytes());
-            }
-            false
+        (Written::AsRead, Key::Private(k), Format::Der) => {
+            let encoding = match compat.private_key_der() {
+                PrivateKeyDer::Traditional => {
+                    k.traditional_opt().unwrap_or_else(|| k.pkcs8())
+                }
+                PrivateKeyDer::Pkcs8 => k.pkcs8(),
+            };
+            out.extend_from_slice(encoding.expose());
+            Access::OwnerOnly
+        }
+        (Written::AsRead | Written::Public, _, Format::Pem) => {
+            out.extend_from_slice(key.public().to_pem().as_bytes());
+            Access::Default
+        }
+        (Written::AsRead | Written::Public, _, Format::Der) => {
+            out.extend_from_slice(&key.public().encode());
+            Access::Default
         }
     };
     match (o.text, &key) {
@@ -286,18 +358,8 @@ pub(crate) fn render(raw: &[OsString]) -> Result<(Vec<u8>, Option<OsString>)> {
             )?);
         }
     }
-    // A private key goes to a file only its owner can read, as OpenSSL's
-    // bio_open_owner creates it.
-    match (&o.output_path, writes_private) {
-        (Some(path), true) => {
-            let path = Path::new(path);
-            create_owner_only(path)?
-                .write_all(&out)
-                .map_err(|e| write_error(path, &e))?;
-            Ok((Vec::new(), None))
-        }
-        _ => Ok((out, o.output_path)),
-    }
+    outputs.output(o.output_path.as_deref(), access, out);
+    Ok(())
 }
 
 #[cfg(test)]

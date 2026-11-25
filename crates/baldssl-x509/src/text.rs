@@ -200,6 +200,47 @@ impl Compat {
         }
     }
 
+    /// How `openssl dgst -verify` loads its public key (`load_pubkey` in
+    /// `apps/lib/apps.c`): 3.0 reads a public key only; from 3.2, it falls
+    /// back to reading a private key and taking its public half, and a file
+    /// that holds neither is reported as the failure of that fallback.
+    #[must_use]
+    pub fn public_key_loading(self) -> PublicKeyLoading {
+        match self {
+            Compat::V30 => PublicKeyLoading::PublicOnly,
+            Compat::V3 | Compat::V36 | Compat::V4 => {
+                PublicKeyLoading::PrivateFallback
+            }
+        }
+    }
+
+    /// The message `load_key_certs_crls` in `apps/lib/apps.c` prints for a
+    /// key it cannot load: "Could not read" in 3.0, without the reason for a
+    /// missing file; "Could not find" from 3.2, followed by the system's
+    /// reason ("No such file or directory") for a missing file; "Could not
+    /// find or decode" in 4.
+    #[must_use]
+    pub fn key_load_message(self) -> KeyLoadMessage {
+        match self {
+            Compat::V30 => KeyLoadMessage::Read,
+            Compat::V3 | Compat::V36 => KeyLoadMessage::Find,
+            Compat::V4 => KeyLoadMessage::FindOrDecode,
+        }
+    }
+
+    /// Whether `openssl dgst` signs and verifies with a key that signs the
+    /// message itself (Ed25519). 3.0's `apps/dgst.c` feeds the input
+    /// through `EVP_DigestSignUpdate`, which such a key refuses ("Key type
+    /// not supported for this operation"); later lines read the input whole
+    /// and sign it in one shot (`do_fp_oneshot_sign`).
+    #[must_use]
+    pub fn dgst_oneshot(self) -> OneshotSigning {
+        match self {
+            Compat::V30 => OneshotSigning::Refused,
+            Compat::V3 | Compat::V36 | Compat::V4 => OneshotSigning::Supported,
+        }
+    }
+
     /// How this release line prints names.
     #[must_use]
     pub fn name_style(self) -> NameStyle {
@@ -291,6 +332,38 @@ pub enum ExtensionsWithoutFile {
     Ignored,
     /// The section is looked up in the default configuration file.
     DefaultConfiguration,
+}
+
+/// How `dgst -verify` loads its public key
+/// ([`Compat::public_key_loading`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicKeyLoading {
+    /// A public key only.
+    PublicOnly,
+    /// A public key, or else the public half of a private key.
+    PrivateFallback,
+}
+
+/// The message for a key that does not load
+/// ([`Compat::key_load_message`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyLoadMessage {
+    /// "Could not read", and no reason for a missing file (3.0).
+    Read,
+    /// "Could not find", and the reason for a missing file.
+    Find,
+    /// "Could not find or decode", and the reason for a missing file.
+    FindOrDecode,
+}
+
+/// Whether `dgst` signs with a one-shot key such as Ed25519
+/// ([`Compat::dgst_oneshot`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OneshotSigning {
+    /// It refuses the key.
+    Refused,
+    /// It signs and verifies in one shot.
+    Supported,
 }
 
 /// A standard stream of the process.

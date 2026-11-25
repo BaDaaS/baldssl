@@ -35,113 +35,171 @@
 //! `-mac`, `-macopt`, `-sigopt`, `-passin`, `-list`, `-xoflen` beyond its
 //! error, and RSA keys.
 
-use std::{ffi::OsString, fmt::Write as _, io::Write as _, path::Path};
+use std::{ffi::OsString, fmt::Write as _};
 
 use baldssl_core::{Error, Result, encoding::Decodable as _};
-use baldssl_crypto::{hash::Algorithm, signature::SignatureAlgorithm};
-use baldssl_fs::{Access, write_file};
+use baldssl_crypto::{
+    hash::Algorithm, secret::SecretBytes, signature::SignatureAlgorithm,
+};
+use baldssl_fs::Access;
 use baldssl_pkey::{AnyPrivateKey, PublicKey, SignatureCheck};
-use baldssl_x509::{Compat, Format};
-
-use crate::{
-    args::{self, Kind, Spec},
-    digest::is_digest_option,
-    input::{is_pem, parse_format, read_input},
+use baldssl_x509::{
+    Compat, Format, KeyLoadMessage, OneshotSigning, PublicKeyLoading,
 };
 
+use crate::{
+    args::{self, Kind, Spec, Unknown},
+    digest::DigestName,
+    input::{compat, format_value, read_input},
+    outputs::Outputs,
+};
+
+/// An option of `baldssl dgst` and of its shortcuts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Opt {
+    /// `-help`.
+    Help,
+    /// `-out`.
+    Out(OsString),
+    /// `-c`.
+    Colons,
+    /// `-r`.
+    Coreutils,
+    /// `-hex`.
+    Hex,
+    /// `-binary`.
+    Binary,
+    /// `-sign`.
+    Sign(OsString),
+    /// `-verify`.
+    Verify(OsString),
+    /// `-prverify`.
+    PrVerify(OsString),
+    /// `-signature`.
+    Signature(OsString),
+    /// `-keyform`.
+    Keyform(OsString),
+    /// `-hmac`.
+    Hmac(OsString),
+    /// `-xoflen`.
+    Xoflen(OsString),
+    /// `-passin`.
+    Passin(OsString),
+    /// `-sigopt`.
+    Sigopt(OsString),
+    /// `-mac`.
+    Mac(OsString),
+    /// `-macopt`.
+    Macopt(OsString),
+    /// `-list`.
+    List,
+    /// `-<digest>`, a digest baldssl has.
+    Digest(Algorithm),
+    /// `-<digest>`, a digest OpenSSL has and baldssl does not.
+    UnimplementedDigest,
+}
+
 /// Every option `baldssl dgst` accepts, besides `-<digest>`.
-pub(crate) const SPECS: &[Spec] = &[
+pub(crate) const SPECS: &[Spec<Opt>] = &[
     Spec {
         name: "help",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Help),
         help: "Display this summary",
     },
     Spec {
         name: "out",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Out),
         help: "Output to filename rather than stdout",
     },
     Spec {
         name: "c",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Colons),
         help: "Print the digest with separating colons",
     },
     Spec {
         name: "r",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Coreutils),
         help: "Print the digest in coreutils format",
     },
     Spec {
         name: "hex",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Hex),
         help: "Print as hex dump",
     },
     Spec {
         name: "binary",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::Binary),
         help: "Print in binary form",
     },
     Spec {
         name: "sign",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Sign),
         help: "Sign digest using private key",
     },
     Spec {
         name: "verify",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Verify),
         help: "Verify a signature using public key",
     },
     Spec {
         name: "prverify",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::PrVerify),
         help: "Verify a signature using private key",
     },
     Spec {
         name: "signature",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Signature),
         help: "File with signature to verify",
     },
     Spec {
         name: "keyform",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Keyform),
         help: "Key file format (DER/PEM)",
     },
     Spec {
         name: "hmac",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Hmac),
         help: "Create hashed MAC with key",
     },
     Spec {
         name: "xoflen",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Xoflen),
         help: "Output length for XOF algorithms",
     },
     Spec {
         name: "passin",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Passin),
         help: "Input file pass phrase source (not supported)",
     },
     Spec {
         name: "sigopt",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Sigopt),
         help: "Signature parameter in n:v form (not supported)",
     },
     Spec {
         name: "mac",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Mac),
         help: "Create MAC (not necessarily HMAC) (not supported)",
     },
     Spec {
         name: "macopt",
-        kind: Kind::Value,
+        kind: Kind::Value(Opt::Macopt),
         help: "MAC algorithm parameters in n:v form (not supported)",
     },
     Spec {
         name: "list",
-        kind: Kind::Flag,
+        kind: Kind::Flag(Opt::List),
         help: "List digests (not supported)",
     },
 ];
+
+/// The option a `-<digest>` names, if any.
+fn digest_option_opt(name: &str) -> Option<Opt> {
+    DigestName::from_option_opt(name).map(|digest| match digest {
+        DigestName::Implemented(algorithm) => Opt::Digest(algorithm),
+        DigestName::Unimplemented => Opt::UnimplementedDigest,
+    })
+}
 
 /// The largest input OpenSSL reads for a one-shot signature (Ed25519),
 /// 16 MiB (`do_fp_oneshot_sign`).
@@ -245,15 +303,39 @@ enum KeyRole {
     Verify,
 }
 
+/// What a key is used for: signing or verifying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// It signs.
+    Signs,
+    /// It verifies.
+    Verifies,
+}
+
+/// The kind of key a role reads from its file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyKind {
+    /// A private key.
+    Private,
+    /// A public key.
+    Public,
+}
+
 impl KeyRole {
-    /// Whether the key verifies.
-    fn verifies(self) -> bool {
-        self != KeyRole::Sign
+    /// What the key is for.
+    fn purpose(self) -> Purpose {
+        match self {
+            KeyRole::Sign => Purpose::Signs,
+            KeyRole::PrVerify | KeyRole::Verify => Purpose::Verifies,
+        }
     }
 
-    /// Whether the key is public.
-    fn is_public(self) -> bool {
-        self == KeyRole::Verify
+    /// The kind of key read.
+    fn key_kind(self) -> KeyKind {
+        match self {
+            KeyRole::Sign | KeyRole::PrVerify => KeyKind::Private,
+            KeyRole::Verify => KeyKind::Public,
+        }
     }
 }
 
@@ -273,7 +355,8 @@ struct Options {
     signature: Option<OsString>,
     keyform: Option<Format>,
     hmac: Option<OsString>,
-    xoflen: bool,
+    /// `-xoflen`, which no digest baldssl has accepts.
+    xoflen: Option<OsString>,
     files: Vec<OsString>,
 }
 
@@ -285,53 +368,64 @@ impl Options {
         self.role = Some(self.role.map_or(role, |r| r.max(role)));
     }
 
-    /// Whether the key, if any, verifies.
-    fn verifies(&self) -> bool {
-        self.role.is_some_and(KeyRole::verifies)
+    /// What the key, if any, is for.
+    fn purpose_opt(&self) -> Option<Purpose> {
+        self.role.map(KeyRole::purpose)
     }
 }
 
+/// The options of `command`, `dgst` or a shortcut that presets its digest;
+/// `None` for `-help`.
 fn parse_options(
     command: &str,
     preset: Option<Algorithm>,
     raw: &[OsString],
 ) -> Result<Option<Options>> {
-    let (opts, files) =
-        args::parse_with_operands(command, raw, SPECS, is_digest_option)?;
+    let (opts, files) = args::parse_with_operands(
+        command,
+        raw,
+        SPECS,
+        Unknown::Digests(digest_option_opt),
+    )?;
     let mut o = Options {
         digest: preset,
         files,
         ..Options::default()
     };
-    for opt in opts {
-        let value = opt.value.clone().unwrap_or_default();
-        match opt.name.as_str() {
-            "help" => return Ok(None),
-            "out" => o.output = Some(value),
-            "c" => o.separator = Separator::Colons,
-            "r" => o.separator = Separator::Coreutils,
-            "hex" => o.encoding = Some(Encoding::Hex),
-            "binary" => o.encoding = Some(Encoding::Binary),
-            "sign" => o.name_key(value, KeyRole::Sign),
-            "verify" => o.name_key(value, KeyRole::Verify),
-            "prverify" => o.name_key(value, KeyRole::PrVerify),
-            "signature" => o.signature = Some(value),
-            "keyform" => {
-                o.keyform = Some(parse_format(&value, command, "keyform")?);
+    for given in opts {
+        match given.option {
+            Opt::Help => return Ok(None),
+            Opt::Out(v) => o.output = Some(v),
+            Opt::Colons => o.separator = Separator::Colons,
+            Opt::Coreutils => o.separator = Separator::Coreutils,
+            Opt::Hex => o.encoding = Some(Encoding::Hex),
+            Opt::Binary => o.encoding = Some(Encoding::Binary),
+            Opt::Sign(v) => o.name_key(v, KeyRole::Sign),
+            Opt::Verify(v) => o.name_key(v, KeyRole::Verify),
+            Opt::PrVerify(v) => o.name_key(v, KeyRole::PrVerify),
+            Opt::Signature(v) => o.signature = Some(v),
+            Opt::Keyform(v) => {
+                o.keyform = Some(format_value(&v, command, "keyform")?);
             }
-            "hmac" => o.hmac = Some(value),
-            "xoflen" => o.xoflen = true,
-            name => match Algorithm::from_name_opt(name) {
-                Some(algorithm) => o.digest = Some(algorithm),
-                None if is_digest_option(name) => {
-                    return Err(Error::unsupported(format!("digest {name}")));
-                }
-                None => {
-                    return Err(Error::unsupported(format!(
-                        "{command} -{name}"
-                    )));
-                }
-            },
+            Opt::Hmac(v) => o.hmac = Some(v),
+            Opt::Xoflen(v) => o.xoflen = Some(v),
+            Opt::Digest(algorithm) => o.digest = Some(algorithm),
+            Opt::UnimplementedDigest => {
+                return Err(Error::unsupported(format!(
+                    "digest {}",
+                    given.name
+                )));
+            }
+            Opt::Passin(_)
+            | Opt::Sigopt(_)
+            | Opt::Mac(_)
+            | Opt::Macopt(_)
+            | Opt::List => {
+                return Err(Error::unsupported(format!(
+                    "{command} -{}",
+                    given.name
+                )));
+            }
         }
     }
     Ok(Some(o))
@@ -342,7 +436,7 @@ enum Operation {
     /// Hash it.
     Digest,
     /// Its HMAC under this key.
-    Hmac(Vec<u8>),
+    Hmac(SecretBytes),
     /// Sign it.
     Sign(AnyPrivateKey),
     /// Verify this signature of it under this key.
@@ -353,33 +447,52 @@ enum Operation {
     VerifyWhileSigning(AnyPrivateKey),
 }
 
+/// How a key signs: the message itself, in one shot (Ed25519), or its
+/// digest (ECDSA).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signer {
+    /// No key: a digest or a MAC.
+    None,
+    /// ECDSA, over the digest.
+    Digest,
+    /// Ed25519, over the message, with no digest.
+    Oneshot,
+}
+
 impl Operation {
-    /// The key type OpenSSL prints in front of a result
-    /// (`EVP_PKEY_get0_type_name`).
-    fn key_type_opt(&self) -> Option<&'static str> {
+    /// How its key signs.
+    fn signer(&self) -> Signer {
         match self {
-            Operation::Digest => None,
-            Operation::Hmac(_) => Some(HMAC_KEY_TYPE),
+            Operation::Digest | Operation::Hmac(_) => Signer::None,
             Operation::Sign(AnyPrivateKey::Ed25519(_))
             | Operation::VerifyWhileSigning(AnyPrivateKey::Ed25519(_))
-            | Operation::Verify(PublicKey::Ed25519(_), _) => {
-                Some(ED25519_KEY_TYPE)
-            }
-            Operation::Sign(_)
-            | Operation::VerifyWhileSigning(_)
-            | Operation::Verify(..) => Some(EC_KEY_TYPE),
+            | Operation::Verify(PublicKey::Ed25519(_), _) => Signer::Oneshot,
+            Operation::Sign(
+                AnyPrivateKey::P256(_)
+                | AnyPrivateKey::P384(_)
+                | AnyPrivateKey::P521(_),
+            )
+            | Operation::VerifyWhileSigning(
+                AnyPrivateKey::P256(_)
+                | AnyPrivateKey::P384(_)
+                | AnyPrivateKey::P521(_),
+            )
+            | Operation::Verify(
+                PublicKey::P256(_) | PublicKey::P384(_) | PublicKey::P521(_),
+                _,
+            ) => Signer::Digest,
         }
     }
 
-    /// Whether the key is Ed25519, which signs the message itself: one
-    /// shot, no digest.
-    fn is_oneshot(&self) -> bool {
-        matches!(
-            self,
-            Operation::Sign(AnyPrivateKey::Ed25519(_))
-                | Operation::VerifyWhileSigning(AnyPrivateKey::Ed25519(_))
-                | Operation::Verify(PublicKey::Ed25519(_), _)
-        )
+    /// The key type OpenSSL prints in front of a result
+    /// (`EVP_PKEY_get0_type_name`).
+    fn key_type_opt(&self) -> Option<&'static str> {
+        match (self, self.signer()) {
+            (Operation::Digest, _) => None,
+            (Operation::Hmac(_), _) => Some(HMAC_KEY_TYPE),
+            (_, Signer::Oneshot) => Some(ED25519_KEY_TYPE),
+            (_, Signer::Digest | Signer::None) => Some(EC_KEY_TYPE),
+        }
     }
 }
 
@@ -388,18 +501,12 @@ impl Operation {
 const DGST_FAILED: u8 = 1;
 
 /// A failure OpenSSL reports with this line on standard error.
-fn report(line: &str) -> Error {
-    note(format!("{line}\n").as_bytes());
+fn report(out: &mut Outputs, line: &str) -> Error {
+    out.diagnostic(line);
     Error::Reported {
         code: DGST_FAILED,
         output: Vec::new(),
     }
-}
-
-/// Writes `bytes` on standard error.
-fn note(bytes: &[u8]) {
-    // Nothing to do if standard error is gone.
-    let _ = std::io::stderr().write_all(bytes);
 }
 
 /// Why a key did not load.
@@ -414,163 +521,199 @@ enum LoadFailure {
 /// The line OpenSSL prints when it cannot load the key of `-sign` or
 /// `-prverify` (private) or `-verify` (public) from `path`
 /// (`load_key_certs_crls` in `apps/lib/apps.c`): the file is missing, or
-/// holds no such key. From OpenSSL 3.2, a public key that fails to load
-/// is described as a private key "of public key", because `load_pubkey`
-/// reports the failure of its fallback, reading a private key.
-fn key_load_error(
+/// holds no such key. A public key that fails to load where OpenSSL falls
+/// back to a private key ([`Compat::public_key_loading`]) is described as a
+/// private key "of public key", the failure of that fallback.
+fn key_load_line(
     path: &str,
-    role: KeyRole,
+    kind: KeyKind,
     failure: LoadFailure,
     compat: Compat,
-) -> Error {
-    let what = match (role.is_public(), compat) {
-        (false, _) => PRIVATE_KEY_DESC,
-        (true, Compat::V30) => PUBLIC_KEY_DESC,
-        (true, _) => PUBLIC_KEY_FALLBACK_DESC,
+) -> String {
+    let what = match (kind, compat.public_key_loading()) {
+        (KeyKind::Private, _) => PRIVATE_KEY_DESC,
+        (KeyKind::Public, PublicKeyLoading::PublicOnly) => PUBLIC_KEY_DESC,
+        (KeyKind::Public, PublicKeyLoading::PrivateFallback) => {
+            PUBLIC_KEY_FALLBACK_DESC
+        }
     };
-    let line = match (failure, compat) {
-        (LoadFailure::Missing, Compat::V30) => {
+    match (failure, compat.key_load_message()) {
+        (LoadFailure::Missing, KeyLoadMessage::Read) => {
             format!("{COULD_NOT_OPEN} {what} from {path}")
         }
-        (LoadFailure::Missing, _) => {
-            format!("{COULD_NOT_OPEN} {what} from {path}: {NO_SUCH_FILE}")
-        }
-        (LoadFailure::NoKey, Compat::V30) => {
+        (
+            LoadFailure::Missing,
+            KeyLoadMessage::Find | KeyLoadMessage::FindOrDecode,
+        ) => format!("{COULD_NOT_OPEN} {what} from {path}: {NO_SUCH_FILE}"),
+        (LoadFailure::NoKey, KeyLoadMessage::Read) => {
             format!("{COULD_NOT_READ} {what} from {path}")
         }
-        (LoadFailure::NoKey, Compat::V3 | Compat::V36) => {
+        (LoadFailure::NoKey, KeyLoadMessage::Find) => {
             format!("{COULD_NOT_FIND} {what} from {path}")
         }
-        (LoadFailure::NoKey, Compat::V4) => {
+        (LoadFailure::NoKey, KeyLoadMessage::FindOrDecode) => {
             format!("{COULD_NOT_FIND_OR_DECODE} {what} from {path}")
         }
-    };
-    report(&line)
+    }
+}
+
+/// A private key, PEM or DER.
+fn private_key(bytes: &[u8], format: Format) -> Result<AnyPrivateKey> {
+    match format {
+        Format::Pem => AnyPrivateKey::from_pem(bytes),
+        Format::Der => AnyPrivateKey::decode(bytes),
+    }
+}
+
+/// A public key, PEM or DER.
+fn public_key(bytes: &[u8], format: Format) -> Result<PublicKey> {
+    match format {
+        Format::Pem => PublicKey::from_pem(bytes),
+        Format::Der => PublicKey::decode(bytes),
+    }
 }
 
 /// The key of `-sign`, `-verify` or `-prverify`.
 fn load_key(
+    out: &mut Outputs,
     o: &Options,
     path: &OsString,
     role: KeyRole,
     compat: Compat,
 ) -> Result<Operation> {
     let label = path.to_string_lossy();
-    let fail = |failure| key_load_error(&label, role, failure, compat);
+    let kind = role.key_kind();
+    let mut fail = |failure| {
+        let line = key_load_line(&label, kind, failure, compat);
+        report(out, &line)
+    };
     let bytes = match read_input(Some(path)) {
         Ok(bytes) => bytes,
         Err(Error::NotFound { .. }) => return Err(fail(LoadFailure::Missing)),
         Err(e) => return Err(e),
     };
-    let pem = o
-        .keyform
-        .map_or_else(|| is_pem(&bytes), |f| f == Format::Pem);
-    let private = || {
-        if pem {
-            AnyPrivateKey::from_pem(&bytes)
-        } else {
-            AnyPrivateKey::decode(&bytes)
-        }
-    };
-    if !role.is_public() {
-        return private()
+    let format = Format::given_or_detected(o.keyform, &bytes);
+    match (kind, compat.public_key_loading()) {
+        (KeyKind::Private, _) => private_key(&bytes, format)
             .map(Operation::Sign)
-            .map_err(|_| fail(LoadFailure::NoKey));
-    }
-    let public = if pem {
-        PublicKey::from_pem(&bytes)
-    } else {
-        PublicKey::decode(&bytes)
-    };
-    // OpenSSL 3.2 and later also take the public key of a private key.
-    match (public, compat) {
-        (Ok(public), _) => Ok(Operation::Verify(public, Vec::new())),
-        (Err(_), Compat::V30) => Err(fail(LoadFailure::NoKey)),
-        (Err(_), _) => private()
-            .map(|k| Operation::Verify(PublicKey::from(&k), Vec::new()))
             .map_err(|_| fail(LoadFailure::NoKey)),
+        (KeyKind::Public, loading) => {
+            match (public_key(&bytes, format), loading) {
+                (Ok(public), _) => Ok(Operation::Verify(public, Vec::new())),
+                (Err(_), PublicKeyLoading::PublicOnly) => {
+                    Err(fail(LoadFailure::NoKey))
+                }
+                (Err(_), PublicKeyLoading::PrivateFallback) => {
+                    private_key(&bytes, format)
+                        .map(|k| {
+                            Operation::Verify(PublicKey::from(&k), Vec::new())
+                        })
+                        .map_err(|_| fail(LoadFailure::NoKey))
+                }
+            }
+        }
     }
 }
 
 /// The signature to verify: the first bytes of the file, up to the longest
 /// signature of the key, as OpenSSL reads it.
-fn read_signature(path: &OsString, public: &PublicKey) -> Result<Vec<u8>> {
+fn read_signature(
+    out: &mut Outputs,
+    path: &OsString,
+    public: &PublicKey,
+) -> Result<Vec<u8>> {
     let label = path.to_string_lossy();
     let Ok(mut bytes) = read_input(Some(path)) else {
-        return Err(report(&format!("{OPENING_SIGNATURE} {label}")));
+        return Err(report(out, &format!("{OPENING_SIGNATURE} {label}")));
     };
     bytes.truncate(public.max_signature_len());
     if bytes.is_empty() {
-        return Err(report(&format!("{READING_SIGNATURE} {label}")));
+        return Err(report(out, &format!("{READING_SIGNATURE} {label}")));
     }
     Ok(bytes)
 }
 
 /// Everything to know before reading the inputs, checked in OpenSSL's
 /// order.
-fn prepare(command: &str, o: &Options, compat: Compat) -> Result<Operation> {
+fn prepare(
+    out: &mut Outputs,
+    command: &str,
+    o: &Options,
+    compat: Compat,
+) -> Result<Operation> {
     if o.key_file.is_some() && o.files.len() > 1 {
-        return Err(report(&format!("{command}: {ONE_FILE_ONLY}")));
+        return Err(report(out, &format!("{command}: {ONE_FILE_ONLY}")));
     }
-    if o.verifies() && o.signature.is_none() {
-        return Err(report(NO_SIGNATURE));
+    match (o.purpose_opt(), &o.signature) {
+        (Some(Purpose::Verifies), None) => {
+            return Err(report(out, NO_SIGNATURE));
+        }
+        (Some(Purpose::Verifies), Some(_))
+        | (Some(Purpose::Signs) | None, _) => {}
     }
     if o.hmac.is_some() && o.key_file.is_some() {
-        return Err(report(MAC_AND_KEY));
+        return Err(report(out, MAC_AND_KEY));
     }
     let mut operation = match (&o.key_file, o.role, &o.hmac) {
         (Some(path), Some(role), _) => {
-            let mut key = load_key(o, path, role, compat)?;
-            if role.verifies()
-                && let Operation::Sign(private) = &key
-            {
-                key = Operation::Verify(PublicKey::from(private), Vec::new());
+            match (load_key(out, o, path, role, compat)?, role.purpose()) {
+                (Operation::Sign(private), Purpose::Verifies) => {
+                    Operation::Verify(PublicKey::from(&private), Vec::new())
+                }
+                (key, Purpose::Signs | Purpose::Verifies) => key,
             }
-            key
         }
         // The key is the argument's bytes, as OpenSSL takes them.
-        (_, _, Some(hmac)) => Operation::Hmac(hmac.as_encoded_bytes().to_vec()),
+        (_, _, Some(hmac)) => {
+            Operation::Hmac(SecretBytes::new(hmac.as_encoded_bytes().to_vec()))
+        }
         (_, _, None) => Operation::Digest,
     };
-    if operation.is_oneshot() {
-        if compat == Compat::V30 {
-            return Err(report(KEY_TYPE_UNSUPPORTED));
+    match (operation.signer(), compat.dgst_oneshot(), o.digest) {
+        (Signer::Oneshot, OneshotSigning::Refused, _) => {
+            return Err(report(out, KEY_TYPE_UNSUPPORTED));
         }
-        if o.digest.is_some() {
-            return Err(report(ERROR_SETTING_CONTEXT));
+        (Signer::Oneshot, OneshotSigning::Supported, Some(_)) => {
+            return Err(report(out, ERROR_SETTING_CONTEXT));
         }
+        (Signer::Oneshot, OneshotSigning::Supported, None)
+        | (Signer::None | Signer::Digest, _, _) => {}
     }
     // OpenSSL reads `-signature` whenever there is a key, MAC keys too.
     if let Some(path) = &o.signature {
         operation = match operation {
             Operation::Verify(public, _) => {
-                let signature = read_signature(path, &public)?;
+                let signature = read_signature(out, path, &public)?;
                 Operation::Verify(public, signature)
             }
             Operation::Sign(key) => {
-                read_signature(path, &PublicKey::from(&key))?;
+                read_signature(out, path, &PublicKey::from(&key))?;
                 Operation::VerifyWhileSigning(key)
             }
             Operation::Hmac(_) => {
                 if read_input(Some(path)).is_err() {
-                    return Err(report(&format!(
-                        "{OPENING_SIGNATURE} {}",
-                        path.to_string_lossy()
-                    )));
+                    return Err(report(
+                        out,
+                        &format!(
+                            "{OPENING_SIGNATURE} {}",
+                            path.to_string_lossy()
+                        ),
+                    ));
                 }
                 // A MAC key has no signature size, and OpenSSL fails to
                 // allocate a buffer of none.
-                return Err(report(&format!(
-                    "{command}: {ZERO_SIGNATURE_BUFFER}"
-                )));
+                return Err(report(
+                    out,
+                    &format!("{command}: {ZERO_SIGNATURE_BUFFER}"),
+                ));
             }
             other @ (Operation::Digest | Operation::VerifyWhileSigning(_)) => {
                 other
             }
         };
     }
-    if o.xoflen {
-        return Err(report(XOF_ONLY));
+    if o.xoflen.is_some() {
+        return Err(report(out, XOF_ONLY));
     }
     Ok(operation)
 }
@@ -591,7 +734,17 @@ struct EscapedName {
     /// The name, escaped.
     text: String,
     /// Whether it had a newline, which marks the line with a backslash.
-    escaped: bool,
+    escape: Escape,
+}
+
+/// Whether a coreutils line starts with a backslash, as it does when its
+/// file name had a newline to escape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Escape {
+    /// The name is as given.
+    None,
+    /// A newline was escaped: the line starts with `\`.
+    Marked,
 }
 
 impl EscapedName {
@@ -599,7 +752,11 @@ impl EscapedName {
     fn new(file: &str) -> Self {
         EscapedName {
             text: file.replace('\n', "\\n"),
-            escaped: file.contains('\n'),
+            escape: if file.contains('\n') {
+                Escape::Marked
+            } else {
+                Escape::None
+            },
         }
     }
 }
@@ -609,16 +766,11 @@ impl Options {
     /// [`DEFAULT_DIGEST_NAME`] for OpenSSL's built-in default otherwise;
     /// none for Ed25519.
     fn digest_label_opt(&self, operation: &Operation) -> Option<&'static str> {
-        match (self.digest, operation) {
-            _ if operation.is_oneshot() => None,
-            (Some(a), _) => Some(a.fetched_name()),
-            (
-                None,
-                Operation::Sign(_)
-                | Operation::Verify(..)
-                | Operation::VerifyWhileSigning(_),
-            ) => Some(Algorithm::Sha256.fetched_name()),
-            (None, _) => Some(DEFAULT_DIGEST_NAME),
+        match (self.digest, operation.signer()) {
+            (_, Signer::Oneshot) => None,
+            (Some(a), Signer::None | Signer::Digest) => Some(a.fetched_name()),
+            (None, Signer::Digest) => Some(Algorithm::Sha256.fetched_name()),
+            (None, Signer::None) => Some(DEFAULT_DIGEST_NAME),
         }
     }
 
@@ -631,103 +783,124 @@ impl Options {
         labels: Labels<'_>,
         file: &str,
     ) {
-        if encoding == Encoding::Binary {
-            out.extend_from_slice(result);
-            return;
+        match encoding {
+            Encoding::Binary => {
+                out.extend_from_slice(result);
+                return;
+            }
+            Encoding::Hex => {}
         }
+        // Writing to a String cannot fail.
         let mut line = String::new();
-        if self.separator == Separator::Coreutils {
-            let name = EscapedName::new(file);
-            if name.escaped {
-                line.push('\\');
-            }
-            for b in result {
-                let _ = write!(line, "{b:02x}");
-            }
-            let _ = writeln!(line, " *{}", name.text);
-        } else {
-            match (labels.key_type, labels.digest) {
-                (Some(k), Some(d)) => {
-                    let _ = write!(line, "{k}-{d}({file})= ");
+        match self.separator {
+            Separator::Coreutils => {
+                let name = EscapedName::new(file);
+                match name.escape {
+                    Escape::Marked => line.push('\\'),
+                    Escape::None => {}
                 }
-                (Some(name), None) | (None, Some(name)) => {
-                    let _ = write!(line, "{name}({file})= ");
+                for b in result {
+                    let _ = write!(line, "{b:02x}");
                 }
-                (None, None) => {
-                    let _ = write!(line, "({file})= ");
-                }
+                let _ = writeln!(line, " *{}", name.text);
             }
-            for (i, b) in result.iter().enumerate() {
-                if self.separator == Separator::Colons && i != 0 {
-                    line.push(':');
+            Separator::Plain | Separator::Colons => {
+                match (labels.key_type, labels.digest) {
+                    (Some(k), Some(d)) => {
+                        let _ = write!(line, "{k}-{d}({file})= ");
+                    }
+                    (Some(name), None) | (None, Some(name)) => {
+                        let _ = write!(line, "{name}({file})= ");
+                    }
+                    (None, None) => {
+                        let _ = write!(line, "({file})= ");
+                    }
                 }
-                let _ = write!(line, "{b:02x}");
+                for (i, b) in result.iter().enumerate() {
+                    match (self.separator, i) {
+                        (Separator::Colons, 1..) => line.push(':'),
+                        (Separator::Colons, 0)
+                        | (Separator::Plain | Separator::Coreutils, _) => {}
+                    }
+                    let _ = write!(line, "{b:02x}");
+                }
+                line.push('\n');
             }
-            line.push('\n');
         }
         out.extend_from_slice(line.as_bytes());
     }
 }
 
-/// How processing one input ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How processing the inputs ended: done, unless one failed, so that the
+/// outcome of several is their maximum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 enum Outcome {
     /// Its result was written.
+    #[default]
     Done,
     /// It failed, and the failure was reported.
     Failed,
 }
 
-/// Processes one input, writing its result to `out`.
+/// Processes one input, writing its result to `results` and what OpenSSL
+/// reports to `out`.
 fn process(
-    out: &mut Vec<u8>,
+    out: &mut Outputs,
+    results: &mut Vec<u8>,
     o: &Options,
     operation: &Operation,
     data: &[u8],
     file: Option<&str>,
 ) -> Result<Outcome> {
     // Signatures are binary unless -hex, everything else hex.
-    let encoding = o.encoding.unwrap_or(if o.key_file.is_some() {
-        Encoding::Binary
-    } else {
-        Encoding::Hex
+    let encoding = o.encoding.unwrap_or(match o.key_file {
+        Some(_) => Encoding::Binary,
+        None => Encoding::Hex,
     });
+    // No file is standard input, which OpenSSL labels so.
     let label = file.unwrap_or(STDIN_LABEL);
-    if operation.is_oneshot() && data.len() > ONESHOT_MAX {
-        note(format!("{READ_ERROR_IN} {label}\n").as_bytes());
-        return Ok(Outcome::Failed);
+    let signer = operation.signer();
+    match signer {
+        Signer::Oneshot if data.len() > ONESHOT_MAX => {
+            out.diagnostic(format!("{READ_ERROR_IN} {label}"));
+            return Ok(Outcome::Failed);
+        }
+        Signer::Oneshot | Signer::None | Signer::Digest => {}
     }
+    // No digest named is SHA-256, OpenSSL's default; Ed25519 uses none.
     let digest = o.digest.unwrap_or(Algorithm::Sha256);
-    let algorithm = if operation.is_oneshot() {
-        SignatureAlgorithm::Ed25519
-    } else {
-        SignatureAlgorithm::Ecdsa(digest)
+    let algorithm = match signer {
+        Signer::Oneshot => SignatureAlgorithm::Ed25519,
+        Signer::None | Signer::Digest => SignatureAlgorithm::Ecdsa(digest),
     };
-    let result = match operation {
-        Operation::Digest => digest.digest(data),
-        Operation::Hmac(key) => digest.hmac(key, data).as_bytes().to_vec(),
-        Operation::Sign(key) => key.sign(algorithm, data)?,
-        Operation::VerifyWhileSigning(_) if operation.is_oneshot() => {
-            note(ERROR_VERIFYING.as_bytes());
+    let result = match (operation, signer) {
+        (Operation::Digest, _) => digest.digest(data),
+        (Operation::Hmac(key), _) => {
+            digest.hmac(key.expose(), data).as_bytes().to_vec()
+        }
+        (Operation::Sign(key), _) => key.sign(algorithm, data)?,
+        (Operation::VerifyWhileSigning(_), Signer::Oneshot) => {
+            out.diagnostic(ERROR_VERIFYING);
             return Ok(Outcome::Failed);
         }
-        Operation::VerifyWhileSigning(_) => {
-            out.extend_from_slice(VERIFICATION_FAILURE.as_bytes());
+        (Operation::VerifyWhileSigning(_), Signer::None | Signer::Digest) => {
+            results.extend_from_slice(VERIFICATION_FAILURE.as_bytes());
             return Ok(Outcome::Failed);
         }
-        Operation::Verify(public, signature) => {
+        (Operation::Verify(public, signature), _) => {
             return Ok(
                 match public.check_signature(algorithm, data, signature)? {
                     SignatureCheck::Verified => {
-                        out.extend_from_slice(VERIFIED_OK.as_bytes());
+                        results.extend_from_slice(VERIFIED_OK.as_bytes());
                         Outcome::Done
                     }
                     SignatureCheck::Failed => {
-                        out.extend_from_slice(VERIFICATION_FAILURE.as_bytes());
+                        results
+                            .extend_from_slice(VERIFICATION_FAILURE.as_bytes());
                         Outcome::Failed
                     }
                     SignatureCheck::Malformed => {
-                        note(ERROR_VERIFYING.as_bytes());
+                        out.diagnostic(ERROR_VERIFYING);
                         Outcome::Failed
                     }
                 },
@@ -740,69 +913,67 @@ fn process(
         key_type: file.and(operation.key_type_opt()),
         digest: o.digest_label_opt(operation),
     };
-    o.print(out, &result, encoding, labels, label);
+    o.print(results, &result, encoding, labels, label);
     Ok(Outcome::Done)
 }
 
-/// Renders what `dgst` (or the shortcut `command`, which presets its
-/// digest) writes, and where.
+/// Runs `dgst`, or the shortcut `command`, which presets its digest, and
+/// records what it writes.
 ///
 /// # Errors
 ///
 /// Usage errors and unsupported options; [`Error::Reported`] with exit
-/// code [`DGST_FAILED`] for what OpenSSL reports itself (a file that cannot be read, a
-/// signature that does not verify, and the errors of its checks), after
-/// writing whatever was computed.
-pub(crate) fn render(
+/// code [`DGST_FAILED`] for what OpenSSL reports itself (a file that
+/// cannot be read, a signature that does not verify, and the errors of its
+/// checks), after recording whatever was computed.
+pub(crate) fn run(
     command: &str,
     preset: Option<Algorithm>,
     raw: &[OsString],
-) -> Result<(Vec<u8>, Option<OsString>)> {
+    out: &mut Outputs,
+) -> Result<()> {
     let Some(o) = parse_options(command, preset, raw)? else {
-        return Ok((args::usage(command, SPECS).into_bytes(), None));
+        out.stdout(args::usage(command, SPECS));
+        return Ok(());
     };
-    let compat = crate::x509::compat()?;
-    let operation = prepare(command, &o, compat)?;
-    let mut out = Vec::new();
-    let mut outcomes = Vec::new();
+    let compat = compat()?;
+    let operation = prepare(out, command, &o, compat)?;
+    let mut results = Vec::new();
+    let mut outcome = Outcome::Done;
     if o.files.is_empty() {
         let data = read_input(None)?;
-        outcomes.push(process(&mut out, &o, &operation, &data, None)?);
+        outcome = outcome.max(process(
+            out,
+            &mut results,
+            &o,
+            &operation,
+            &data,
+            None,
+        )?);
     }
     for path in &o.files {
-        match read_input(Some(path)) {
+        let step = match read_input(Some(path)) {
             Ok(data) => {
                 let file = path.to_string_lossy();
-                outcomes.push(process(
-                    &mut out,
-                    &o,
-                    &operation,
-                    &data,
-                    Some(&file),
-                )?);
+                process(out, &mut results, &o, &operation, &data, Some(&file))?
             }
             Err(e) => {
-                note(format!("{e}\n").as_bytes());
-                outcomes.push(Outcome::Failed);
+                out.diagnostic(e.to_string());
+                Outcome::Failed
             }
-        }
+        };
+        outcome = outcome.max(step);
     }
-    if !outcomes.contains(&Outcome::Failed) {
-        return Ok((out, o.output));
+    // What was computed is written even when an input failed: to -out, or
+    // to standard output.
+    out.output(o.output.as_deref(), Access::Default, results);
+    match outcome {
+        Outcome::Done => Ok(()),
+        Outcome::Failed => Err(Error::Reported {
+            code: DGST_FAILED,
+            output: Vec::new(),
+        }),
     }
-    // What was computed is still written: to -out, or, through the
-    // failure, to standard output.
-    let output = match &o.output {
-        Some(path) => {
-            write_file(Path::new(path), Access::Default, &out)?;
-            Vec::new()
-        }
-        None => out,
-    };
-    Err(Error::Reported {
-        code: DGST_FAILED,
-        output,
-    })
 }
 
 #[cfg(test)]

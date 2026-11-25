@@ -286,5 +286,26 @@ for who in OPENSSL BALDSSL; do
         -subj /CN=x -out "$WORK/x.csr"
 done
 
+# -verify: the same lines on the same streams (standard error in 3.0,
+# standard output for the success from 3.2).
+"$OPENSSL" genpkey -algorithm ed25519 -out "$WORK/ed.pem"
+"$OPENSSL" req -new -key "$WORK/ed.pem" -subj /CN=v.example \
+    -out "$WORK/v.csr"
+for who in OPENSSL BALDSSL; do
+    "${!who}" req -in "$WORK/v.csr" -verify -noout \
+        >"$WORK/$who.out" 2>"$WORK/$who.err"
+done
+same "-verify: standard output" "$WORK/OPENSSL.out" "$WORK/BALDSSL.out"
+same "-verify: standard error" "$WORK/OPENSSL.err" "$WORK/BALDSSL.err"
+
+# -subj=<value>: the value is bytes, as with -subj <value>, so a Latin-1
+# subject (not UTF-8) gives OpenSSL's request (Ed25519 is deterministic).
+latin1=$'/CN=\xe9t\xe9'
+for who in OPENSSL BALDSSL; do
+    "${!who}" req -new -key "$WORK/ed.pem" -subj="$latin1" -outform DER \
+        -out "$WORK/$who.der"
+done
+same "-subj=<Latin-1>" "$WORK/OPENSSL.der" "$WORK/BALDSSL.der"
+
 echo "req-interop: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

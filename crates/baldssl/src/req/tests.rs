@@ -8,8 +8,18 @@ use baldssl_x509::InputEncoding;
 
 use baldssl_core::der::TimeKind;
 
-use super::{KeySource, Mode, Output, Product, parse_options};
-use crate::issuing::SerialSource;
+use baldssl_fs::Access;
+use baldssl_pkey::AnyPrivateKey;
+use baldssl_x509::{
+    CertificationRequest, Compat, DistinguishedName, Extensions,
+};
+
+use super::{KeySource, Mode, Product, Verify, parse_options, run, verify};
+use crate::{
+    input::OutputForm,
+    issuing::{SerialSource, ValidityTime},
+    outputs::{Effect, Outputs},
+};
 
 fn os(v: &[&str]) -> Vec<OsString> {
     v.iter().map(OsString::from).collect()
@@ -23,9 +33,9 @@ fn options(v: &[&str]) -> super::Options {
 fn defaults() {
     let o = options(&[]);
     assert_eq!(o.mode, Mode::Read);
-    assert_eq!(o.output, Output::Pem);
+    assert_eq!(o.output, OutputForm::Pem);
     assert_eq!(o.encoding, InputEncoding::Latin1);
-    assert!(!o.verify);
+    assert_eq!(o.verify, Verify::Skipped);
     assert_eq!(o.digest, None);
 }
 
@@ -43,14 +53,14 @@ fn creating() {
 /// `-noout` wins over `-outform`, in either order.
 #[test]
 fn noout_wins() {
-    assert_eq!(options(&["-outform", "DER"]).output, Output::Der);
+    assert_eq!(options(&["-outform", "DER"]).output, OutputForm::Der);
     assert_eq!(
         options(&["-noout", "-outform", "DER"]).output,
-        Output::Nothing
+        OutputForm::Nothing
     );
     assert_eq!(
         options(&["-outform", "DER", "-noout"]).output,
-        Output::Nothing
+        OutputForm::Nothing
     );
 }
 
@@ -116,13 +126,20 @@ fn certificates() {
     assert!(
         matches!(&o.serial, SerialSource::Given(s) if s.as_be_bytes() == [1, 2])
     );
-    let before = o.lifetime.not_before.unwrap();
+    let Some(ValidityTime::At(before)) = o.lifetime.not_before else {
+        panic!("a time")
+    };
     assert_eq!((before.kind(), before.year()), (TimeKind::Utc, 2026));
-    let after = o.lifetime.not_after.unwrap();
+    let Some(ValidityTime::At(after)) = o.lifetime.not_after else {
+        panic!("a time")
+    };
     assert_eq!((after.kind(), after.year()), (TimeKind::Generalized, 2050));
     // A GeneralizedTime before 2050 is written as a UTCTime.
     let o = options(&["-x509", "-not_before", "20261122000000Z"]);
-    assert_eq!(o.lifetime.not_before.unwrap().kind(), TimeKind::Utc);
+    assert!(matches!(
+        o.lifetime.not_before,
+        Some(ValidityTime::At(t)) if t.kind() == TimeKind::Utc
+    ));
 }
 
 #[test]
@@ -208,4 +225,94 @@ fn added_extensions() {
         parse_options(&os(&["-addext", "fooBar=x"])),
         Err(Error::Usage(_))
     ));
+}
+
+fn run_to_outputs(v: &[&str]) -> (Outputs, baldssl_core::Result<()>) {
+    let mut out = Outputs::default();
+    let result = run(&os(v), &mut out);
+    (out, result)
+}
+
+/// `-newkey`: OpenSSL's line on standard error and the key in a file only
+/// its owner reads, then the warning for a skipped `-subj` attribute, then
+/// the request.
+#[test]
+fn new_key_effects() {
+    let (out, result) = run_to_outputs(&[
+        "-newkey",
+        "ed25519",
+        "-noenc",
+        "-keyout",
+        "k.pem",
+        "-subj",
+        "/CN=x/bogus=1",
+    ]);
+    result.unwrap();
+    let [
+        Effect::Stderr(line),
+        Effect::File {
+            path,
+            access: Access::OwnerOnly,
+            bytes: key,
+        },
+        Effect::Stderr(warning),
+        Effect::Stdout(request),
+    ] = out.effects()
+    else {
+        panic!("{:?}", out.effects())
+    };
+    assert_eq!(line, b"-----\n");
+    assert_eq!(
+        warning,
+        b"req warning: Skipping unknown subject name attribute \"bogus\"\n"
+    );
+    assert_eq!(path, std::path::Path::new("k.pem"));
+    assert!(key.starts_with(b"-----BEGIN PRIVATE KEY-----\n"));
+    assert!(request.starts_with(b"-----BEGIN CERTIFICATE REQUEST-----\n"));
+    // The key is written before the subject is read: a bad subject fails
+    // after the key file, as in OpenSSL.
+    let (out, result) =
+        run_to_outputs(&["-newkey", "ed25519", "-nodes", "-subj", "CN=x"]);
+    assert!(result.is_err());
+    assert!(matches!(
+        out.effects(),
+        [Effect::Stderr(_), Effect::File { .. }]
+    ));
+}
+
+/// `-verify`'s success goes to standard error in OpenSSL 3.0 and to
+/// standard output from 3.2.
+#[test]
+fn verified_stream() {
+    let key =
+        AnyPrivateKey::generate(baldssl_pkey::Algorithm::Ed25519).unwrap();
+    let request = CertificationRequest::sign(
+        &DistinguishedName::default(),
+        &key,
+        key.default_signature_algorithm(),
+        &Extensions::new(),
+    )
+    .unwrap();
+    for (compat, stdout, stderr) in [
+        (
+            Compat::V30,
+            &b""[..],
+            &b"Certificate request self-signature verify OK\n"[..],
+        ),
+        (
+            Compat::V3,
+            b"Certificate request self-signature verify OK\n",
+            b"",
+        ),
+        (
+            Compat::V4,
+            b"Certificate request self-signature verify OK\n",
+            b"",
+        ),
+    ] {
+        let mut out = Outputs::default();
+        verify(&request, compat, &mut out).unwrap();
+        assert_eq!(out.stdout_bytes(), stdout, "{compat:?}");
+        assert_eq!(out.stderr_bytes(), stderr, "{compat:?}");
+    }
 }
