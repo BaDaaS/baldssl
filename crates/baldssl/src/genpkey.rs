@@ -3,9 +3,11 @@
 //!
 //! Supported: `-algorithm EC` with `-pkeyopt ec_paramgen_curve:<curve>` for
 //! P-256 (`prime256v1`), P-384 (`secp384r1`) and P-521 (`secp521r1`), and
-//! `-algorithm ED25519`; `-out`, `-outform PEM|DER`, and `-text`, which
-//! follows the key with its text as `pkey -text` prints it, to the same
-//! output, as `apps/genpkey.c` does with `EVP_PKEY_print_private`.
+//! `-algorithm ED25519`; `-out`, `-outform PEM|DER` (in DER, the form
+//! [`Compat::generated_key_der`](baldssl_x509::Compat::generated_key_der)
+//! names for the release line), and `-text`, which follows the key with its
+//! text as `pkey -text` prints it, to the same output, as `apps/genpkey.c`
+//! does with `EVP_PKEY_print_private`.
 //! Algorithm names are case-insensitive, as in OpenSSL. The key file is
 //! created readable by its owner only, as `apps/genpkey.c` opens it with
 //! `bio_open_owner`. Anything else (RSA, X25519, encryption with a cipher,
@@ -113,15 +115,16 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
             Opt::Text => text = text.max(Text::Printed),
         }
     }
+    let compat = compat()?;
     let key = AnyPrivateKey::generate(parameters.algorithm(COMMAND)?)?;
     let mut bytes = match format {
-        Format::Der => key.pkcs8().expose().to_vec(),
+        Format::Der => key.der(compat.generated_key_der()).expose().to_vec(),
         Format::Pem => key.to_pem().into_bytes(),
     };
     match text {
         Text::Nothing => {}
         Text::Printed => {
-            bytes.extend(print_private_key_text(&key, compat()?)?);
+            bytes.extend(print_private_key_text(&key, compat)?);
         }
     }
     out.output(output.as_deref(), Access::OwnerOnly, bytes);
@@ -197,7 +200,7 @@ mod tests {
                 let (_, len) = parse_tlv(&der).unwrap();
                 let key = AnyPrivateKey::decode(&der[..len]).unwrap();
                 let expected = [
-                    key.pkcs8().expose().to_vec(),
+                    key.der(compat.generated_key_der()).expose().to_vec(),
                     print_private_key_text(&key, compat).unwrap(),
                 ]
                 .concat();

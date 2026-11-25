@@ -24,7 +24,7 @@ use baldssl_core::{
 use baldssl_crypto::models::weierstrass::{
     COMPRESSED_EVEN, COMPRESSED_ODD, UNCOMPRESSED,
 };
-use baldssl_pkey::{AnyPrivateKey, ED25519_KEY_LEN, PublicKey};
+use baldssl_pkey::{AnyPrivateKey, ED25519_KEY_LEN, PrivateKeyDer, PublicKey};
 
 use crate::{
     CertificationRequest,
@@ -73,7 +73,8 @@ pub enum Compat {
     #[default]
     V3,
     /// OpenSSL 3.6: as 3.5, except that `pkey` writes a private key in DER
-    /// as PKCS#8 ([`Compat::private_key_der`]).
+    /// as PKCS#8 ([`Compat::private_key_der`]); `genpkey` does not
+    /// ([`Compat::generated_key_der`]).
     V36,
     /// OpenSSL 4.0 and later.
     V4,
@@ -155,6 +156,23 @@ impl Compat {
         match self {
             Compat::V30 | Compat::V3 => PrivateKeyDer::Traditional,
             Compat::V36 | Compat::V4 => PrivateKeyDer::Pkcs8,
+        }
+    }
+
+    /// The form `openssl genpkey -outform DER` writes the key it generates
+    /// in. OpenSSL 3.0 to 3.6 call `i2d_PrivateKey_bio`
+    /// (`apps/genpkey.c`), which writes the algorithm's traditional form
+    /// (SEC 1's ECPrivateKey for EC); from 4.0, `apps/genpkey.c` calls
+    /// `encode_private_key` (`apps/lib/apps.c`), which asks for
+    /// "PrivateKeyInfo", PKCS#8. The change comes one release after
+    /// [`Compat::private_key_der`]'s.
+    #[must_use]
+    pub fn generated_key_der(self) -> PrivateKeyDer {
+        match self {
+            Compat::V30 | Compat::V3 | Compat::V36 => {
+                PrivateKeyDer::Traditional
+            }
+            Compat::V4 => PrivateKeyDer::Pkcs8,
         }
     }
 
@@ -303,15 +321,6 @@ impl FromStr for Compat {
                 ))
             })
     }
-}
-
-/// The form a private key is written in DER ([`Compat::private_key_der`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrivateKeyDer {
-    /// The algorithm's own form, when it has one (SEC 1 for EC).
-    Traditional,
-    /// PKCS#8 (Public-Key Cryptography Standards #8), as for PEM.
-    Pkcs8,
 }
 
 /// Whether a mismatched request signature gets a warning first

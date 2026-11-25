@@ -16,7 +16,7 @@ use baldssl_crypto::{
 
 use super::{
     Algorithm, AnyPrivateKey, ED25519_KEY_LEN, KeyAlgorithm, PrivateKey,
-    PublicKey, Signing, WithKeyAlgorithm,
+    PrivateKeyDer, PublicKey, Signing, WithKeyAlgorithm,
 };
 use crate::asn1::{
     CURVE_PRIVATE_KEY, EC_PRIVATE_KEY, ID_EC_PUBLIC_KEY, ID_ED448, ID_ED25519,
@@ -113,6 +113,34 @@ fn any_private_key_dispatches() {
             format!("{key:?}"),
             format!("PrivateKey {{ algorithm: {alg:?}, .. }}")
         );
+    }
+}
+
+/// [`AnyPrivateKey::der`] writes PKCS#8 for [`PrivateKeyDer::Pkcs8`], and
+/// for [`PrivateKeyDer::Traditional`] the traditional form where the
+/// algorithm has one and PKCS#8 where it has none; in both forms the key
+/// decodes back to itself.
+#[test]
+fn der_forms() {
+    for alg in Algorithm::ALL {
+        let key = AnyPrivateKey::generate(alg).unwrap();
+        let pkcs8 = key.der(PrivateKeyDer::Pkcs8);
+        assert_eq!(pkcs8.expose(), key.pkcs8().expose());
+        let traditional = key.der(PrivateKeyDer::Traditional);
+        let expected = key.traditional_opt().unwrap_or_else(|| key.pkcs8());
+        assert_eq!(traditional.expose(), expected.expose());
+        match alg {
+            Algorithm::P256 | Algorithm::P384 | Algorithm::P521 => {
+                assert_ne!(traditional.expose(), pkcs8.expose());
+            }
+            Algorithm::Ed25519 => {
+                assert_eq!(traditional.expose(), pkcs8.expose());
+            }
+        }
+        for der in [pkcs8, traditional] {
+            let back = AnyPrivateKey::decode(der.expose()).unwrap();
+            assert_eq!(back.secret().expose(), key.secret().expose());
+        }
     }
 }
 
