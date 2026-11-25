@@ -20,7 +20,7 @@ reader would paste them into bash:
 - `install` commands run only with --install (CI), since they install.
 
 Usage:
-  scripts/check-website-examples.py --openssl PATH --baldssl PATH [--install]
+  scripts/check_website_examples.py --openssl PATH --baldssl PATH [--install]
 """
 
 from __future__ import annotations
@@ -42,6 +42,10 @@ EXAMPLES = ROOT / "website" / "src" / "examples.json"
 # website's code blocks.
 MAX_WIDTH = 38
 
+# The release lines baldssl has a profile of its own for, besides the major
+# versions (baldssl_x509::Compat).
+LINES = ("3.0", "3.6")
+
 # The program name `openssl`, where the shell runs it.
 PROGRAM = re.compile(r"(?<![\w./-])openssl(?= )")
 
@@ -56,6 +60,16 @@ def displayed(lines: list[str]) -> list[str]:
         if continued != (i < len(lines) - 1):
             problems.append(f"line {i + 1}: continuation backslash")
     return problems
+
+
+def profile(version: str) -> str:
+    """The baldssl profile (BALDSSL_OPENSSL_COMPAT) for an OpenSSL version:
+    the release line for 3.0 and 3.6, which differ from the rest of 3, and
+    the major version otherwise."""
+    for line in LINES:
+        if version == line or version.startswith(f"{line}."):
+            return line
+    return version.split(".", maxsplit=1)[0]
 
 
 def baldssl_variant(command: str) -> str:
@@ -116,9 +130,8 @@ def main() -> int:
     version = subprocess.run(  # noqa: S603
         [str(openssl), "version"], capture_output=True, text=True, check=True
     ).stdout.split()[1]
-    # The profile is 3.0 for OpenSSL 3.0, the major version otherwise.
-    line = "3.0" if version.startswith("3.0.") else version.split(".")[0]
-    profile = {"BALDSSL_OPENSSL_COMPAT": line}
+    line = profile(version)
+    environment = {"BALDSSL_OPENSSL_COMPAT": line}
     print(f"OpenSSL {version} (baldssl profile {line})")
 
     examples = json.loads(EXAMPLES.read_text(encoding="utf-8"))["examples"]
@@ -141,7 +154,7 @@ def main() -> int:
             shadow = base / f"shadow-{ident}"
             shutil.copytree(work, shadow)
 
-            ran = run(command, work, real, profile)
+            ran = run(command, work, real, environment)
             if ran.returncode != 0:
                 failures.append(
                     f"{ident}: exit {ran.returncode}: "
@@ -160,7 +173,7 @@ def main() -> int:
             if status == "supported" and not ex.get("deterministic"):
                 # Random output (a new key): baldssl must succeed, and
                 # OpenSSL must accept what it produced.
-                mine = run(baldssl_variant(command), shadow, real, profile)
+                mine = run(baldssl_variant(command), shadow, real, environment)
                 problems = []
                 if mine.returncode != 0:
                     problems.append(
@@ -168,7 +181,7 @@ def main() -> int:
                         f"{mine.stderr.decode(errors='replace').strip()[:300]}"
                     )
                 for check in ex.get("verify", []):
-                    verified = run(check, shadow, real, profile)
+                    verified = run(check, shadow, real, environment)
                     if verified.returncode != 0:
                         problems.append(
                             f"`{check}` rejects it: "
@@ -183,7 +196,7 @@ def main() -> int:
                     print(f"ok    {ident} (baldssl verified by OpenSSL)")
                 continue
 
-            mine = run(baldssl_variant(command), shadow, real, profile)
+            mine = run(baldssl_variant(command), shadow, real, environment)
             same = (
                 mine.returncode == 0
                 and mine.stdout == ran.stdout

@@ -125,7 +125,7 @@ const shortcutRows = (commands, issues) =>
     .join('\n');
 
 // The program name `openssl`, where the shell runs it; the baldssl variant of
-// a task replaces it (scripts/check-website-examples.py runs both).
+// a task replaces it (scripts/check_website_examples.py runs both).
 const PROGRAM = /(?<![\w./-])openssl(?= )/g;
 
 // A command block: a header with the copy button (shown by src/copy.js), and

@@ -285,7 +285,7 @@ website-build: ## Build the static website into website/dist
 
 .PHONY: website-examples
 website-examples: build ## Run every command shown on the website ($(OPENSSL))
-	scripts/check-website-examples.py --openssl $(OPENSSL) \
+	scripts/check_website_examples.py --openssl $(OPENSSL) \
 		--baldssl $(BALDSSL) $(if $(INSTALL),--install)
 
 .PHONY: website-commands
