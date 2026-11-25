@@ -288,11 +288,8 @@ impl CertificateTemplate {
                             raw(&self.issuer)?,
                             (
                                 (
-                                    raw(&self.validity.not_before.to_der())?,
-                                    (
-                                        raw(&self.validity.not_after.to_der())?,
-                                        (),
-                                    ),
+                                    self.validity.not_before.to_der(),
+                                    (self.validity.not_after.to_der(), ()),
                                 ),
                                 (
                                     raw(&self.subject)?,
@@ -330,8 +327,8 @@ impl CertificateTemplate {
                         raw(&self.issuer)?,
                         (
                             (
-                                raw(&self.validity.not_before.to_der())?,
-                                (raw(&self.validity.not_after.to_der())?, ()),
+                                self.validity.not_before.to_der(),
+                                (self.validity.not_after.to_der(), ()),
                             ),
                             (
                                 raw(&self.subject)?,
