@@ -11,6 +11,10 @@ practices" says what the project does; this file says how to work in it.
   each, CI green before the next. Every pull request closes an issue
   (`Closes #N`) and updates the website (`website/src/*.json`) when it changes
   what baldssl does.
+- When a pull request below in the stack merges, rebase the next one onto
+  `main`: drop the commits already merged (they come back with other hashes),
+  retarget its base, remove its "Stacked on" line, and run `make interop`
+  against the release lines its changes touch.
 
 ## Code
 
@@ -64,6 +68,29 @@ practices" says what the project does; this file says how to work in it.
 - A command returns what it writes on standard output and never writes standard
   output itself; a failure that has output carries it
   (`Error::Reported { code, output }`).
+- A difference between OpenSSL release lines is a method of `Compat` named for
+  what differs (`Compat::bn_sign_byte`, `Compat::name_style`), whose
+  documentation cites the OpenSSL source that differs. Callers ask the method;
+  they never compare lines (`compat != Compat::V4`), which silently puts a new
+  line on one side.
+- Before an OpenSSL release joins CI, diff the sources baldssl reproduces
+  (`apps/*.c`, the message tables such as `crypto/x509/x509_txt.c`) against the
+  release line it would share a profile with; any difference that reaches
+  baldssl's output gets its own profile.
+- Command-line arguments that are data (keys, passphrases, values) are bytes,
+  taken with `as_encoded_bytes()`, as OpenSSL takes them. `to_string_lossy()` is
+  for messages only: it replaces what is not UTF-8.
+- A fallback value (`unwrap_or(0)`, `map_or(0, ..)`, `unwrap_or_default()`) says
+  in a comment why it cannot give a wrong result, or the code returns an error
+  instead.
+- No `bool` parameter or field selects behaviour: an enum names each case. Where
+  OpenSSL's flags are sticky (no later option clears them), the enum's order
+  models that and the value is the maximum given, with a test of the option
+  orders.
+- One source per list: a list of names (commands, digests, extensions) is
+  written once, and everything else derives from it (`Algorithm::ALL`).
+- Every variant of an outcome enum (what checking, verifying or processing
+  gives) is reached by a test.
 - Constant-time code takes `Choice`, never `bool`, and never branches or indexes
   on secret data. Name the property: `_ct` for constant time, `_vartime` for
   variable time.
@@ -119,6 +146,13 @@ practices" says what the project does; this file says how to work in it.
 ## Before pushing
 
 - `make ci` and `make check-urls` pass.
+- Every commit builds and passes clippy on its own. A review fix goes into the
+  commit that introduced the code (`git commit --fixup` and
+  `git rebase --autosquash`), and a commit message that names something renamed
+  or removed is reworded.
+- When a review flags a pattern, fix the class, not the instance: search the
+  pull request, and the stack above it, for every other occurrence before
+  pushing.
 - Commit messages: a title under 80 characters and a wrapped body; no co-author
   or tool attribution lines.
 
