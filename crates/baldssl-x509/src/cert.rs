@@ -246,6 +246,12 @@ pub struct Certificate<'a> {
 }
 
 impl<'a> Certificate<'a> {
+    /// The PEM label of a certificate, `PEM_STRING_X509` in
+    /// `include/openssl/pem.h` ([RFC 7468 section 5.1]).
+    ///
+    /// [RFC 7468 section 5.1]: https://www.rfc-editor.org/rfc/rfc7468#section-5.1
+    pub const LABEL: &'static str = "CERTIFICATE";
+
     /// Whether `key` is the private key of this certificate's public key,
     /// as OpenSSL's `X509_check_private_key` asks.
     #[must_use]

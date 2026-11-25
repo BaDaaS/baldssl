@@ -22,7 +22,7 @@ use std::{ffi::OsString, fmt::Write as _, path::Path, process::ExitCode};
 
 use baldssl_core::Error;
 use baldssl_crypto::hash::Algorithm;
-use baldssl_fs::write_output;
+use baldssl_fs::{Access, write_file, write_stdout};
 
 const COMMANDS: &[(&str, &str)] = &[
     ("dgst", "Hash, MAC, sign and verify files"),
@@ -83,19 +83,18 @@ fn dispatch(args: &[OsString]) -> Result<(Vec<u8>, Option<OsString>), Error> {
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let result = dispatch(&args).and_then(|(out, path)| {
-        write_output(&out, path.as_deref().map(Path::new))
+    let result = dispatch(&args).and_then(|(out, path)| match path {
+        Some(path) => write_file(Path::new(&path), Access::Default, &out),
+        None => write_stdout(&out),
     });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         // A command that reported its failure itself adds nothing to
         // standard error; what it had for standard output still goes there.
-        Err(Error::Reported { code, output }) => {
-            match write_output(&output, None) {
-                Ok(()) => ExitCode::from(code),
-                Err(e) => ExitCode::from(e.exit_code()),
-            }
-        }
+        Err(Error::Reported { code, output }) => match write_stdout(&output) {
+            Ok(()) => ExitCode::from(code),
+            Err(e) => ExitCode::from(e.exit_code()),
+        },
         Err(e) => {
             let command = args
                 .first()

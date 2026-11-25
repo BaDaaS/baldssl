@@ -87,10 +87,12 @@ pub use issue::{
 };
 pub use name::{Name, NameStyle};
 pub use text::{
-    Compat, print_private_key_text, print_public_key_text, serial_line,
-    time_rfc822,
+    Compat, CsrSignatureWarning, ExtensionsWithoutFile, PrivateKeyDer, Stream,
+    print_private_key_text, print_public_key_text, serial_line, time_rfc822,
 };
 pub use verify::{Failure, Reported, TrustStore, Verification, VerifyError};
+
+use std::str::FromStr;
 
 use baldssl_core::{Error, Result, der::syntax::RawTlv, pem};
 use baldssl_crypto::Algorithm;
@@ -112,16 +114,50 @@ pub fn certificates_der(input: &[u8]) -> Result<Vec<RawTlv>> {
         .collect()
 }
 
-/// The PEM labels `PEM_read_bio_X509` accepts.
-const PEM_LABELS: &[&str] = &["CERTIFICATE", "X509 CERTIFICATE"];
+/// The PEM labels `PEM_read_bio_X509` accepts: [`Certificate::LABEL`], and
+/// `X509 CERTIFICATE` (`PEM_STRING_X509_OLD` in `include/openssl/pem.h`).
+const PEM_LABELS: &[&str] =
+    &[Certificate::<'static>::LABEL, "X509 CERTIFICATE"];
 
-/// Input encoding (`-inform`).
+/// Input or output encoding (`-inform`, `-outform`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     /// Base64 between `BEGIN`/`END` lines.
     Pem,
     /// Raw DER.
     Der,
+}
+
+impl Format {
+    /// The format given, or without one the format of `input`: PEM when it
+    /// holds a `BEGIN` boundary ([`pem::looks_like_pem`]), as OpenSSL 3
+    /// detects it, DER otherwise.
+    #[must_use]
+    pub fn given_or_detected(given: Option<Format>, input: &[u8]) -> Format {
+        given.unwrap_or(if pem::looks_like_pem(input) {
+            Format::Pem
+        } else {
+            Format::Der
+        })
+    }
+}
+
+/// `PEM` or `DER`, in any case, as OpenSSL's `opt_format` reads the value
+/// of `-inform` and `-outform` (`apps/lib/opt.c`).
+///
+/// # Errors
+///
+/// [`Error::Usage`] for any other name.
+impl FromStr for Format {
+    type Err = Error;
+
+    fn from_str(name: &str) -> Result<Self> {
+        [("PEM", Format::Pem), ("DER", Format::Der)]
+            .into_iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, format)| format)
+            .ok_or_else(|| Error::Usage(format!("invalid format {name:?}")))
+    }
 }
 
 /// Extracts the DER of the first certificate in `input`. With no explicit
@@ -135,12 +171,7 @@ pub fn certificate_der(
     input: &[u8],
     format: Option<Format>,
 ) -> Result<Vec<u8>> {
-    let format = format.unwrap_or(if pem::looks_like_pem(input) {
-        Format::Pem
-    } else {
-        Format::Der
-    });
-    match format {
+    match Format::given_or_detected(format, input) {
         Format::Der => Ok(input.to_vec()),
         Format::Pem => {
             if pem::looks_like_pem(input)

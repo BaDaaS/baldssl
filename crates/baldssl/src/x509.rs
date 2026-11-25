@@ -536,11 +536,9 @@ pub(crate) const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
 pub(crate) fn compat() -> Result<Compat> {
     match std::env::var(COMPAT_ENV) {
         Err(_) => Ok(Compat::default()),
-        Ok(v) => Compat::from_version_opt(&v).ok_or_else(|| {
-            Error::Usage(format!(
-                "{COMPAT_ENV}: expected 3.0, 3 or 4, got {v:?}"
-            ))
-        }),
+        Ok(v) => v
+            .parse()
+            .map_err(|e| Error::Usage(format!("{COMPAT_ENV}: {e}"))),
     }
 }
 

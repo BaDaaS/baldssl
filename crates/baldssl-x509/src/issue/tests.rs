@@ -9,6 +9,7 @@
 //! `TBSCertificate`, and each side's signature verifies.
 
 use baldssl_core::{
+    Error,
     der::syntax::{Any, BitString, RawTlv, Sequence, decode},
     encoding::Decodable,
 };
@@ -311,4 +312,40 @@ fn copy_extension_modes() {
         "all".parse::<CopyExtensions>(),
         Err(baldssl_core::Error::Usage(_))
     ));
+}
+
+/// `-set_serial`: decimal, or hexadecimal after `0x`, positive and at most
+/// 20 octets once encoded.
+#[test]
+fn set_serial_values() {
+    let s = |v: &str| v.parse::<SerialNumber>();
+    assert_eq!(s("258").unwrap().as_be_bytes(), [1, 2]);
+    assert_eq!(s("0x0102").unwrap().as_be_bytes(), [1, 2]);
+    assert_eq!(s("0XfF").unwrap().as_be_bytes(), [0xff]);
+    for bad in ["", "0x", "12a", "0xg", "-1"] {
+        assert!(matches!(s(bad), Err(Error::Usage(_))), "{bad}");
+    }
+    // Zero, and 20 bytes with the top bit set: 21 octets once encoded.
+    for refused in ["0", "0x00", "0x8000000000000000000000000000000000000000"] {
+        assert!(
+            matches!(s(refused), Err(Error::Unsupported(_))),
+            "{refused}"
+        );
+    }
+}
+
+/// A serial file's number is read, incremented, and written back as
+/// `save_serial` writes it: `0A` gives `0B`, `ff` gives `0100`.
+#[test]
+fn serial_files() {
+    for (held, written) in [("0A\n", "0B\n"), ("ff", "0100\n")] {
+        let next = SerialNumber::following_file(held).unwrap();
+        assert_eq!(next.to_serial_file(), written);
+    }
+    for bad in ["", "\n", "xyz"] {
+        assert!(
+            matches!(SerialNumber::following_file(bad), Err(Error::Usage(_))),
+            "{bad:?}"
+        );
+    }
 }

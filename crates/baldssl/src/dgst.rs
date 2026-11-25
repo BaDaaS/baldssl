@@ -39,7 +39,7 @@ use std::{ffi::OsString, fmt::Write as _, io::Write as _, path::Path};
 
 use baldssl_core::{Error, Result, encoding::Decodable as _};
 use baldssl_crypto::{hash::Algorithm, signature::SignatureAlgorithm};
-use baldssl_fs::write_output;
+use baldssl_fs::{Access, write_file};
 use baldssl_pkey::{AnyPrivateKey, PublicKey, SignatureCheck};
 use baldssl_x509::{Compat, Format};
 
@@ -794,7 +794,7 @@ pub(crate) fn render(
     // failure, to standard output.
     let output = match &o.output {
         Some(path) => {
-            write_output(&out, Some(Path::new(path)))?;
+            write_file(Path::new(path), Access::Default, &out)?;
             Vec::new()
         }
         None => out,

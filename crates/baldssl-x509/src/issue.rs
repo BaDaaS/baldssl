@@ -57,6 +57,7 @@ use baldssl_core::{
         },
     },
     encoding::Encodable,
+    hex::{self, Case},
 };
 use baldssl_crypto::{
     Digest, hash::Sha1, os_rng, signature::SignatureAlgorithm,
@@ -136,6 +137,109 @@ impl SerialNumber {
     #[must_use]
     pub fn as_be_bytes(&self) -> &[u8] {
         self.0.as_be_bytes()
+    }
+
+    /// The serial number following the one a serial file holds, as
+    /// OpenSSL's `x509` takes it (`load_serial` in `apps/lib/apps.c`): the
+    /// file's hexadecimal digits, upper or lower case, as
+    /// `a2i_ASN1_INTEGER` reads them, plus one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Usage`] when the file holds no hexadecimal number, and
+    /// [`Error::Unsupported`] when the successor is longer than 20 octets.
+    pub fn following_file(text: &str) -> Result<Self> {
+        let digits = text.trim();
+        let held = (!digits.is_empty())
+            .then(|| digits_be_opt(digits, HEX))
+            .flatten()
+            .ok_or_else(|| Error::Usage("unable to load number".into()))?;
+        Self::checked(digits, &increment(&held))
+    }
+
+    /// The contents of a serial file holding this number, as `save_serial`
+    /// in `apps/lib/apps.c` writes it: upper-case hexadecimal digits, an
+    /// even number of them, and a newline.
+    #[must_use]
+    pub fn to_serial_file(&self) -> String {
+        let mut text = hex::plain(self.as_be_bytes(), Case::Upper);
+        text.push('\n');
+        text
+    }
+
+    /// The serial number of `bytes`, written `text`, or the error saying
+    /// why it cannot be one.
+    fn checked(text: &str, bytes: &[u8]) -> Result<Self> {
+        Self::new_opt(bytes).ok_or_else(|| {
+            Error::unsupported(format!(
+                "serial {text}: a serial must be positive and at most 20 \
+                 octets"
+            ))
+        })
+    }
+}
+
+/// The radix of decimal digits.
+const DECIMAL: u16 = 10;
+/// The radix of hexadecimal digits.
+const HEX: u16 = 16;
+/// The prefixes that mark hexadecimal digits in `-set_serial`, as
+/// `s2i_ASN1_INTEGER` (`crypto/x509/v3_utl.c`) reads them.
+const HEX_PREFIXES: [&str; 2] = ["0x", "0X"];
+
+/// Big-endian bytes of the number written with `digits` in `radix` (10 or
+/// 16), without leading zeros; `None` on a character that is not a digit.
+fn digits_be_opt(digits: &str, radix: u16) -> Option<Vec<u8>> {
+    let mut bytes: Vec<u8> = Vec::new();
+    for c in digits.chars() {
+        let mut carry = u16::try_from(c.to_digit(radix.into())?).ok()?;
+        for byte in bytes.iter_mut().rev() {
+            let v = u16::from(*byte).checked_mul(radix)?.checked_add(carry)?;
+            *byte = v.to_be_bytes()[1];
+            carry = v >> 8;
+        }
+        if carry != 0 {
+            bytes.insert(0, carry.to_be_bytes()[1]);
+        }
+    }
+    Some(bytes)
+}
+
+/// One more than the big-endian `bytes`.
+fn increment(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    for byte in out.iter_mut().rev() {
+        let (v, overflow) = byte.overflowing_add(1);
+        *byte = v;
+        if !overflow {
+            return out;
+        }
+    }
+    out.insert(0, 1);
+    out
+}
+
+/// The serial number of `-set_serial`: decimal digits, or hexadecimal ones
+/// after `0x`, as OpenSSL's `s2i_ASN1_INTEGER` reads them.
+///
+/// # Errors
+///
+/// [`Error::Usage`] on anything else; [`Error::Unsupported`] for zero,
+/// negative numbers and serials longer than 20 octets.
+impl FromStr for SerialNumber {
+    type Err = Error;
+
+    fn from_str(text: &str) -> Result<Self> {
+        let invalid = || Error::Usage(format!("invalid serial number {text}"));
+        let (digits, radix) = HEX_PREFIXES
+            .iter()
+            .find_map(|p| text.strip_prefix(p))
+            .map_or((text, DECIMAL), |hex| (hex, HEX));
+        if digits.is_empty() {
+            return Err(invalid());
+        }
+        let bytes = digits_be_opt(digits, radix).ok_or_else(invalid)?;
+        Self::checked(text, &bytes)
     }
 }
 

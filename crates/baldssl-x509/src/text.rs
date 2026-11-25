@@ -8,6 +8,8 @@
 //! `long` is 4 bytes) prints serials of 5 to 8 bytes in the hex form
 //! instead.
 
+use std::str::FromStr;
+
 use baldssl_core::{
     Error, Result,
     der::{
@@ -71,7 +73,7 @@ pub enum Compat {
     #[default]
     V3,
     /// OpenSSL 3.6: as 3.5, except that `pkey` writes a private key in DER
-    /// as PKCS#8 ([`Compat::private_key_der_is_traditional`]).
+    /// as PKCS#8 ([`Compat::private_key_der`]).
     V36,
     /// OpenSSL 4.0 and later.
     V4,
@@ -143,14 +145,59 @@ impl Compat {
         }
     }
 
-    /// Whether `openssl pkey -outform DER` writes a private key in its
-    /// algorithm's traditional form (SEC 1's ECPrivateKey for EC) rather
-    /// than PKCS#8. OpenSSL 3.0 to 3.5 call `i2d_PrivateKey_bio`, which
-    /// writes the traditional form; from 3.6, `apps/pkey.c` calls
-    /// `i2d_PKCS8PrivateKey_bio` unless `-traditional` is given.
+    /// The form `openssl pkey -outform DER` writes a private key in.
+    /// OpenSSL 3.0 to 3.5 call `i2d_PrivateKey_bio` (`apps/pkey.c`), which
+    /// writes the algorithm's traditional form (SEC 1's ECPrivateKey for
+    /// EC); from 3.6, `apps/pkey.c` calls `i2d_PKCS8PrivateKey_bio` unless
+    /// `-traditional` is given.
     #[must_use]
-    pub fn private_key_der_is_traditional(self) -> bool {
-        matches!(self, Compat::V30 | Compat::V3)
+    pub fn private_key_der(self) -> PrivateKeyDer {
+        match self {
+            Compat::V30 | Compat::V3 => PrivateKeyDer::Traditional,
+            Compat::V36 | Compat::V4 => PrivateKeyDer::Pkcs8,
+        }
+    }
+
+    /// Whether `openssl x509 -req` warns, before its own message, that the
+    /// request's self-signature does not match. From 3.2, `load_csr` in
+    /// `apps/lib/apps.c` checks the signature as it loads the request and
+    /// prints "Warning: CSR self-signature does not match the contents";
+    /// 3.0's `load_csr` does not check it.
+    #[must_use]
+    pub fn csr_signature_warning(self) -> CsrSignatureWarning {
+        match self {
+            Compat::V30 => CsrSignatureWarning::Silent,
+            Compat::V3 | Compat::V36 | Compat::V4 => {
+                CsrSignatureWarning::Printed
+            }
+        }
+    }
+
+    /// What `openssl x509 -extensions` does without `-extfile`. In 3.x,
+    /// `apps/x509.c` prints "Warning: ignoring -extensions option without
+    /// -extfile" and goes on; in 4, it looks the section up in the default
+    /// configuration file (`app_conf_try_string` on the loaded
+    /// configuration), and fails with "Error checking extension section"
+    /// when it is not there.
+    #[must_use]
+    pub fn extensions_without_file(self) -> ExtensionsWithoutFile {
+        match self {
+            Compat::V30 | Compat::V3 | Compat::V36 => {
+                ExtensionsWithoutFile::Ignored
+            }
+            Compat::V4 => ExtensionsWithoutFile::DefaultConfiguration,
+        }
+    }
+
+    /// The stream `openssl req -verify` prints "Certificate request
+    /// self-signature verify OK" on: `bio_err` in `apps/req.c` of 3.0 and
+    /// 3.1, `bio_out` (standard output, whatever `-out` says) from 3.2.
+    #[must_use]
+    pub fn request_verified_stream(self) -> Stream {
+        match self {
+            Compat::V30 => Stream::Stderr,
+            Compat::V3 | Compat::V36 | Compat::V4 => Stream::Stdout,
+        }
     }
 
     /// How this release line prints names.
@@ -162,23 +209,97 @@ impl Compat {
         }
     }
 
-    /// Parses a profile (`3.0`, `3` or `4`) or an OpenSSL version
-    /// (`3.0.22`, `3.5.9`, `4.1.0`).
+    /// The name of the profile, as `BALDSSL_OPENSSL_COMPAT` gives it: the
+    /// release line, or its major version when the line covers several
+    /// minor ones.
     #[must_use]
-    pub fn from_version_opt(s: &str) -> Option<Self> {
-        let s = s.trim();
-        if s == "3.0" || s.starts_with("3.0.") {
-            return Some(Compat::V30);
-        }
-        if s == "3.6" || s.starts_with("3.6.") {
-            return Some(Compat::V36);
-        }
-        match s.split('.').next()? {
-            "3" => Some(Compat::V3),
-            "4" => Some(Compat::V4),
-            _ => None,
+    pub fn name(self) -> &'static str {
+        match self {
+            Compat::V30 => "3.0",
+            Compat::V3 => "3",
+            Compat::V36 => "3.6",
+            Compat::V4 => "4",
         }
     }
+
+    /// Every profile, oldest first.
+    pub const ALL: [Compat; 4] =
+        [Compat::V30, Compat::V3, Compat::V36, Compat::V4];
+
+    /// Whether `version` is this profile's name or an OpenSSL version of
+    /// its line (`3.0.22` for `3.0`, `3.5.9` for `3`).
+    fn covers(self, version: &str) -> bool {
+        let name = self.name();
+        version == name
+            || version
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with('.'))
+    }
+}
+
+/// A profile name (`3.0`, `3`, `3.6`, `4`, [`Compat::name`]) or an OpenSSL
+/// version (`3.0.22`, `3.5.9`, `4.1.0`): the profile with the longest name
+/// that covers it, so that `3.6.1` is `3.6` and not `3`.
+///
+/// # Errors
+///
+/// [`Error::Usage`] naming the accepted profiles, for any other text.
+impl FromStr for Compat {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let version = s.trim();
+        Compat::ALL
+            .into_iter()
+            .filter(|c| c.covers(version))
+            .max_by_key(|c| c.name().len())
+            .ok_or_else(|| {
+                let names: Vec<&str> =
+                    Compat::ALL.iter().map(|c| c.name()).collect();
+                Error::Usage(format!(
+                    "expected one of {}, or an OpenSSL version, got {s:?}",
+                    names.join(", ")
+                ))
+            })
+    }
+}
+
+/// The form a private key is written in DER ([`Compat::private_key_der`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateKeyDer {
+    /// The algorithm's own form, when it has one (SEC 1 for EC).
+    Traditional,
+    /// PKCS#8 (Public-Key Cryptography Standards #8), as for PEM.
+    Pkcs8,
+}
+
+/// Whether a mismatched request signature gets a warning first
+/// ([`Compat::csr_signature_warning`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsrSignatureWarning {
+    /// No warning.
+    Silent,
+    /// "Warning: CSR self-signature does not match the contents".
+    Printed,
+}
+
+/// What `-extensions` without `-extfile` does
+/// ([`Compat::extensions_without_file`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionsWithoutFile {
+    /// It is ignored, with a warning.
+    Ignored,
+    /// The section is looked up in the default configuration file.
+    DefaultConfiguration,
+}
+
+/// A standard stream of the process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
 }
 
 /// What an EC key's header gives as its size ([`Compat::ec_key_size`]).
@@ -904,14 +1025,24 @@ mod tests {
         let mut out = Vec::new();
         bn_print(&mut out, "Modulus:", &int(&big), 0, Compat::V4);
         assert!(out.starts_with(b"Modulus:\n    80:80:"));
-        assert_eq!(Compat::from_version_opt("4.1.0"), Some(Compat::V4));
-        assert_eq!(Compat::from_version_opt("3"), Some(Compat::V3));
-        assert_eq!(Compat::from_version_opt("1.1.1"), None);
-        assert_eq!(Compat::from_version_opt("3.0"), Some(Compat::V30));
-        assert_eq!(Compat::from_version_opt("3.0.22"), Some(Compat::V30));
-        assert_eq!(Compat::from_version_opt("3.5.9"), Some(Compat::V3));
-        assert_eq!(Compat::from_version_opt("3.6"), Some(Compat::V36));
-        assert_eq!(Compat::from_version_opt("3.6.5"), Some(Compat::V36));
+        let parse = |s: &str| s.parse::<Compat>().ok();
+        assert_eq!(parse("4.1.0"), Some(Compat::V4));
+        assert_eq!(parse("3"), Some(Compat::V3));
+        assert_eq!(parse("1.1.1"), None);
+        assert_eq!(parse("30"), None);
+        assert_eq!(parse("3.0"), Some(Compat::V30));
+        assert_eq!(parse("3.0.22"), Some(Compat::V30));
+        assert_eq!(parse("3.5.9"), Some(Compat::V3));
+        assert_eq!(parse("3.6"), Some(Compat::V36));
+        assert_eq!(parse(" 3.6.5 "), Some(Compat::V36));
+        // Every profile parses back from its name.
+        for compat in Compat::ALL {
+            assert_eq!(parse(compat.name()), Some(compat));
+        }
+        let Err(Error::Usage(message)) = "2".parse::<Compat>() else {
+            panic!("2 is no profile")
+        };
+        assert!(message.contains("3.0, 3, 3.6, 4"), "{message}");
     }
 
     /// `req -noout -text` against what each release line of OpenSSL prints
