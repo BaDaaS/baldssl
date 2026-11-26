@@ -3,22 +3,24 @@
 //!
 //! Supported: `-algorithm EC` with `-pkeyopt ec_paramgen_curve:<curve>` for
 //! P-256 (`prime256v1`), P-384 (`secp384r1`) and P-521 (`secp521r1`), and
-//! `-algorithm ED25519`; `-out`, `-outform PEM|DER`. Algorithm names are
-//! case-insensitive, as in OpenSSL. The key file is created readable by its
-//! owner only, as `apps/genpkey.c` opens it with `bio_open_owner`. Anything
-//! else (RSA, X25519, encryption with a cipher, `-text`, parameter files)
-//! is reported as unsupported.
+//! `-algorithm ED25519`; `-out`, `-outform PEM|DER`, and `-text`, which
+//! follows the key with its text as `pkey -text` prints it, to the same
+//! output, as `apps/genpkey.c` does with `EVP_PKEY_print_private`.
+//! Algorithm names are case-insensitive, as in OpenSSL. The key file is
+//! created readable by its owner only, as `apps/genpkey.c` opens it with
+//! `bio_open_owner`. Anything else (RSA, X25519, encryption with a cipher,
+//! parameter files) is reported as unsupported.
 
 use std::ffi::OsString;
 
 use baldssl_core::{Result, pem::Pem};
 use baldssl_fs::Access;
 use baldssl_pkey::AnyPrivateKey;
-use baldssl_x509::Format;
+use baldssl_x509::{Format, print_private_key_text};
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
-    input::format_value,
+    input::{compat, format_value},
     keygen::KeyParameters,
     outputs::Outputs,
 };
@@ -73,9 +75,19 @@ pub(crate) const SPECS: &[Spec<Opt>] = &[
     Spec {
         name: "text",
         kind: Kind::Flag(Opt::Text),
-        help: "Print the key in text form (not supported)",
+        help: "Print the key in text form after it",
     },
 ];
+
+/// Whether the key is followed by its text. `-text` only moves it up: no
+/// option clears it, as in `apps/genpkey.c`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Text {
+    /// The key alone.
+    Nothing,
+    /// The key, then its text (`-text`).
+    Printed,
+}
 
 /// Generates the key, and records where it is written.
 ///
@@ -87,6 +99,7 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
     let mut parameters = KeyParameters::default();
     let mut output = None;
     let mut format = Format::Pem;
+    let mut text = Text::Nothing;
     for given in opts {
         match given.option {
             Opt::Help => {
@@ -97,16 +110,20 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
             Opt::Pkeyopt(v) => parameters.pkeyopt(COMMAND, &v)?,
             Opt::Out(v) => output = Some(v),
             Opt::Outform(v) => format = format_value(&v, COMMAND, "outform")?,
-            Opt::Text => {
-                return Err(baldssl_core::Error::unsupported("genpkey -text"));
-            }
+            Opt::Text => text = text.max(Text::Printed),
         }
     }
     let key = AnyPrivateKey::generate(parameters.algorithm(COMMAND)?)?;
-    let bytes = match format {
+    let mut bytes = match format {
         Format::Der => key.pkcs8().expose().to_vec(),
         Format::Pem => key.to_pem().into_bytes(),
     };
+    match text {
+        Text::Nothing => {}
+        Text::Printed => {
+            bytes.extend(print_private_key_text(&key, compat()?)?);
+        }
+    }
     out.output(output.as_deref(), Access::OwnerOnly, bytes);
     Ok(())
 }
@@ -114,7 +131,7 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use baldssl_core::Error;
+    use baldssl_core::{Error, der::parse_tlv, encoding::Decodable as _};
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
@@ -153,6 +170,42 @@ mod tests {
         ));
     }
 
+    /// `-text` follows the key with the text of the key written, in PEM and
+    /// in DER, and giving it twice changes nothing.
+    #[test]
+    fn text() {
+        let compat = compat().unwrap();
+        for alg in [
+            &["-algorithm", "ED25519"][..],
+            &["-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-521"],
+        ] {
+            for text in [&["-text"][..], &["-text", "-text"]] {
+                let pem = run_to_outputs(&[alg, text].concat()).unwrap();
+                let pem = pem.stdout_bytes();
+                let key = AnyPrivateKey::from_pem(&pem).unwrap();
+                let expected = [
+                    key.to_pem().into_bytes(),
+                    print_private_key_text(&key, compat).unwrap(),
+                ]
+                .concat();
+                assert_eq!(pem, expected);
+
+                let der =
+                    run_to_outputs(&[alg, text, &["-outform", "DER"]].concat())
+                        .unwrap();
+                let der = der.stdout_bytes();
+                let (_, len) = parse_tlv(&der).unwrap();
+                let key = AnyPrivateKey::decode(&der[..len]).unwrap();
+                let expected = [
+                    key.pkcs8().expose().to_vec(),
+                    print_private_key_text(&key, compat).unwrap(),
+                ]
+                .concat();
+                assert_eq!(der, expected);
+            }
+        }
+    }
+
     #[test]
     fn errors() {
         for (args, usage) in [
@@ -169,7 +222,6 @@ mod tests {
                 ][..],
                 false,
             ),
-            (&["-algorithm", "ED25519", "-text"][..], false),
             (&["-algorithm", "ED25519", "-pkeyopt", "x:y"][..], false),
         ] {
             let err = run_to_outputs(args).unwrap_err();
