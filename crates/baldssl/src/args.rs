@@ -40,6 +40,87 @@ mod message {
         "Unknown option or message digest";
     /// `opt_check_rest_arg`: an argument that is not an option.
     pub(super) const EXTRA_OPTION: &str = "Extra option";
+    /// `opt_number_error`: a value `opt_intmax` refuses, before the value
+    /// quoted.
+    pub(super) const CANT_PARSE: &str = "Can't parse";
+    /// `opt_number_error`: the base a refused value names by its first
+    /// characters, tried in this order.
+    pub(super) const NUMBER_BASES: [(&str, &str); 3] = [
+        ("0x", "a hexadecimal"),
+        ("0X", "a hexadecimal"),
+        ("0", "an octal"),
+    ];
+    /// `opt_number_error`: a refused value without one of those prefixes.
+    pub(super) const A_NUMBER: &str = "a";
+}
+
+/// The white-space characters of the POSIX ("C") locale, which
+/// `strtoimax` skips before a number: space, tab, newline, vertical tab,
+/// form feed and carriage return ([POSIX.1-2024, XBD section
+/// 7.3.1][lc-ctype], the `space` class).
+///
+/// [lc-ctype]: https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap07.html#tag_07_03_01
+const C_SPACE: &[u8] = b" \t\n\x0b\x0c\r";
+
+/// A signed number, as OpenSSL's `opt_intmax` (`apps/lib/opt.c`) reads an
+/// option's value: `strtoimax` in base 0, so C white space and a sign,
+/// then hexadecimal after `0x` or `0X`, octal after `0`, decimal
+/// otherwise; all of the value read, and no overflow of 64 bits. The value
+/// is read as bytes, as OpenSSL reads it.
+///
+/// # Errors
+///
+/// [`Error::Usage`] with `opt_number_error`'s message, which names the base
+/// by the value's first characters.
+pub(crate) fn intmax(command: &str, value: &OsStr) -> Result<i64> {
+    let bytes = value.as_encoded_bytes();
+    strtoimax_opt(bytes).ok_or_else(|| {
+        let kind = message::NUMBER_BASES
+            .iter()
+            .find(|(prefix, _)| bytes.starts_with(prefix.as_bytes()))
+            .map_or(message::A_NUMBER, |(_, kind)| kind);
+        Error::Usage(format!(
+            "{command}: {} \"{}\" as {kind} number",
+            message::CANT_PARSE,
+            value.to_string_lossy()
+        ))
+    })
+}
+
+/// `strtoimax(s, &end, 0)`, when it reads the whole of `s` without
+/// overflow: C white space, an optional sign, then digits of the base the
+/// prefix selects (`0x` only when a hexadecimal digit follows, as
+/// `strtoimax` reads `"0x"` as a zero followed by an `x`).
+fn strtoimax_opt(s: &[u8]) -> Option<i64> {
+    let start = s.iter().position(|b| !C_SPACE.contains(b))?;
+    let s = s.get(start..)?;
+    let (negative, s) = match s.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        Some((b'+', rest)) => (false, rest),
+        Some(_) | None => (false, s),
+    };
+    let hex = s.strip_prefix(b"0x").or_else(|| s.strip_prefix(b"0X"));
+    let (base, digits) = match hex {
+        Some(rest) if rest.first().is_some_and(u8::is_ascii_hexdigit) => {
+            (16, rest)
+        }
+        Some(_) | None if s.starts_with(b"0") => (8, s),
+        Some(_) | None => (10, s),
+    };
+    // Digits of the base are ASCII, so the conversion to text cannot fail
+    // on what is left; an empty or foreign digit is refused here.
+    if digits.is_empty()
+        || !digits.iter().all(|&b| char::from(b).is_digit(base))
+    {
+        return None;
+    }
+    let magnitude =
+        u64::from_str_radix(core::str::from_utf8(digits).ok()?, base).ok()?;
+    if negative {
+        0i64.checked_sub_unsigned(magnitude)
+    } else {
+        i64::try_from(magnitude).ok()
+    }
 }
 
 /// What an option is: a flag, or an option that takes a value, given as
@@ -265,6 +346,47 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// Values OpenSSL 3.5.9 and 4.1.0 accept and refuse for `verify
+    /// -attime`, with the message each refusal prints.
+    #[test]
+    fn intmax_known_answers() {
+        for (v, n) in [
+            ("0", 0),
+            ("010", 8),
+            ("-0x10", -16),
+            (" +0x1f", 31),
+            ("\t5", 5),
+            ("+5", 5),
+            ("9223372036854775807", i64::MAX),
+            ("-9223372036854775808", i64::MIN),
+            ("-0x8000000000000000", i64::MIN),
+        ] {
+            assert_eq!(intmax("verify", OsStr::new(v)).unwrap(), n, "{v:?}");
+        }
+        for (v, kind) in [
+            ("abc", "a"),
+            ("12x", "a"),
+            ("", "a"),
+            ("5 ", "a"),
+            ("-08", "a"),
+            (" 08", "a"),
+            ("++5", "a"),
+            ("9223372036854775808", "a"),
+            ("99999999999999999999", "a"),
+            ("08", "an octal"),
+            ("0x", "a hexadecimal"),
+            ("0X1g", "a hexadecimal"),
+        ] {
+            let Err(Error::Usage(m)) = intmax("verify", OsStr::new(v)) else {
+                panic!("{v:?} accepted");
+            };
+            assert_eq!(
+                m,
+                format!("verify: Can't parse \"{v}\" as {kind} number")
+            );
+        }
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Opt {
         In(OsString),
@@ -393,6 +515,35 @@ mod tests {
     }
 
     proptest! {
+        /// Every 64-bit number reads back from its decimal, hexadecimal and
+        /// octal spellings, with any sign and leading white space.
+        #[test]
+        fn intmax_reads_every_spelling(n in any::<i64>(), ws in "[ \t\n]{0,2}") {
+            let m = n.unsigned_abs();
+            let sign = if n < 0 { "-" } else { "" };
+            for body in [format!("{m}"), format!("0x{m:x}"), format!("0X{m:X}"),
+                format!("0{m:o}")] {
+                let v = format!("{ws}{sign}{body}");
+                prop_assert_eq!(intmax("x", OsStr::new(&v)).ok(), Some(n));
+            }
+            if n >= 0 {
+                let v = format!("+{n}");
+                prop_assert_eq!(intmax("x", OsStr::new(&v)).ok(), Some(n));
+            }
+        }
+
+        /// Trailing characters, and magnitudes past 64 bits, are refused.
+        #[test]
+        fn intmax_refuses(n in any::<i64>(), tail in "[ g.x-]{1,3}",
+                over in (1u64 << 63)..=u64::MAX) {
+            let v = format!("{n}{tail}");
+            prop_assert!(intmax("x", OsStr::new(&v)).is_err());
+            let v = format!("{over}");
+            prop_assert!(intmax("x", OsStr::new(&v)).is_err());
+            let v = format!("-{}", u128::from(over) + 1);
+            prop_assert!(intmax("x", OsStr::new(&v)).is_err());
+        }
+
         /// Order and multiplicity of flags are preserved.
         #[test]
         fn preserves_order(flags in prop::collection::vec(prop::bool::ANY, 0..20)) {

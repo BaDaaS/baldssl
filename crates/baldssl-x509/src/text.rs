@@ -132,6 +132,22 @@ impl Compat {
         }
     }
 
+    /// How `verify` compares a certificate's validity times with the
+    /// verification time (`ossl_x509_check_cert_time` in
+    /// `crypto/x509/x509_vfy.c`). OpenSSL 3.0 to 3.6 compare with
+    /// `X509_cmp_time`, which converts the verification time to an ASN.1
+    /// time with `X509_time_adj` and compares with `<=`; from 4.0,
+    /// `ossl_x509_check_cert_time` compares 64-bit POSIX times (see
+    /// [`CertificateTimes`]).
+    pub(crate) fn certificate_times(self) -> CertificateTimes {
+        match self {
+            Compat::V30 | Compat::V3 | Compat::V36 => {
+                CertificateTimes::Asn1Compared
+            }
+            Compat::V4 => CertificateTimes::PosixCompared,
+        }
+    }
+
     /// Where `x509 -req -CA` takes the key identifiers it adds from. In 3.x,
     /// `do_X509_sign` (`apps/lib/apps.c`) adds the missing ones when it
     /// signs, which 3.0 does only for a certificate with extensions; in 4,
@@ -392,6 +408,28 @@ pub(crate) enum SelfSignedAuthorityKeyId {
     Written,
     /// It does not.
     Omitted,
+}
+
+/// How a certificate's validity times are compared with the verification
+/// time ([`Compat::certificate_times`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CertificateTimes {
+    /// OpenSSL 3.0 to 3.6: the verification time is converted to an ASN.1
+    /// time, which holds the years 0 to 9999 only; outside them the
+    /// conversion fails, which `X509_cmp_time` reports as 0, and
+    /// `ossl_x509_check_cert_time` as error 13 at the first certificate it
+    /// checks. A certificate is valid from its notBefore to the second
+    /// before its notAfter: `X509_cmp_time`'s comparison is `<=`, so it has
+    /// expired at its notAfter.
+    Asn1Compared,
+    /// OpenSSL 4.0 and later: any 64-bit time, and a certificate valid from
+    /// its notBefore through its notAfter, both included ([RFC 5280,
+    /// section 4.1.2.5][rfc5280]). A notAfter of 99991231235959Z, which
+    /// RFC 5280 assigns to a certificate with no well-defined expiration
+    /// date, never expires.
+    ///
+    /// [rfc5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
+    PosixCompared,
 }
 
 /// When `x509 -req -CA` adds a subject and an authority key identifier
