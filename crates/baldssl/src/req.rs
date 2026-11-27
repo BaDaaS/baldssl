@@ -452,7 +452,7 @@ fn subject(o: &Options, out: &mut Outputs) -> Result<DistinguishedName> {
         RdnMode::MultiValued,
         UTF8_ONLY,
     )
-    .map_err(|e| Error::Usage(format!("{COMMAND}: {e}")))?;
+    .map_err(|e| Error::Usage(e.to_string()))?;
     for w in &warnings {
         warn(w, out);
     }
@@ -467,8 +467,7 @@ fn key(o: &Options, out: &mut Outputs) -> Result<AnyPrivateKey> {
         )),
         Some(KeySource::File(path)) => read_key(path, o.keyform),
         Some(KeySource::New(new)) => {
-            let key =
-                AnyPrivateKey::generate(new.parameters.algorithm(COMMAND)?)?;
+            let key = AnyPrivateKey::generate(new.parameters.algorithm()?)?;
             // OpenSSL's line for a generated key, the same for every
             // algorithm baldssl generates.
             out.diagnostic(KEY_GENERATED);
@@ -501,8 +500,8 @@ fn self_sign(
     let mut template = CertificateTemplate::self_signed(
         &subject,
         &(&key).into(),
-        o.serial.next(COMMAND, out)?,
-        o.lifetime.validity(COMMAND)?,
+        o.serial.next(out)?,
+        o.lifetime.validity()?,
         compat,
     );
     // -addext replaces v3_ca's extension of the same kind (which moves to
@@ -519,7 +518,7 @@ fn add_extension(
     names: &mut Vec<String>,
     value: &OsStr,
 ) -> Result<()> {
-    let line = utf8(COMMAND, "addext", value)?;
+    let line = utf8("addext", value)?;
     // A line without `=` is all name; parsing it as an extension then
     // fails, as OpenSSL refuses it.
     let name = line.split_once('=').map_or(line, |(n, _)| n).trim();
@@ -545,9 +544,9 @@ fn key_source(
     encryption: KeyEncryption,
 ) -> Result<Option<KeySource>> {
     match (key_file, parameters.is_named(), encryption) {
-        (Some(_), true, _) => Err(Error::Usage(
-            "req: -key and -newkey exclude each other".into(),
-        )),
+        (Some(_), true, _) => {
+            Err(Error::Usage("-key and -newkey exclude each other".into()))
+        }
         (Some(path), false, _) => Ok(Some(KeySource::File(path))),
         (None, true, KeyEncryption::Encrypted) => Err(Error::unsupported(
             "req -newkey without -noenc (encrypting the key)",
@@ -577,7 +576,7 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
             Opt::Help => return Ok(None),
             Opt::New => o.mode = Mode::Create,
             Opt::Key(v) => key_file = Some(v),
-            Opt::Newkey(v) => parameters.set_newkey(COMMAND, &v)?,
+            Opt::Newkey(v) => parameters.set_newkey(&v)?,
             Opt::Pkeyopt(v) => parameters.pkeyopt(COMMAND, &v)?,
             Opt::Keyout(v) => keyout = Some(v),
             Opt::Noenc | Opt::Nodes => encryption = KeyEncryption::Plain,
@@ -599,17 +598,15 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
             Opt::Noout => o.output = OutputForm::Nothing,
             Opt::Verify => o.verify = Verify::SelfSignature,
             Opt::X509 => o.product = Product::Certificate,
-            Opt::Days(v) => o.lifetime.set_days(COMMAND, &v)?,
+            Opt::Days(v) => o.lifetime.set_days(&v)?,
             Opt::SetSerial(v) => {
-                o.serial = SerialSource::Given(set_serial(COMMAND, &v)?);
+                o.serial = SerialSource::Given(set_serial(&v)?);
             }
             Opt::NotBefore(v) => {
-                o.lifetime.not_before =
-                    Some(validity_time(COMMAND, "not_before", &v)?);
+                o.lifetime.not_before = Some(validity_time("not_before", &v)?);
             }
             Opt::NotAfter(v) => {
-                o.lifetime.not_after =
-                    Some(validity_time(COMMAND, "not_after", &v)?);
+                o.lifetime.not_after = Some(validity_time("not_after", &v)?);
             }
             Opt::Text => o.text = Text::Printed,
             Opt::Addext(v) => {
@@ -623,10 +620,7 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
             }
             Opt::Digest(d) => {
                 o.digest = Some(signing_digest_opt(d).ok_or_else(|| {
-                    Error::unsupported(format!(
-                        "{COMMAND}: digest {}",
-                        given.name
-                    ))
+                    Error::unsupported(format!("digest {}", given.name))
                 })?);
             }
         }

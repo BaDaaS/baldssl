@@ -62,22 +62,6 @@ same() {
     fi
 }
 
-same_exit() {
-    # same_exit <label> <verify args...>: the same exit code only, for the
-    # usage errors whose message baldssl does not yet print as OpenSSL does
-    # (the command name twice, and no "Use -help for summary." line).
-    local label=$1 ro=0 rb=0
-    shift
-    "$OPENSSL" verify "$@" >/dev/null 2>&1 || ro=$?
-    "$BALDSSL" verify "$@" >/dev/null 2>&1 || rb=$?
-    if [[ "$ro" -eq "$rb" ]]; then
-        pass=$((pass + 1))
-    else
-        echo "FAIL $label: exit $ro/$rb"
-        fail=$((fail + 1))
-    fi
-}
-
 unhex() { perl -e 'print pack("H*", shift)' "$1"; }
 
 # issue <key> <subject> <ca.pem> <ca.key> <out.pem> [x509 options...]
@@ -197,7 +181,7 @@ for at in 0 -1 -62167219200 -62167219201 253402300799 253402300800 \
         leaf.pem
 done
 for at in abc 12x "" "5 " 08 -08 0x 0X1g 99999999999999999999; do
-    same_exit "-attime refuses '$at'" -attime "$at" -CAfile root.pem leaf.pem
+    same "-attime refuses '$at'" -attime "$at" -CAfile root.pem leaf.pem
 done
 same "-attime given twice" -attime 0 -attime "$((t + 60))" \
     -CAfile root.pem -untrusted mid.pem leaf.pem

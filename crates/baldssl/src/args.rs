@@ -19,6 +19,9 @@ use std::{
 };
 
 use baldssl_core::{Error, Result};
+use baldssl_x509::{Compat, ExtraOperands, UndeclaredOptions};
+
+use crate::input::compat;
 
 /// The messages of OpenSSL's option parser, `apps/lib/opt.c`, after the
 /// command name and a colon.
@@ -30,16 +33,28 @@ mod message {
     /// `opt_next`: a name no option has, for a command without digest
     /// options.
     pub(super) const UNKNOWN_OPTION: &str = "Unknown option";
-    /// `opt_cipher_any`: a name that is neither an option nor a cipher,
-    /// for a command whose unknown options are ciphers (`-aes256`).
-    pub(super) const UNKNOWN_OPTION_OR_CIPHER: &str =
-        "Unknown option or cipher";
     /// `opt_md`: a name that is neither an option nor a digest, for a
     /// command whose unknown options are digests (`-sha256`).
     pub(super) const UNKNOWN_OPTION_OR_DIGEST: &str =
         "Unknown option or message digest";
     /// `opt_check_rest_arg`: an argument that is not an option.
     pub(super) const EXTRA_OPTION: &str = "Extra option";
+    /// `opt_check_rest_arg`: an argument that is not an option, after an
+    /// undeclared one.
+    pub(super) const EXTRA_UNKNOWN_OPTIONS: &str = "Extra (unknown) options";
+    /// `opt_next`: a second undeclared option, between the word for what
+    /// the application reads them as and the two names.
+    pub(super) const MULTIPLE: (&str, &str) =
+        ("Multiple", "or unknown options");
+    /// What a digest application calls an undeclared option
+    /// (`opt_set_unknown_name`).
+    pub(super) const DIGEST: &str = "digest";
+    /// What a cipher application calls an undeclared option
+    /// (`opt_set_unknown_name`).
+    pub(super) const CIPHER: &str = "cipher";
+    /// The line every OpenSSL application ends a usage error with, after
+    /// its name and a colon (the `opthelp:` label of each `apps/*.c`).
+    pub(super) const USE_HELP: &str = "Use -help for summary.";
     /// `opt_number_error`: a value `opt_intmax` refuses, before the value
     /// quoted.
     pub(super) const CANT_PARSE: &str = "Can't parse";
@@ -79,11 +94,25 @@ pub(crate) fn intmax(command: &str, value: &OsStr) -> Result<i64> {
             .iter()
             .find(|(prefix, _)| bytes.starts_with(prefix.as_bytes()))
             .map_or(message::A_NUMBER, |(_, kind)| kind);
-        Error::Usage(format!(
-            "{command}: {} \"{}\" as {kind} number",
-            message::CANT_PARSE,
-            value.to_string_lossy()
-        ))
+        opthelp(
+            command,
+            Some(&format!(
+                "{} \"{}\" as {kind} number",
+                message::CANT_PARSE,
+                value.to_string_lossy()
+            )),
+        )
+    })
+}
+
+/// A usage error as OpenSSL's applications end one (`goto opthelp`): the
+/// line saying what is wrong, if there is one, then `<command>: Use -help
+/// for summary.`. The `<command>: ` before the first line is the one every
+/// error gets when it is printed.
+pub(crate) fn opthelp(command: &str, line: Option<&str>) -> Error {
+    Error::Usage(match line {
+        Some(line) => format!("{line}\n{command}: {}", message::USE_HELP),
+        None => message::USE_HELP.into(),
     })
 }
 
@@ -149,11 +178,13 @@ pub(crate) struct Spec<O> {
 pub(crate) enum Unknown<O> {
     /// It is refused (`Unknown option: -name`).
     Refused,
-    /// It may name a cipher (`-aes256`), as OpenSSL's `opt_cipher_any`
-    /// reads it; baldssl encrypts no key, so it is refused, in those words.
+    /// It may name a cipher (`-aes256`), read once the options are, as
+    /// OpenSSL's `opt_cipher_any` reads it; baldssl encrypts no key, so it
+    /// is refused, in OpenSSL's words.
     Ciphers,
-    /// It may name a digest (`-sha256`), as OpenSSL's `opt_md` reads it:
-    /// the function gives its variant, or `None` to refuse it.
+    /// It may name a digest (`-sha256`), read once the options are, as
+    /// OpenSSL's `opt_md` reads it: the function gives its variant, or
+    /// `None` to refuse it.
     Digests(fn(&str) -> Option<O>),
 }
 
@@ -219,12 +250,179 @@ fn split_option_opt(arg: &OsStr) -> Option<(String, Option<OsString>)> {
     }
 }
 
-/// Parses `args` against `specs`; options not in `specs` go to `unknown`.
+/// The option a command line gives that the application does not declare,
+/// which a digest or cipher application reads once the others are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Undeclared {
+    /// Its name, without dashes.
+    name: String,
+    /// The value given with `=`, which no digest or cipher takes.
+    inline: Option<OsString>,
+    /// How many options came before it, where it goes once read.
+    at: usize,
+}
+
+/// A command line read against its options: the options in order, the
+/// operands, and the undeclared option, which the caller checks in its
+/// application's order ([`Parsed::check_no_operands`],
+/// [`Parsed::into_options`], [`Parsed::split`]).
+#[derive(Debug)]
+#[must_use]
+pub(crate) struct Parsed<O> {
+    /// The options, in command-line order.
+    options: Vec<Given<O>>,
+    /// The arguments from the first that is not an option.
+    operands: Vec<OsString>,
+    /// What the application makes of an undeclared option.
+    unknown: Unknown<O>,
+    /// The undeclared option: one, as from OpenSSL 3.2 a second is refused
+    /// when read, and OpenSSL 3.0 keeps the last.
+    undeclared: Option<Undeclared>,
+    /// The release line whose messages are given.
+    compat: Compat,
+}
+
+impl<O> Parsed<O> {
+    /// OpenSSL's error when there are operands (`opt_check_rest_arg`):
+    /// `Extra option: "<operand>"`, or `Extra (unknown) options: "<name>"
+    /// "<operand>"` after an undeclared option; in OpenSSL 3.0, the hint
+    /// alone ([`baldssl_x509::Compat::extra_operands`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Usage`] for an operand.
+    pub(crate) fn check_no_operands(&self, command: &str) -> Result<()> {
+        let Some(operand) = self.operands.first() else {
+            return Ok(());
+        };
+        let line = match self.compat.extra_operands() {
+            ExtraOperands::HintOnly => return Err(opthelp(command, None)),
+            ExtraOperands::Named => match &self.undeclared {
+                None => format!(
+                    "{}: \"{}\"",
+                    message::EXTRA_OPTION,
+                    operand.to_string_lossy()
+                ),
+                Some(undeclared) => format!(
+                    "{}: \"{}\" \"{}\"",
+                    message::EXTRA_UNKNOWN_OPTIONS,
+                    undeclared.name,
+                    operand.to_string_lossy()
+                ),
+            },
+        };
+        Err(opthelp(command, Some(&line)))
+    }
+
+    /// The options and operands, the undeclared option read as the
+    /// application reads it ([`Pending::read`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Pending::read`].
+    pub(crate) fn into_options(
+        self,
+        command: &str,
+    ) -> Result<(Vec<Given<O>>, Vec<OsString>)> {
+        let (mut options, operands, pending) = self.split();
+        pending.read(command, &mut options)?;
+        Ok((options, operands))
+    }
+
+    /// The declared options, the operands, and the undeclared option, for
+    /// an application that reads it after checks of its own (`genpkey`
+    /// reads its algorithm first).
+    pub(crate) fn split(self) -> (Vec<Given<O>>, Vec<OsString>, Pending<O>) {
+        let Parsed {
+            options,
+            operands,
+            unknown,
+            undeclared,
+            compat,
+        } = self;
+        (
+            options,
+            operands,
+            Pending {
+                unknown,
+                undeclared,
+                compat,
+            },
+        )
+    }
+}
+
+/// The undeclared option of a command line, to be read once the declared
+/// ones are, as a digest or cipher application reads it.
+#[derive(Debug)]
+#[must_use]
+pub(crate) struct Pending<O> {
+    /// What the application makes of it.
+    unknown: Unknown<O>,
+    /// The option, if one was given.
+    undeclared: Option<Undeclared>,
+    /// The release line whose messages are given.
+    compat: Compat,
+}
+
+impl<O> Pending<O> {
+    /// Reads the undeclared option: a digest goes to its place among
+    /// `options`; anything else is OpenSSL's error.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Usage`] for an undeclared option that is not a digest the
+    /// application takes; baldssl encrypts no key, so a cipher application
+    /// refuses every one ([`baldssl_x509::Compat::unknown_cipher_message`]).
+    pub(crate) fn read(
+        self,
+        command: &str,
+        options: &mut Vec<Given<O>>,
+    ) -> Result<()> {
+        let Some(Undeclared { name, inline, at }) = self.undeclared else {
+            return Ok(());
+        };
+        let line = match self.unknown {
+            // Refused when read, so never recorded.
+            Unknown::Refused => {
+                format!("{}: -{name}", message::UNKNOWN_OPTION)
+            }
+            Unknown::Ciphers => {
+                format!("{}: {name}", self.compat.unknown_cipher_message())
+            }
+            Unknown::Digests(digest) => match (inline, digest(&name)) {
+                (None, Some(option)) => {
+                    options.insert(at, Given { name, option });
+                    return Ok(());
+                }
+                (Some(_) | None, _) => {
+                    format!("{}: {name}", message::UNKNOWN_OPTION_OR_DIGEST)
+                }
+            },
+        };
+        Err(opthelp(command, Some(&line)))
+    }
+}
+
+impl<O> Unknown<O> {
+    /// What OpenSSL calls the undeclared options of an application
+    /// (`opt_set_unknown_name`), in `Multiple <it> or unknown options`.
+    fn noun(self) -> &'static str {
+        match self {
+            Unknown::Refused | Unknown::Digests(_) => message::DIGEST,
+            Unknown::Ciphers => message::CIPHER,
+        }
+    }
+}
+
+/// Parses `args` against `specs`, without operands; options not in `specs`
+/// are what `unknown` says.
 ///
 /// # Errors
 ///
-/// [`Error::Usage`] for an unknown option, a missing value, a value given
-/// to a flag, or a positional argument.
+/// [`Error::Usage`] with OpenSSL's lines, in OpenSSL's order: a missing
+/// value, a value given to a flag or a refused option as it is read, then
+/// an operand, then the undeclared option.
 pub(crate) fn parse<O>(
     command: &str,
     args: &[OsString],
@@ -234,25 +432,17 @@ pub(crate) fn parse<O>(
 where
     O: Clone,
 {
-    let (opts, operands) = parse_with_operands(command, args, specs, unknown)?;
-    match operands.first() {
-        Some(arg) => Err(Error::Usage(format!(
-            "{command}: {}: \"{}\"",
-            message::EXTRA_OPTION,
-            arg.to_string_lossy()
-        ))),
-        None => Ok(opts),
-    }
+    let parsed = parse_line(command, args, specs, unknown)?;
+    parsed.check_no_operands(command)?;
+    Ok(parsed.into_options(command)?.0)
 }
 
 /// As [`parse`], also taking arguments that are not options (the files of
-/// `verify` and `dgst`). As OpenSSL's `opt_rest`, the options end at the
-/// first argument that is not one, or after `--`: everything from there
-/// is an operand, even what looks like an option.
+/// `verify` and `dgst`).
 ///
 /// # Errors
 ///
-/// As [`parse`], except for positional arguments.
+/// As [`parse`], except for operands.
 pub(crate) fn parse_with_operands<O>(
     command: &str,
     args: &[OsString],
@@ -262,8 +452,51 @@ pub(crate) fn parse_with_operands<O>(
 where
     O: Clone,
 {
-    let mut out = Vec::new();
+    parse_line(command, args, specs, unknown)?.into_options(command)
+}
+
+/// Reads a command line as OpenSSL's `opt_next` does, and as `opt_rest`:
+/// the options end at the first argument that is not one, or after `--`,
+/// and everything from there is an operand, even what looks like an
+/// option. The checks of operands and of the undeclared option are left to
+/// the caller, which makes them in its application's order.
+///
+/// # Errors
+///
+/// [`Error::Usage`] for a missing value, a value given to a flag, an
+/// undeclared option when `unknown` is [`Unknown::Refused`], and, from
+/// OpenSSL 3.2, a second undeclared option
+/// ([`baldssl_x509::Compat::undeclared_options`]).
+pub(crate) fn parse_line<O>(
+    command: &str,
+    args: &[OsString],
+    specs: &[Spec<O>],
+    unknown: Unknown<O>,
+) -> Result<Parsed<O>>
+where
+    O: Clone,
+{
+    parse_line_as(command, args, specs, unknown, compat()?)
+}
+
+/// As [`parse_line`], with the messages of the release line `compat`.
+///
+/// # Errors
+///
+/// As [`parse_line`].
+fn parse_line_as<O>(
+    command: &str,
+    args: &[OsString],
+    specs: &[Spec<O>],
+    unknown: Unknown<O>,
+    compat: Compat,
+) -> Result<Parsed<O>>
+where
+    O: Clone,
+{
+    let mut options = Vec::new();
     let mut operands = Vec::new();
+    let mut undeclared: Option<Undeclared> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if arg == "--" {
@@ -275,50 +508,64 @@ where
             operands.extend(it.cloned());
             break;
         };
-        let option = match (specs.iter().find(|s| s.name == name), unknown) {
-            (Some(spec), _) => match (&spec.kind, inline) {
-                (Kind::Value(make), Some(value)) => make(value),
-                (Kind::Value(make), None) => {
-                    make(it.next().cloned().ok_or_else(|| {
-                        Error::Usage(format!(
-                            "{command}: Option -{name} {}",
-                            message::NEEDS_A_VALUE
-                        ))
-                    })?)
+        let Some(spec) = specs.iter().find(|s| s.name == name) else {
+            match (unknown, &undeclared, compat.undeclared_options()) {
+                (Unknown::Refused, _, _) => {
+                    let line = format!("{}: -{name}", message::UNKNOWN_OPTION);
+                    return Err(opthelp(command, Some(&line)));
                 }
-                (Kind::Flag(option), None) => option.clone(),
-                (Kind::Flag(_), Some(_)) => {
-                    return Err(Error::Usage(format!(
-                        "{command}: Option -{name} {}",
-                        message::TAKES_NO_VALUE
-                    )));
+                (
+                    Unknown::Ciphers | Unknown::Digests(_),
+                    Some(first),
+                    UndeclaredOptions::OneOnly,
+                ) => {
+                    let (multiple, unknown_options) = message::MULTIPLE;
+                    let line = format!(
+                        "{multiple} {} {unknown_options}: -{} and -{name}",
+                        unknown.noun(),
+                        first.name
+                    );
+                    return Err(opthelp(command, Some(&line)));
                 }
-            },
-            (None, Unknown::Refused) => {
-                return Err(Error::Usage(format!(
-                    "{command}: {}: -{name}",
-                    message::UNKNOWN_OPTION
-                )));
+                (
+                    Unknown::Ciphers | Unknown::Digests(_),
+                    Some(_) | None,
+                    UndeclaredOptions::LastKept | UndeclaredOptions::OneOnly,
+                ) => {
+                    undeclared = Some(Undeclared {
+                        name,
+                        inline,
+                        at: options.len(),
+                    });
+                }
             }
-            (None, Unknown::Ciphers) => {
-                return Err(Error::Usage(format!(
-                    "{command}: {}: {name}",
-                    message::UNKNOWN_OPTION_OR_CIPHER
-                )));
-            }
-            (None, Unknown::Digests(digest)) => match (inline, digest(&name)) {
-                (None, Some(option)) => option,
-                (Some(_) | None, _) => {
-                    return Err(Error::Usage(format!(
-                        "{command}: {}: {name}",
-                        message::UNKNOWN_OPTION_OR_DIGEST
-                    )));
-                }
-            },
+            continue;
         };
-        out.push(Given { name, option });
+        let option = match (&spec.kind, inline) {
+            (Kind::Value(make), Some(value)) => make(value),
+            (Kind::Value(make), None) => {
+                make(it.next().cloned().ok_or_else(|| {
+                    let line =
+                        format!("Option -{name} {}", message::NEEDS_A_VALUE);
+                    opthelp(command, Some(&line))
+                })?)
+            }
+            (Kind::Flag(option), None) => option.clone(),
+            (Kind::Flag(_), Some(_)) => {
+                let line =
+                    format!("Option -{name} {}", message::TAKES_NO_VALUE);
+                return Err(opthelp(command, Some(&line)));
+            }
+        };
+        options.push(Given { name, option });
     }
-    Ok((out, operands))
+    Ok(Parsed {
+        options,
+        operands,
+        unknown,
+        undeclared,
+        compat,
+    })
 }
 
 /// The `-help` text.
@@ -382,7 +629,10 @@ mod tests {
             };
             assert_eq!(
                 m,
-                format!("verify: Can't parse \"{v}\" as {kind} number")
+                format!(
+                    "Can't parse \"{v}\" as {kind} number\nverify: Use -help \
+                     for summary."
+                )
             );
         }
     }
@@ -439,28 +689,176 @@ mod tests {
         );
     }
 
+    /// The line before the hint at `-help`, as OpenSSL prints it: from
+    /// 3.2, and in 3.0 where it differs.
+    struct Case {
+        args: &'static [&'static str],
+        unknown: Unknown<Opt>,
+        from_32: &'static str,
+        v30: Option<&'static str>,
+    }
+
+    /// OpenSSL's lines, in OpenSSL's order: option syntax as it is read,
+    /// then an operand, then the undeclared option, worded by what the
+    /// application makes of it.
+    fn error_cases() -> [Case; 13] {
+        let digest =
+            Unknown::Digests(|name| (name == "sha256").then_some(Opt::Text));
+        [
+            Case {
+                args: &["-in"],
+                unknown: Unknown::Refused,
+                from_32: "Option -in needs a value",
+                v30: None,
+            },
+            Case {
+                args: &["-text=1"],
+                unknown: Unknown::Refused,
+                from_32: "Option -text does not take a value",
+                v30: None,
+            },
+            Case {
+                args: &["-bogus"],
+                unknown: Unknown::Refused,
+                from_32: "Unknown option: -bogus",
+                v30: None,
+            },
+            Case {
+                args: &["-bogus"],
+                unknown: digest,
+                from_32: "Unknown option or message digest: bogus",
+                v30: None,
+            },
+            Case {
+                args: &["-sha256=1"],
+                unknown: digest,
+                from_32: "Unknown option or message digest: sha256",
+                v30: None,
+            },
+            Case {
+                args: &["-bogus"],
+                unknown: Unknown::Ciphers,
+                from_32: "Unknown option or cipher: bogus",
+                v30: Some("Unknown cipher: bogus"),
+            },
+            Case {
+                args: &["file"],
+                unknown: digest,
+                from_32: "Extra option: \"file\"",
+                v30: Some(""),
+            },
+            Case {
+                args: &["-"],
+                unknown: digest,
+                from_32: "Extra option: \"-\"",
+                v30: Some(""),
+            },
+            // Option syntax as it is read, before the undeclared option.
+            Case {
+                args: &["-bogus", "-in"],
+                unknown: digest,
+                from_32: "Option -in needs a value",
+                v30: None,
+            },
+            Case {
+                args: &["-bogus", "-text=1"],
+                unknown: digest,
+                from_32: "Option -text does not take a value",
+                v30: None,
+            },
+            // An operand before the undeclared option.
+            Case {
+                args: &["-bogus", "file"],
+                unknown: digest,
+                from_32: "Extra (unknown) options: \"bogus\" \"file\"",
+                v30: Some(""),
+            },
+            // A second undeclared option, even a digest: refused from 3.2,
+            // the last kept in 3.0.
+            Case {
+                args: &["-sha256", "-bogus"],
+                unknown: digest,
+                from_32: "Multiple digest or unknown options: -sha256 and -bogus",
+                v30: Some("Unknown option or message digest: bogus"),
+            },
+            Case {
+                args: &["-a", "-b"],
+                unknown: Unknown::Ciphers,
+                from_32: "Multiple cipher or unknown options: -a and -b",
+                v30: Some("Unknown cipher: b"),
+            },
+        ]
+    }
+
     #[test]
     fn errors() {
-        for bad in [&["-in"][..], &["-bogus"], &["file"], &["-text=1"], &["-"]]
-        {
-            assert!(
-                matches!(
-                    parse("x", &os(bad), SPECS, Unknown::Refused),
-                    Err(Error::Usage(_))
-                ),
-                "{bad:?}"
-            );
+        let cases = error_cases();
+        for compat in Compat::ALL {
+            for case in &cases {
+                let line = match (compat.undeclared_options(), case.v30) {
+                    (UndeclaredOptions::LastKept, Some(v30)) => v30,
+                    (UndeclaredOptions::LastKept, None)
+                    | (UndeclaredOptions::OneOnly, _) => case.from_32,
+                };
+                let expected = match line {
+                    "" => "Use -help for summary.".to_string(),
+                    line => format!("{line}\nx: Use -help for summary."),
+                };
+                let got = parse_line_as(
+                    "x",
+                    &os(case.args),
+                    SPECS,
+                    case.unknown,
+                    compat,
+                )
+                .and_then(|p| {
+                    p.check_no_operands("x")?;
+                    p.into_options("x")
+                });
+                assert_eq!(
+                    got.err(),
+                    Some(Error::Usage(expected)),
+                    "{compat:?} {:?}",
+                    case.args
+                );
+            }
         }
-        assert_eq!(
-            parse("x", &os(&["-bogus"]), SPECS, Unknown::Refused).err(),
-            Some(Error::Usage("x: Unknown option: -bogus".into()))
+    }
+
+    /// A digest is read in its place among the options; in 3.0 the last
+    /// undeclared option is the one read; and operands are the caller's to
+    /// check.
+    #[test]
+    fn undeclared_digests() {
+        let digest =
+            Unknown::Digests(|name| (name == "sha256").then_some(Opt::Text));
+        for (compat, args) in [
+            (Compat::V4, &["-in", "a", "-sha256", "-text"][..]),
+            (Compat::V30, &["-in", "a", "-bogus", "-sha256", "-text"]),
+        ] {
+            let (o, rest) =
+                parse_line_as("x", &os(args), SPECS, digest, compat)
+                    .unwrap()
+                    .into_options("x")
+                    .unwrap();
+            let names: Vec<&str> = o.iter().map(|g| g.name.as_str()).collect();
+            assert_eq!(names, ["in", "sha256", "text"], "{compat:?}");
+            assert_eq!(rest, Vec::<OsString>::new());
+        }
+        // Operands are the caller's to check.
+        assert!(
+            parse_line_as(
+                "x",
+                &os(&["-in", "a", "f"]),
+                SPECS,
+                digest,
+                Compat::V4
+            )
+            .unwrap()
+            .into_options("x")
+            .is_ok()
         );
-        assert_eq!(
-            parse("x", &os(&["-md2"]), SPECS, Unknown::Digests(|_| None)).err(),
-            Some(Error::Usage(
-                "x: Unknown option or message digest: md2".into()
-            ))
-        );
+        assert_eq!(opthelp("x", None).to_string(), "Use -help for summary.");
     }
 
     /// The help lists every option, a value option with ` val`.

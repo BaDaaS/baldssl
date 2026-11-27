@@ -133,6 +133,41 @@ impl Compat {
         }
     }
 
+    /// What a second option an application does not declare does
+    /// (`opt_next` in `apps/lib/opt.c`): OpenSSL 3.0 and 3.1 keep the last
+    /// one, and from 3.2 the second is refused as it is read ("Multiple
+    /// digest or unknown options").
+    #[must_use]
+    pub fn undeclared_options(self) -> UndeclaredOptions {
+        match self {
+            Compat::V30 => UndeclaredOptions::LastKept,
+            Compat::V3 | Compat::V36 | Compat::V4 => UndeclaredOptions::OneOnly,
+        }
+    }
+
+    /// How an operand where an application takes none is reported. OpenSSL
+    /// 3.0 and 3.1's applications go to their `opthelp` label, which prints
+    /// only the hint at `-help` (`apps/pkey.c`, `apps/genpkey.c`); from 3.2,
+    /// `opt_check_rest_arg` (`apps/lib/opt.c`) names the operand first.
+    #[must_use]
+    pub fn extra_operands(self) -> ExtraOperands {
+        match self {
+            Compat::V30 => ExtraOperands::HintOnly,
+            Compat::V3 | Compat::V36 | Compat::V4 => ExtraOperands::Named,
+        }
+    }
+
+    /// What `opt_cipher_any` (`apps/lib/opt.c`) says of a name that is not
+    /// a cipher: "Unknown cipher" in OpenSSL 3.0 and 3.1, "Unknown option or
+    /// cipher" from 3.2, where an undeclared option is read as one.
+    #[must_use]
+    pub fn unknown_cipher_message(self) -> &'static str {
+        match self {
+            Compat::V30 => "Unknown cipher",
+            Compat::V3 | Compat::V36 | Compat::V4 => "Unknown option or cipher",
+        }
+    }
+
     /// How `verify` compares a certificate's validity times with the
     /// verification time (`ossl_x509_check_cert_time` in
     /// `crypto/x509/x509_vfy.c`). OpenSSL 3.0 to 3.6 compare with
@@ -417,6 +452,26 @@ pub(crate) enum SelfSignedAuthorityKeyId {
     Written,
     /// It does not.
     Omitted,
+}
+
+/// What a second undeclared option does ([`Compat::undeclared_options`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndeclaredOptions {
+    /// Each replaces the one before it, and the last is read (OpenSSL 3.0
+    /// and 3.1).
+    LastKept,
+    /// The second is refused (from OpenSSL 3.2).
+    OneOnly,
+}
+
+/// How an operand where none is taken is reported
+/// ([`Compat::extra_operands`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtraOperands {
+    /// With the hint at `-help` alone (OpenSSL 3.0 and 3.1).
+    HintOnly,
+    /// With a line naming it, then the hint (from OpenSSL 3.2).
+    Named,
 }
 
 /// How a certificate's validity times are compared with the verification

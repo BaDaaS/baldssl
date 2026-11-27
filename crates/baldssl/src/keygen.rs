@@ -58,14 +58,10 @@ impl FromStr for KeyAlgorithm {
 /// # Errors
 ///
 /// A usage error when it is not.
-pub(crate) fn utf8<'a>(
-    command: &str,
-    option: &str,
-    value: &'a OsStr,
-) -> Result<&'a str> {
+pub(crate) fn utf8<'a>(option: &str, value: &'a OsStr) -> Result<&'a str> {
     value
         .to_str()
-        .ok_or_else(|| Error::Usage(format!("{command}: -{option}: not UTF-8")))
+        .ok_or_else(|| Error::Usage(format!("-{option}: not UTF-8")))
 }
 
 /// What the options say about the key to generate.
@@ -86,12 +82,8 @@ impl KeyParameters {
     /// # Errors
     ///
     /// A name that is not UTF-8.
-    pub(crate) fn set_algorithm(
-        &mut self,
-        command: &str,
-        value: &OsStr,
-    ) -> Result<()> {
-        self.algorithm = Some(utf8(command, "algorithm", value)?.parse());
+    pub(crate) fn set_algorithm(&mut self, value: &OsStr) -> Result<()> {
+        self.algorithm = Some(utf8("algorithm", value)?.parse());
         Ok(())
     }
 
@@ -100,12 +92,8 @@ impl KeyParameters {
     /// # Errors
     ///
     /// A value that is not UTF-8.
-    pub(crate) fn set_newkey(
-        &mut self,
-        command: &str,
-        value: &OsStr,
-    ) -> Result<()> {
-        let text = utf8(command, "newkey", value)?;
+    pub(crate) fn set_newkey(&mut self, value: &OsStr) -> Result<()> {
+        let text = utf8("newkey", value)?;
         let (name, file) = match text.split_once(':') {
             Some((name, file)) => (name, Some(file)),
             None => (text, None),
@@ -125,7 +113,7 @@ impl KeyParameters {
         command: &str,
         value: &OsStr,
     ) -> Result<()> {
-        let v = utf8(command, "pkeyopt", value)?;
+        let v = utf8("pkeyopt", value)?;
         match v.split_once(':') {
             Some(("ec_paramgen_curve" | "group", name)) => {
                 self.curve = Some(name.to_string());
@@ -147,7 +135,7 @@ impl KeyParameters {
     ///
     /// No algorithm, an EC key without a curve, an unreadable parameters
     /// file, or an algorithm or curve baldssl does not implement.
-    pub(crate) fn algorithm(&self, command: &str) -> Result<Algorithm> {
+    pub(crate) fn algorithm(&self) -> Result<Algorithm> {
         match &self.algorithm {
             Some(Ok(KeyAlgorithm::Ec)) => {
                 if let Some(file) = &self.parameters {
@@ -159,30 +147,30 @@ impl KeyParameters {
                     )?);
                 }
                 let name = self.curve.as_deref().ok_or_else(|| {
-                    Error::Usage(format!(
-                        "{command}: EC needs -pkeyopt ec_paramgen_curve:<curve>"
-                    ))
+                    Error::Usage(
+                        "EC needs -pkeyopt ec_paramgen_curve:<curve>".into(),
+                    )
                 })?;
                 // Ed25519 is not a curve EC parameters can name.
                 match name.parse() {
-                    Ok(Algorithm::Ed25519) | Err(_) => Err(Error::unsupported(
-                        format!("{command}: EC curve {name}"),
-                    )),
+                    Ok(Algorithm::Ed25519) | Err(_) => {
+                        Err(Error::unsupported(format!("EC curve {name}")))
+                    }
                     Ok(curve) => Ok(curve),
                 }
             }
             Some(Ok(KeyAlgorithm::Ed25519)) => match self.parameters {
                 None => Ok(Algorithm::Ed25519),
-                Some(_) => Err(Error::unsupported(format!(
-                    "{command}: key algorithm ed25519 with parameters"
-                ))),
+                Some(_) => Err(Error::unsupported(
+                    "key algorithm ed25519 with parameters",
+                )),
             },
-            Some(Err(UnknownAlgorithm(name))) => Err(Error::unsupported(
-                format!("{command}: key algorithm {name}"),
-            )),
-            None => Err(Error::Usage(format!(
-                "{command}: no algorithm given (EC or ED25519)"
-            ))),
+            Some(Err(UnknownAlgorithm(name))) => {
+                Err(Error::unsupported(format!("key algorithm {name}")))
+            }
+            None => {
+                Err(Error::Usage("no algorithm given (EC or ED25519)".into()))
+            }
         }
     }
 }

@@ -97,7 +97,12 @@ enum Text {
 ///
 /// Usage errors, unsupported algorithms or options, and randomness errors.
 pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
-    let opts = args::parse(COMMAND, raw, SPECS, Unknown::Refused)?;
+    // As `apps/genpkey.c`: operands first, then the options; without an
+    // algorithm, only the hint at -help; then the undeclared option, read
+    // as a cipher.
+    let parsed = args::parse_line(COMMAND, raw, SPECS, Unknown::Ciphers)?;
+    parsed.check_no_operands(COMMAND)?;
+    let (opts, _, pending) = parsed.split();
     let mut parameters = KeyParameters::default();
     let mut output = None;
     let mut format = Format::Pem;
@@ -108,15 +113,19 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
                 out.stdout(args::usage(COMMAND, SPECS));
                 return Ok(());
             }
-            Opt::Algorithm(v) => parameters.set_algorithm(COMMAND, &v)?,
+            Opt::Algorithm(v) => parameters.set_algorithm(&v)?,
             Opt::Pkeyopt(v) => parameters.pkeyopt(COMMAND, &v)?,
             Opt::Out(v) => output = Some(v),
             Opt::Outform(v) => format = format_value(&v, COMMAND, "outform")?,
             Opt::Text => text = text.max(Text::Printed),
         }
     }
+    if !parameters.is_named() {
+        return Err(args::opthelp(COMMAND, None));
+    }
+    pending.read(COMMAND, &mut Vec::new())?;
     let compat = compat()?;
-    let key = AnyPrivateKey::generate(parameters.algorithm(COMMAND)?)?;
+    let key = AnyPrivateKey::generate(parameters.algorithm()?)?;
     let mut bytes = match format {
         Format::Der => key.der(compat.generated_key_der()).expose().to_vec(),
         Format::Pem => key.to_pem().into_bytes(),

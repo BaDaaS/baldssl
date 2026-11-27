@@ -96,7 +96,7 @@ fn refused() {
     ));
     assert_eq!(
         parse_options(&os(&["-sha1"])).err(),
-        Some(Error::unsupported("req: digest sha1"))
+        Some(Error::unsupported("digest sha1"))
     );
     assert!(matches!(
         parse_options(&os(&["-outform", "XML"])),
@@ -187,7 +187,7 @@ fn new_keys() {
     };
     assert_eq!(new.keyout, OsString::from("privkey.pem"));
     assert_eq!(
-        new.parameters.algorithm("req").unwrap(),
+        new.parameters.algorithm().unwrap(),
         baldssl_pkey::Algorithm::P256
     );
     let o =

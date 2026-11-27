@@ -13,11 +13,11 @@ use super::KeyParameters;
 fn newkey_values() {
     let newkey = |v: &str, opts: &[&str]| {
         let mut p = KeyParameters::default();
-        p.set_newkey("req", OsStr::new(v))?;
+        p.set_newkey(OsStr::new(v))?;
         for o in opts {
             p.pkeyopt("req", OsStr::new(o))?;
         }
-        p.algorithm("req")
+        p.algorithm()
     };
     assert_eq!(newkey("ed25519", &[]).unwrap(), Algorithm::Ed25519);
     assert_eq!(newkey("ED25519", &[]).unwrap(), Algorithm::Ed25519);
@@ -71,9 +71,9 @@ fn parameters_file() {
     )
     .unwrap();
     let mut p = KeyParameters::default();
-    p.set_newkey("req", OsStr::new(&format!("ec:{}", file.display())))
+    p.set_newkey(OsStr::new(&format!("ec:{}", file.display())))
         .unwrap();
-    assert_eq!(p.algorithm("req").unwrap(), Algorithm::P384);
+    assert_eq!(p.algorithm().unwrap(), Algorithm::P384);
     std::fs::remove_file(&file).unwrap();
     std::fs::remove_dir(&dir).unwrap();
 }

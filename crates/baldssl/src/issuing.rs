@@ -68,14 +68,13 @@ fn prefixed(prefix: &str, error: Error) -> Error {
 ///
 /// A usage error on what is not a number; unsupported for zero, negative
 /// numbers and serials longer than 20 octets.
-pub(crate) fn set_serial(command: &str, value: &OsStr) -> Result<SerialNumber> {
-    let text = value.to_str().ok_or_else(|| {
-        Error::Usage(format!(
-            "{command}: invalid serial number {}",
-            value.display()
-        ))
-    })?;
-    text.parse().map_err(|e| prefixed(command, e))
+pub(crate) fn set_serial(value: &OsStr) -> Result<SerialNumber> {
+    value
+        .to_str()
+        .ok_or_else(|| {
+            Error::Usage(format!("invalid serial number {}", value.display()))
+        })?
+        .parse()
 }
 
 /// Seconds since the Unix epoch, now.
@@ -138,17 +137,16 @@ impl ValidityTime {
     }
 }
 
-/// The value of `-<option>` of `command`, a [`ValidityTime`].
+/// The value of `-<option>`, a [`ValidityTime`].
 ///
 /// # Errors
 ///
 /// A usage error on what is not one.
 pub(crate) fn validity_time(
-    command: &str,
     option: &str,
     value: &OsStr,
 ) -> Result<ValidityTime> {
-    let prefix = format!("{command}: -{option}");
+    let prefix = format!("-{option}");
     value
         .to_str()
         .ok_or_else(|| {
@@ -186,17 +184,10 @@ impl Lifetime {
     /// # Errors
     ///
     /// A usage error when the value is not a number of days.
-    pub(crate) fn set_days(
-        &mut self,
-        command: &str,
-        value: &OsStr,
-    ) -> Result<()> {
+    pub(crate) fn set_days(&mut self, value: &OsStr) -> Result<()> {
         self.days =
             value.to_str().and_then(|d| d.parse().ok()).ok_or_else(|| {
-                Error::Usage(format!(
-                    "{command}: invalid -days {}",
-                    value.display()
-                ))
+                Error::Usage(format!("invalid -days {}", value.display()))
             })?;
         Ok(())
     }
@@ -207,7 +198,7 @@ impl Lifetime {
     ///
     /// When `-days` takes the end past what a time can hold, or the clock
     /// is before 1970.
-    pub(crate) fn validity(&self, command: &str) -> Result<Validity> {
+    pub(crate) fn validity(&self) -> Result<Validity> {
         let now = unix_now()?;
         let not_before = self
             .not_before
@@ -220,10 +211,7 @@ impl Lifetime {
                     .checked_mul(SECONDS_PER_DAY)
                     .and_then(|d| d.checked_add(now))
                     .ok_or_else(|| {
-                        Error::Usage(format!(
-                            "{command}: -days {} too large",
-                            self.days
-                        ))
+                        Error::Usage(format!("-days {} too large", self.days))
                     })?,
             ),
         };
@@ -279,11 +267,7 @@ impl SerialSource {
     ///
     /// A missing file that is not to be created, an unreadable one, or one
     /// that holds no number.
-    pub(crate) fn next(
-        &self,
-        command: &str,
-        out: &mut Outputs,
-    ) -> Result<SerialNumber> {
+    pub(crate) fn next(&self, out: &mut Outputs) -> Result<SerialNumber> {
         match self {
             SerialSource::Random => SerialNumber::random(),
             SerialSource::Given(s) => Ok(s.clone()),
@@ -294,12 +278,11 @@ impl SerialSource {
                         let text =
                             std::str::from_utf8(&bytes).map_err(|_| {
                                 Error::Usage(format!(
-                                    "{command}: {shown}: unable to load number"
+                                    "{shown}: unable to load number"
                                 ))
                             })?;
-                        SerialNumber::following_file(text).map_err(|e| {
-                            prefixed(&format!("{command}: {shown}"), e)
-                        })?
+                        SerialNumber::following_file(text)
+                            .map_err(|e| prefixed(&shown, e))?
                     }
                     (None, MissingSerialFile::Created) => {
                         SerialNumber::random()?

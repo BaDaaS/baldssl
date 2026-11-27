@@ -14,20 +14,18 @@ use crate::outputs::{Effect, Outputs};
 
 #[test]
 fn serials() {
-    let s = |v: &str| set_serial("x", OsStr::new(v));
+    let s = |v: &str| set_serial(OsStr::new(v));
     assert_eq!(s("0x0102").unwrap().as_be_bytes(), [1, 2]);
     assert_eq!(
         s("12a").err(),
-        Some(Error::Usage("x: invalid serial number 12a".into()))
+        Some(Error::Usage("invalid serial number 12a".into()))
     );
-    assert!(
-        matches!(s("0"), Err(Error::Unsupported(m)) if m.starts_with("x: "))
-    );
+    assert!(matches!(s("0"), Err(Error::Unsupported(_))));
 }
 
 #[test]
 fn times() {
-    let t = |v: &str| validity_time("x", "not_before", OsStr::new(v));
+    let t = |v: &str| validity_time("not_before", OsStr::new(v));
     let Ok(ValidityTime::At(utc)) = t("261122000000Z") else {
         panic!("a UTCTime")
     };
@@ -87,7 +85,7 @@ fn serial_files() {
         path: path.clone(),
         missing: MissingSerialFile::Refused,
     }
-    .next("x", &mut out)
+    .next(&mut out)
     .unwrap();
     assert_eq!(used.as_be_bytes(), [0x0b]);
     assert_eq!(
@@ -104,13 +102,13 @@ fn serial_files() {
         path: path.clone(),
         missing: MissingSerialFile::Refused,
     };
-    assert!(matches!(missing.next("x", &mut out), Err(Error::Io { .. })));
+    assert!(matches!(missing.next(&mut out), Err(Error::Io { .. })));
     assert_eq!(out.effects(), []);
     let created = SerialSource::File {
         path: path.clone(),
         missing: MissingSerialFile::Created,
     }
-    .next("x", &mut out)
+    .next(&mut out)
     .unwrap();
     // 159 random bits: at most 20 bytes, the top bit clear, and one byte
     // shorter whenever the top 7 bits are all zero.
