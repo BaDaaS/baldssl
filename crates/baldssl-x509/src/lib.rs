@@ -87,9 +87,10 @@ pub use issue::{
 };
 pub use name::{Name, NameStyle};
 pub use text::{
-    Compat, CsrSignatureWarning, ExtensionsWithoutFile, KeyLoadMessage,
-    OneshotSigning, PublicKeyLoading, Stream, print_private_key_text,
-    print_public_key_text, serial_line, time_rfc822,
+    Compat, CsrSignatureWarning, ExtensionsWithoutFile, ExtraOperands,
+    KeyLoadMessage, OneshotSigning, PublicKeyLoading, Stream,
+    UndeclaredOptions, print_private_key_text, print_public_key_text,
+    serial_line, time_rfc822,
 };
 pub use verify::{Failure, Reported, TrustStore, Verification, VerifyError};
 

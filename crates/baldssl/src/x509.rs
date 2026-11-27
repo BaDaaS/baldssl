@@ -478,21 +478,20 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
                 o.signing.missing_serial = MissingSerialFile::Created;
             }
             Opt::SetSerial(v) => {
-                o.signing.serial = Some(set_serial(COMMAND, &v)?);
+                o.signing.serial = Some(set_serial(&v)?);
             }
-            Opt::Days(v) => o.signing.lifetime.set_days(COMMAND, &v)?,
+            Opt::Days(v) => o.signing.lifetime.set_days(&v)?,
             Opt::NotBefore(v) => {
                 o.signing.lifetime.not_before =
-                    Some(validity_time(COMMAND, "not_before", &v)?);
+                    Some(validity_time("not_before", &v)?);
             }
             Opt::NotAfter(v) => {
                 o.signing.lifetime.not_after =
-                    Some(validity_time(COMMAND, "not_after", &v)?);
+                    Some(validity_time("not_after", &v)?);
             }
             Opt::Extfile(v) => o.signing.extfile = Some(v),
             Opt::Extensions(v) => {
-                o.signing.section =
-                    Some(utf8(COMMAND, "extensions", &v)?.to_string());
+                o.signing.section = Some(utf8("extensions", &v)?.to_string());
             }
             Opt::CopyExtensions(v) => o.signing.copy = copy_extensions(&v)?,
             Opt::Key(_) => return Err(Error::unsupported("x509 -key")),
@@ -545,10 +544,9 @@ fn serial_source(s: &Signing) -> SerialSource {
 
 /// `-copy_extensions` (see the `FromStr` of [`CopyExtensions`]).
 fn copy_extensions(value: &OsStr) -> Result<CopyExtensions> {
-    let text = utf8(COMMAND, "copy_extensions", value)?;
-    text.parse().map_err(|_| {
-        Error::Usage(format!("x509: invalid -copy_extensions {text:?}"))
-    })
+    let text = utf8("copy_extensions", value)?;
+    text.parse()
+        .map_err(|_| Error::Usage(format!("invalid -copy_extensions {text:?}")))
 }
 
 /// The extensions of `-extfile`'s section: `-extensions`, or the
@@ -648,8 +646,8 @@ fn issue(o: &Options, compat: Compat, out: &mut Outputs) -> Result<Vec<u8>> {
         &request,
         &ca,
         &ca_key,
-        serial_source(s).next(COMMAND, out)?,
-        s.lifetime.validity(COMMAND)?,
+        serial_source(s).next(out)?,
+        s.lifetime.validity()?,
         &IssuedExtensions {
             extensions: s
                 .copy

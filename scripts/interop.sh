@@ -192,5 +192,52 @@ esac
 compare "err/extra-arg" -in "${CERTS[0]}" extra
 compare "err/missing-value" -in
 
+# Option errors, in every command: the same standard error (without
+# OpenSSL's error stack) and the same exit code. OpenSSL 3.0's x509 does
+# not check an unknown option it reads as a digest, so that case is left
+# out for 3.0.
+usage_same() {
+    # usage_same <label> <command> <args...>
+    local label=$1 o_rc=0 b_rc=0
+    shift
+    "$OPENSSL" "$@" </dev/null >/dev/null 2>"$WORK/o.err" || o_rc=$?
+    "$BALDSSL" "$@" </dev/null >/dev/null 2>"$WORK/b.err" || b_rc=$?
+    grep -Ev '^[0-9A-F]+:error:' "$WORK/o.err" >"$WORK/o2.err" || true
+    if [[ "$o_rc" -eq "$b_rc" ]] && cmp -s "$WORK/o2.err" "$WORK/b.err"; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL $label: exit $o_rc/$b_rc"
+        diff "$WORK/o2.err" "$WORK/b.err" || true
+        fail=$((fail + 1))
+    fi
+}
+for cmd in x509 req pkey genpkey dgst sha256 verify; do
+    for args in "-nosuch" "-in" "-noout=1" "-text=1" "-a -b" "-nosuch -in"; do
+        if [[ "$cmd $args" == "x509 -nosuch" || "$cmd $args" == "x509 -a -b" ]] &&
+            [[ "$OPENSSL_VERSION" == 3.0.* ]]; then
+            continue
+        fi
+        read -r -a argv <<<"$args"
+        usage_same "usage/$cmd $args" "$cmd" "${argv[@]}"
+    done
+done
+# Operands where none are taken, and genpkey's cipher, read once it has an
+# algorithm.
+for cmd in x509 req pkey genpkey; do
+    usage_same "usage/$cmd extra" "$cmd" extra
+    usage_same "usage/$cmd -nosuch extra" "$cmd" -nosuch extra
+done
+usage_same "usage/genpkey -algorithm ed25519 -nosuch" genpkey \
+    -algorithm ed25519 -nosuch
+usage_same "usage/genpkey -algorithm ed25519 -a -b" genpkey \
+    -algorithm ed25519 -a -b
+usage_same "usage/genpkey" genpkey
+# A digest is an undeclared option too: from OpenSSL 3.2 a second one is
+# refused, and 3.0 reads the last.
+usage_same "usage/x509 two digests" x509 -in "${CERTS[0]}" -noout \
+    -fingerprint -sha256 -sha1
+usage_same "usage/dgst two digests" dgst -sha256 -sha1 "${CERTS[0]}"
+usage_same "usage/dgst digest then unknown" dgst -sha256 -nosuch "${CERTS[0]}"
+
 echo "interop: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
