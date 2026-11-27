@@ -2,7 +2,10 @@
 //!
 //! Supported: the certificates to verify as arguments (PEM or DER; standard
 //! input without one), `-CAfile` (trust anchors, PEM files of any number of
-//! certificates; repeatable) and `-untrusted` (intermediates, likewise).
+//! certificates; repeatable), `-untrusted` (intermediates, likewise) and
+//! `-attime` (the time to check validity at, in seconds since the epoch,
+//! read as OpenSSL's `opt_intmax` reads numbers; the last one given, and
+//! the current time without one).
 //! Each certificate that verifies prints `<file>: OK`; one that does not
 //! prints, on standard error as OpenSSL does, the subject of the
 //! certificate at fault, `error <n> at <depth> depth lookup: <message>`,
@@ -45,6 +48,8 @@ pub(crate) enum Opt {
     CaFile(OsString),
     /// `-untrusted`.
     Untrusted(OsString),
+    /// `-attime`.
+    AtTime(OsString),
     /// `-CApath`.
     CaPath(OsString),
     /// `-CAstore`.
@@ -67,6 +72,11 @@ pub(crate) const SPECS: &[Spec<Opt>] = &[
         name: "untrusted",
         kind: Kind::Value(Opt::Untrusted),
         help: "A file of untrusted (intermediate) certificates",
+    },
+    Spec {
+        name: "attime",
+        kind: Kind::Value(Opt::AtTime),
+        help: "Verification time, in seconds since the epoch",
     },
     Spec {
         name: "CApath",
@@ -112,6 +122,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
         args::parse_with_operands(COMMAND, raw, SPECS, Unknown::Refused)?;
     let mut trusted_paths = Vec::new();
     let mut untrusted_paths = Vec::new();
+    let mut at_time = None;
     for given in opts {
         match given.option {
             Opt::Help => {
@@ -120,6 +131,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
             }
             Opt::CaFile(v) => trusted_paths.push(v),
             Opt::Untrusted(v) => untrusted_paths.push(v),
+            Opt::AtTime(v) => at_time = Some(args::intmax(COMMAND, &v)?),
             Opt::CaPath(_) | Opt::CaStore(_) => {
                 return Err(Error::unsupported(format!(
                     "{COMMAND} -{}",
@@ -134,8 +146,11 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
     let trusted = parse_all(&trusted_ders)?;
     let untrusted = parse_all(&untrusted_ders)?;
     let store = TrustStore::new(&trusted, &untrusted)?;
-    let now = i64::try_from(unix_now()?)
-        .map_err(|_| Error::invalid("the system clock is past 64 bits"))?;
+    let now = match at_time {
+        Some(seconds) => seconds,
+        None => i64::try_from(unix_now()?)
+            .map_err(|_| Error::invalid("the system clock is past 64 bits"))?,
+    };
     let targets: Vec<Option<OsString>> = if files.is_empty() {
         vec![None]
     } else {
@@ -150,7 +165,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
         );
         let der = certificate_der(&read_input(path.as_deref())?, None)?;
         let target = Certificate::from_der(&der)?;
-        match store.verify(&target, now)? {
+        match store.verify(&target, now, compat)? {
             Verification::Verified(_) => {
                 out.extend_from_slice(format!("{label}: OK\n").as_bytes());
             }

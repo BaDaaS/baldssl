@@ -20,6 +20,13 @@
 //!    certificates (32), each signature verifies under its issuer's key
 //!    (7), and each certificate is valid now (9, 10).
 //!
+//! How validity times compare with the verification time depends on the
+//! release line ([`Compat`]): OpenSSL 3.0 to 3.6 convert the verification
+//! time to an ASN.1 time, report a time outside the years 0 to 9999 as
+//! error 13 and stop, and count a certificate expired at its notAfter;
+//! OpenSSL 4 compares any time, includes notAfter, and never expires a
+//! certificate whose notAfter is 99991231235959Z.
+//!
 //! As `openssl verify` reports them, some errors let verification go on
 //! (its callback accepts them: 10, 18, 25, 34, 79), and the others end
 //! it; a failure is the sequence of errors up to the first that ends it,
@@ -56,6 +63,7 @@ use crate::{
         ID_CE_SUBJECT_ALT_NAME, ID_PE_AUTONOMOUS_SYS_IDS, ID_PE_IP_ADDR_BLOCKS,
         ID_PE_PROXY_CERT_INFO, NETSCAPE_CERT_TYPE,
     },
+    text::CertificateTimes,
 };
 
 /// `authorityKeyIdentifier`'s `keyIdentifier [0] IMPLICIT`
@@ -63,6 +71,33 @@ use crate::{
 ///
 /// [RFC 5280 section 4.2.1.1]: https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.1
 const AKI_KEY_IDENTIFIER: u8 = tag::context(0);
+
+/// The verification times OpenSSL 3.0 to 3.6 can compare, in seconds after
+/// the Unix epoch: 0000-01-01T00:00:00Z through 9999-12-31T23:59:59Z.
+/// `X509_cmp_time` writes the time as a GeneralizedTime whose year is
+/// printed with `%04d` (`ossl_asn1_time_from_tm` in `crypto/asn1/a_time.c`),
+/// and `ASN1_TIME_diff` reads back four digits of year only, so a time in
+/// any other year fails; OpenSSL 3.5.9 gives error 13 one second outside
+/// either end and compares the times at both ends.
+const ASN1_TIMES: core::ops::RangeInclusive<i64> =
+    -62_167_219_200..=NO_WELL_DEFINED_EXPIRATION;
+
+/// 99991231235959Z in seconds after the Unix epoch: the notAfter RFC 5280
+/// assigns to a certificate with no well-defined expiration date
+/// ([RFC 5280, section 4.1.2.5][rfc5280]), which OpenSSL 4 never expires.
+///
+/// [rfc5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
+const NO_WELL_DEFINED_EXPIRATION: i64 = 253_402_300_799;
+
+/// The time a chain is verified at, and how the release line compares
+/// certificate times with it.
+#[derive(Debug, Clone, Copy)]
+struct VerificationTime {
+    /// Seconds after the Unix epoch.
+    seconds: i64,
+    /// How validity times compare with it.
+    times: CertificateTimes,
+}
 
 /// Why a chain does not verify: OpenSSL's `X509_V_ERR_*` for each check
 /// baldssl makes, each with its number in `include/openssl/x509_vfy.h.in`
@@ -77,9 +112,13 @@ pub enum VerifyError {
     CertSignatureFailure = 7,
     /// `notBefore` is after now.
     CertNotYetValid = 9,
-    /// `notAfter` is before now: the certificate is valid through its
-    /// `notAfter` second, as OpenSSL 3.5 and 4.x have it.
+    /// The certificate has expired: `notAfter` is before now, or, in
+    /// OpenSSL 3.0 to 3.6, is now (see the module).
     CertHasExpired = 10,
+    /// OpenSSL 3.0 to 3.6: the verification time is outside the years 0 to
+    /// 9999, which an ASN.1 time holds, and `X509_cmp_time` fails on the
+    /// first certificate checked (see the module).
+    ErrorInCertNotBeforeField = 13,
     /// The target is self-signed and not trusted.
     DepthZeroSelfSignedCert = 18,
     /// The chain ends in a self-signed certificate that is not trusted.
@@ -127,6 +166,9 @@ impl VerifyError {
             }
             VerifyError::CertNotYetValid => "certificate is not yet valid",
             VerifyError::CertHasExpired => "certificate has expired",
+            VerifyError::ErrorInCertNotBeforeField => {
+                "format error in certificate's notBefore field"
+            }
             VerifyError::DepthZeroSelfSignedCert => "self-signed certificate",
             VerifyError::SelfSignedCertInChain => {
                 "self-signed certificate in certificate chain"
@@ -152,14 +194,20 @@ impl VerifyError {
     /// reported too.
     #[must_use]
     pub fn continues(self) -> bool {
-        matches!(
-            self,
+        match self {
             VerifyError::CertHasExpired
-                | VerifyError::DepthZeroSelfSignedCert
-                | VerifyError::InvalidCa
-                | VerifyError::PathLengthExceeded
-                | VerifyError::UnhandledCriticalExtension
-        )
+            | VerifyError::DepthZeroSelfSignedCert
+            | VerifyError::InvalidCa
+            | VerifyError::PathLengthExceeded
+            | VerifyError::UnhandledCriticalExtension => true,
+            VerifyError::UnableToGetIssuerCert
+            | VerifyError::CertSignatureFailure
+            | VerifyError::CertNotYetValid
+            | VerifyError::ErrorInCertNotBeforeField
+            | VerifyError::SelfSignedCertInChain
+            | VerifyError::UnableToGetIssuerCertLocally
+            | VerifyError::KeyUsageNoCertSign => false,
+        }
     }
 }
 
@@ -341,18 +389,33 @@ impl Certificate<'_> {
             .is_none_or(|usage| usage.contains(KeyUsage::KEY_CERT_SIGN)))
     }
 
-    /// Whether the certificate is valid at `now`, seconds after the Unix
-    /// epoch: `None`, or the error. The validity period is notBefore through
-    /// notAfter, both included ([RFC 5280, section 4.1.2.5][rfc5280]).
-    ///
-    /// [rfc5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
-    fn time_error_opt(&self, now: i64) -> Option<VerifyError> {
-        if self.validity.not_before.to_unix_seconds() > now {
-            Some(VerifyError::CertNotYetValid)
-        } else if self.validity.not_after.to_unix_seconds() < now {
-            Some(VerifyError::CertHasExpired)
-        } else {
-            None
+    /// Whether the certificate is valid at `at`: `None`, or the error, as
+    /// the release line compares the times ([`CertificateTimes`]).
+    fn time_error_opt(&self, at: VerificationTime) -> Option<VerifyError> {
+        let now = at.seconds;
+        let not_before = self.validity.not_before.to_unix_seconds();
+        let not_after = self.validity.not_after.to_unix_seconds();
+        match at.times {
+            CertificateTimes::Asn1Compared if !ASN1_TIMES.contains(&now) => {
+                Some(VerifyError::ErrorInCertNotBeforeField)
+            }
+            CertificateTimes::Asn1Compared
+            | CertificateTimes::PosixCompared
+                if not_before > now =>
+            {
+                Some(VerifyError::CertNotYetValid)
+            }
+            CertificateTimes::Asn1Compared if not_after <= now => {
+                Some(VerifyError::CertHasExpired)
+            }
+            CertificateTimes::PosixCompared
+                if not_after < now
+                    && not_after != NO_WELL_DEFINED_EXPIRATION =>
+            {
+                Some(VerifyError::CertHasExpired)
+            }
+            CertificateTimes::Asn1Compared
+            | CertificateTimes::PosixCompared => None,
         }
     }
 
@@ -440,12 +503,12 @@ impl<'c, 'a> Node<'c, 'a> {
 }
 
 /// The node of `pool` that likely issued `subject`, not already in the
-/// chain: one valid at `now` when there is one, as OpenSSL prefers.
+/// chain: one valid at `at` when there is one, as OpenSSL prefers.
 fn find_issuer<'n, 'c, 'a>(
     subject: &Node<'_, '_>,
     pool: &'n [Node<'c, 'a>],
     chain: &[&Node<'c, 'a>],
-    now: i64,
+    at: VerificationTime,
 ) -> Result<Option<&'n Node<'c, 'a>>> {
     let mut first = None;
     for candidate in pool {
@@ -454,7 +517,7 @@ fn find_issuer<'n, 'c, 'a>(
         {
             continue;
         }
-        if candidate.cert.time_error_opt(now).is_none() {
+        if candidate.cert.time_error_opt(at).is_none() {
             return Ok(Some(candidate));
         }
         first = first.or(Some(candidate));
@@ -490,7 +553,8 @@ impl<'c, 'a> TrustStore<'c, 'a> {
         })
     }
 
-    /// Verifies `target` at `now`, seconds after the Unix epoch.
+    /// Verifies `target` at `now`, seconds after the Unix epoch, as the
+    /// release line `compat` compares times (see the module).
     ///
     /// # Errors
     ///
@@ -499,13 +563,18 @@ impl<'c, 'a> TrustStore<'c, 'a> {
         &self,
         target: &'c Certificate<'a>,
         now: i64,
+        compat: Compat,
     ) -> Result<Verification<'c, 'a>> {
+        let at = VerificationTime {
+            seconds: now,
+            times: compat.certificate_times(),
+        };
         let target = Node::new(target)?;
         let mut report = Report(Vec::new());
         let mut chain = vec![&target];
         let outcome = self
-            .build(&mut chain, now, &mut report)
-            .and_then(|()| check(&chain, now, &mut report));
+            .build(&mut chain, at, &mut report)
+            .and_then(|()| check(&chain, at, &mut report));
         if let Err(Halt::Error(error)) = outcome {
             return Err(error);
         }
@@ -526,7 +595,7 @@ impl<'c, 'a> TrustStore<'c, 'a> {
     fn build<'n>(
         &'n self,
         chain: &mut Vec<&'n Node<'c, 'a>>,
-        now: i64,
+        at: VerificationTime,
         report: &mut Report,
     ) -> core::result::Result<(), Halt> {
         let mut trusted_count = 0usize;
@@ -537,12 +606,11 @@ impl<'c, 'a> TrustStore<'c, 'a> {
             if last.is_self_signed()? {
                 break self.trusted.iter().any(|t| t.cert.der == last.cert.der);
             }
-            if let Some(issuer) = find_issuer(last, &self.trusted, chain, now)?
-            {
+            if let Some(issuer) = find_issuer(last, &self.trusted, chain, at)? {
                 chain.push(issuer);
                 trusted_count = trusted_count.saturating_add(1);
             } else if let Some(issuer) =
-                find_issuer(last, &self.untrusted, chain, now)?
+                find_issuer(last, &self.untrusted, chain, at)?
             {
                 chain.push(issuer);
             } else {
@@ -574,7 +642,7 @@ impl<'c, 'a> TrustStore<'c, 'a> {
 /// The checks of a built chain, recording errors.
 fn check(
     chain: &[&Node<'_, '_>],
-    now: i64,
+    at: VerificationTime,
     report: &mut Report,
 ) -> core::result::Result<(), Halt> {
     let top = chain.len().saturating_sub(1);
@@ -626,7 +694,7 @@ fn check(
                 report.record(VerifyError::CertSignatureFailure, n)?;
             }
         }
-        if let Some(error) = cert.time_error_opt(now) {
+        if let Some(error) = cert.time_error_opt(at) {
             report.record(error, n)?;
         }
     }

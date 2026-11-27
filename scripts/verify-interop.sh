@@ -62,6 +62,22 @@ same() {
     fi
 }
 
+same_exit() {
+    # same_exit <label> <verify args...>: the same exit code only, for the
+    # usage errors whose message baldssl does not yet print as OpenSSL does
+    # (the command name twice, and no "Use -help for summary." line).
+    local label=$1 ro=0 rb=0
+    shift
+    "$OPENSSL" verify "$@" >/dev/null 2>&1 || ro=$?
+    "$BALDSSL" verify "$@" >/dev/null 2>&1 || rb=$?
+    if [[ "$ro" -eq "$rb" ]]; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL $label: exit $ro/$rb"
+        fail=$((fail + 1))
+    fi
+}
+
 unhex() { perl -e 'print pack("H*", shift)' "$1"; }
 
 # issue <key> <subject> <ca.pem> <ca.key> <out.pem> [x509 options...]
@@ -149,6 +165,53 @@ same "path length exceeded" -CAfile root.pem -untrusted mid0.pem \
 issue "$k" "/CN=Crit" mid.pem "$k" crit.pem -days 30 -extfile crit.cnf
 same "unhandled critical extension" -CAfile root.pem -untrusted mid.pem \
     crit.pem
+
+# -attime: around the bounds of every certificate of the chain (OpenSSL 3
+# counts a certificate expired at its notAfter, OpenSSL 4 includes it), at
+# the ends of the years 0 to 9999 and past them (OpenSSL 3 reports error 13
+# there), and in each spelling OpenSSL reads numbers in; then the values it
+# refuses, and the option given twice.
+epoch() {
+    "$OPENSSL" x509 -in "$1" -noout "-$2" | cut -d= -f2 |
+        perl -MTime::Local -ne '
+            my %m; @m{qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)} = 0..11;
+            my ($mo, $d, $t, $y) = split;
+            my ($h, $mi, $s) = split /:/, $t;
+            print timegm($s, $mi, $h, $d, $m{$mo}, $y)'
+}
+for cert in root.pem mid.pem leaf.pem; do
+    for bound in startdate enddate; do
+        t=$(epoch "$cert" "$bound")
+        for at in $((t - 1)) "$t" $((t + 1)); do
+            same "-attime $cert $bound $at" -attime "$at" -CAfile root.pem \
+                -untrusted mid.pem leaf.pem
+        done
+    done
+done
+t=$(epoch leaf.pem startdate)
+for at in 0 -1 -62167219200 -62167219201 253402300799 253402300800 \
+    9223372036854775807 -9223372036854775808 \
+    "$(printf '0x%x' $((t + 60)))" "$(printf '0%o' $((t + 60)))" \
+    " +$((t + 60))"; do
+    same "-attime '$at'" -attime "$at" -CAfile root.pem -untrusted mid.pem \
+        leaf.pem
+done
+for at in abc 12x "" "5 " 08 -08 0x 0X1g 99999999999999999999; do
+    same_exit "-attime refuses '$at'" -attime "$at" -CAfile root.pem leaf.pem
+done
+same "-attime given twice" -attime 0 -attime "$((t + 60))" \
+    -CAfile root.pem -untrusted mid.pem leaf.pem
+# A notAfter of 99991231235959Z (no well-defined expiration date, RFC 5280
+# section 4.1.2.5): OpenSSL 4 never expires it. OpenSSL 3.0 cannot set it.
+if [[ "$OPENSSL_VERSION" != 3.0.* ]]; then
+    "$OPENSSL" req -x509 -new -key "$k" -keyform DER -subj /CN=Forever \
+        -not_before 20200101000000Z -not_after 99991231235959Z \
+        -out forever.pem 2>/dev/null
+    for at in 253402300798 253402300799 253402300800 9223372036854775807; do
+        same "-attime $at, no well-defined expiration" -attime "$at" \
+            -CAfile forever.pem forever.pem
+    done
+fi
 
 echo "verify-interop: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

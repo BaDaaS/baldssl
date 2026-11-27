@@ -14,6 +14,7 @@ use crate::{
     ExtensionFile, ExtensionValue, Extensions, IssuedExtensions, SerialNumber,
     SignatureAlgorithm, Validity,
     dn::{DistinguishedName, InputEncoding, RdnMode, UTF8_ONLY},
+    text::CertificateTimes,
 };
 
 fn key(seed: u8) -> AnyPrivateKey {
@@ -92,17 +93,29 @@ fn parse<'a>(ders: &[&'a [u8]]) -> Vec<Certificate<'a>> {
         .collect()
 }
 
-/// The errors of verifying `target` at `now`, or none.
+/// The errors of verifying `target` at `now` as OpenSSL 3.5 does, or none.
 fn errors(
     target: &[u8],
     trusted: &[&[u8]],
     untrusted: &[&[u8]],
     now: i64,
 ) -> Vec<(u32, usize)> {
+    errors_as(target, trusted, untrusted, now, Compat::V3)
+}
+
+/// The errors of verifying `target` at `now` as the release line `compat`
+/// does, or none.
+fn errors_as(
+    target: &[u8],
+    trusted: &[&[u8]],
+    untrusted: &[&[u8]],
+    now: i64,
+    compat: Compat,
+) -> Vec<(u32, usize)> {
     let (trusted, untrusted) = (parse(trusted), parse(untrusted));
     let target = Certificate::from_der(target).unwrap();
     let store = TrustStore::new(&trusted, &untrusted).unwrap();
-    match store.verify(&target, now).unwrap() {
+    match store.verify(&target, now, compat).unwrap() {
         Verification::Verified(_) => Vec::new(),
         Verification::Failed(f) => f
             .errors
@@ -113,6 +126,9 @@ fn errors(
 }
 
 const DAY: u64 = 86_400;
+
+/// The errors a verification reports, as `(code, depth)`.
+type Errors = &'static [(u32, usize)];
 
 #[test]
 fn outcomes() {
@@ -143,33 +159,95 @@ fn outcomes() {
     let _ = VerifyError::KeyUsageNoCertSign.message(Compat::V3);
 }
 
-/// The bounds of the validity period are in it: valid at notBefore and at
-/// notAfter, as OpenSSL 3.0, 3.5 and 4.1 verify with `-attime`, and not one
-/// second outside.
+/// The bounds of the validity period, by release line, as OpenSSL 3.5.9 and
+/// 4.1.0 verify with `-attime`: valid at notBefore and not one second
+/// before; through notAfter in OpenSSL 4, and only to the second before it
+/// in 3.0 to 3.6, whose `X509_cmp_time` compares with `<=`.
 #[test]
 fn validity_bounds() {
     let (rk, lk) = (key(1), key(3));
     let (from, to) = (DAY, 2 * DAY);
     let root = root(&rk, 0, 3 * DAY);
     let leaf = issue("/CN=Leaf", &lk, &root, &rk, (from, to), false);
-    let at = |t: u64| errors(&leaf, &[&root], &[], i64::try_from(t).unwrap());
-    assert_eq!(at(from - 1), [(9, 0)]);
-    assert_eq!(at(from), []);
-    assert_eq!(at(to), []);
-    assert_eq!(at(to + 1), [(10, 0)]);
+    for compat in Compat::ALL {
+        let at = |t: u64| {
+            errors_as(&leaf, &[&root], &[], i64::try_from(t).unwrap(), compat)
+        };
+        assert_eq!(at(from - 1), [(9, 0)], "{compat:?}");
+        assert_eq!(at(from), [], "{compat:?}");
+        assert_eq!(at(to - 1), [], "{compat:?}");
+        assert_eq!(at(to + 1), [(10, 0)], "{compat:?}");
+        let expected: Errors = match compat.certificate_times() {
+            CertificateTimes::Asn1Compared => &[(10, 0)],
+            CertificateTimes::PosixCompared => &[],
+        };
+        assert_eq!(at(to), expected, "{compat:?}");
+    }
+}
+
+/// OpenSSL 3.0 to 3.6 at a time outside the years 0 to 9999: error 13 at
+/// the top of the chain, and nothing after it. At the ends of that range,
+/// and in OpenSSL 4 at any time, the times are compared (as OpenSSL 3.5.9
+/// and 4.1.0 verify with `-attime`).
+#[test]
+fn times_outside_asn1() {
+    let (rk, mk, lk) = (key(1), key(2), key(3));
+    let span = (DAY, 100 * DAY);
+    let root = root(&rk, span.0, span.1);
+    let mid = issue("/CN=Mid", &mk, &root, &rk, span, true);
+    let leaf = issue("/CN=Leaf", &lk, &mid, &mk, span, false);
+    let (first, last) = (-62_167_219_200, 253_402_300_799);
+    for compat in Compat::ALL {
+        let at = |now: i64| errors_as(&leaf, &[&root], &[&mid], now, compat);
+        assert_eq!(at(first), [(9, 2)], "{compat:?}");
+        assert_eq!(at(last), [(10, 2), (10, 1), (10, 0)], "{compat:?}");
+        for now in [first - 1, last + 1, i64::MIN, i64::MAX] {
+            let expected: Errors = match compat.certificate_times() {
+                CertificateTimes::Asn1Compared => &[(13, 2)],
+                CertificateTimes::PosixCompared if now < first => &[(9, 2)],
+                CertificateTimes::PosixCompared => &[(10, 2), (10, 1), (10, 0)],
+            };
+            assert_eq!(at(now), expected, "{compat:?} at {now}");
+        }
+    }
+}
+
+/// A notAfter of 99991231235959Z, RFC 5280's "no well-defined expiration
+/// date": OpenSSL 4 never expires it; OpenSSL 3.0 to 3.6 expire it at that
+/// second, and cannot compare a later time (as OpenSSL 3.5.9 and 4.1.0
+/// verify with `-attime`).
+#[test]
+fn no_well_defined_expiration() {
+    let rk = key(1);
+    let forever = root(&rk, DAY, 253_402_300_799);
+    for compat in Compat::ALL {
+        let at = |now: i64| errors_as(&forever, &[&forever], &[], now, compat);
+        let (at_end, after): (Errors, Errors) = match compat.certificate_times()
+        {
+            CertificateTimes::Asn1Compared => (&[(10, 0)], &[(13, 0)]),
+            CertificateTimes::PosixCompared => (&[], &[]),
+        };
+        assert_eq!(at(253_402_300_798), [], "{compat:?}");
+        assert_eq!(at(253_402_300_799), at_end, "{compat:?}");
+        assert_eq!(at(253_402_300_800), after, "{compat:?}");
+        assert_eq!(at(i64::MAX), after, "{compat:?}");
+    }
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
     /// A chain verifies exactly at the times in the intersection of its
-    /// validity intervals, closed at both ends, and otherwise fails with "not yet valid" or
-    /// "expired" at the topmost certificate not valid then.
+    /// validity intervals, and otherwise fails with "not yet valid" or
+    /// "expired" at the topmost certificate not valid then. Each interval
+    /// is closed at both ends in OpenSSL 4, and open at notAfter in 3.0 to
+    /// 3.6.
     #[test]
     fn valid_exactly_on_the_intersection(
         starts in prop::array::uniform3(0u64..50),
         lengths in prop::array::uniform3(1u64..50),
         now in 0i64..120,
+        compat in prop::sample::select(Compat::ALL.to_vec()),
     ) {
         let interval = |i: usize| (starts[i] * DAY, (starts[i] + lengths[i]) * DAY);
         let (rk, mk, lk) = (key(1), key(2), key(3));
@@ -179,9 +257,14 @@ proptest! {
         let now = now * i64::try_from(DAY).unwrap();
         let valid = |i: usize| {
             let (from, to) = interval(i);
-            i64::try_from(from).unwrap() <= now && now <= i64::try_from(to).unwrap()
+            let (from, to) = (i64::try_from(from).unwrap(), i64::try_from(to).unwrap());
+            from <= now
+                && match compat.certificate_times() {
+                    CertificateTimes::Asn1Compared => now < to,
+                    CertificateTimes::PosixCompared => now <= to,
+                }
         };
-        let found = errors(&leaf, &[&root], &[&mid], now);
+        let found = errors_as(&leaf, &[&root], &[&mid], now, compat);
         if valid(0) && valid(1) && valid(2) {
             prop_assert!(found.is_empty(), "{found:?}");
         } else {
@@ -229,6 +312,7 @@ fn error_numbers() {
         (VerifyError::CertSignatureFailure, 7),
         (VerifyError::CertNotYetValid, 9),
         (VerifyError::CertHasExpired, 10),
+        (VerifyError::ErrorInCertNotBeforeField, 13),
         (VerifyError::DepthZeroSelfSignedCert, 18),
         (VerifyError::SelfSignedCertInChain, 19),
         (VerifyError::UnableToGetIssuerCertLocally, 20),
