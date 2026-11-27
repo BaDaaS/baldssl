@@ -30,15 +30,8 @@ trap 'rm -rf "$WORK"' EXIT
 pass=0
 fail=0
 
-# Imitate the release line of the OpenSSL under test (see README, "OpenSSL
-# compatibility profiles").
-OPENSSL_VERSION=$("$OPENSSL" version | awk '{print $2}')
-case "$OPENSSL_VERSION" in
-    3.0.*) BALDSSL_OPENSSL_COMPAT=3.0 ;;
-    3.6.*) BALDSSL_OPENSSL_COMPAT=3.6 ;;
-    *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
-esac
-export BALDSSL_OPENSSL_COMPAT
+# shellcheck source=scripts/interop-profile.sh
+source "$ROOT/scripts/interop-profile.sh"
 echo "OpenSSL: $("$OPENSSL" version) (profile $BALDSSL_OPENSSL_COMPAT)"
 echo "baldssl: $("$BALDSSL" version)"
 
@@ -239,5 +232,4 @@ usage_same "usage/x509 two digests" x509 -in "${CERTS[0]}" -noout \
 usage_same "usage/dgst two digests" dgst -sha256 -sha1 "${CERTS[0]}"
 usage_same "usage/dgst digest then unknown" dgst -sha256 -nosuch "${CERTS[0]}"
 
-echo "interop: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+interop_summary interop "$pass" "$fail"

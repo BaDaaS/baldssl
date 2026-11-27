@@ -82,6 +82,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         *RUST,
         *OPENSSL_BUILD,
         "scripts/*interop*.sh",
+        "scripts/find-openssl.sh",
         "scripts/gen-certs.sh",
     ),
     # website-examples: every command the website shows.

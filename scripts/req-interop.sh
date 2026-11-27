@@ -44,14 +44,8 @@ BALDSSL=$(absolute "$2")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/baldssl-req.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
-OPENSSL_VERSION=$("$OPENSSL" version | awk '{print $2}')
-# The release line baldssl imitates, as in scripts/interop.sh.
-case "$OPENSSL_VERSION" in
-    3.0.*) BALDSSL_OPENSSL_COMPAT=3.0 ;;
-    3.6.*) BALDSSL_OPENSSL_COMPAT=3.6 ;;
-    *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
-esac
-export BALDSSL_OPENSSL_COMPAT
+# shellcheck source=scripts/interop-profile.sh
+source "$ROOT/scripts/interop-profile.sh"
 pass=0
 fail=0
 
@@ -307,5 +301,4 @@ for who in OPENSSL BALDSSL; do
 done
 same "-subj=<Latin-1>" "$WORK/OPENSSL.der" "$WORK/BALDSSL.der"
 
-echo "req-interop: $pass passed, $fail failed"
-[[ "$fail" -eq 0 ]]
+interop_summary req-interop "$pass" "$fail"

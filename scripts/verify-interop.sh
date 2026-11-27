@@ -33,13 +33,8 @@ BALDSSL=$(absolute "$2")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/baldssl-verify.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
-OPENSSL_VERSION=$("$OPENSSL" version | awk '{print $2}')
-case "$OPENSSL_VERSION" in
-    3.0.*) BALDSSL_OPENSSL_COMPAT=3.0 ;;
-    3.6.*) BALDSSL_OPENSSL_COMPAT=3.6 ;;
-    *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
-esac
-export BALDSSL_OPENSSL_COMPAT
+# shellcheck source=scripts/interop-profile.sh
+source "$ROOT/scripts/interop-profile.sh"
 pass=0
 fail=0
 cd "$WORK"
@@ -197,5 +192,4 @@ if [[ "$OPENSSL_VERSION" != 3.0.* ]]; then
     done
 fi
 
-echo "verify-interop: $pass passed, $fail failed"
-[[ "$fail" -eq 0 ]]
+interop_summary verify-interop "$pass" "$fail"

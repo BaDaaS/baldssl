@@ -22,13 +22,8 @@ BALDSSL=$2
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/baldssl-pkey.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
-OPENSSL_VERSION=$("$OPENSSL" version | awk '{print $2}')
-case "$OPENSSL_VERSION" in
-    3.0.*) BALDSSL_OPENSSL_COMPAT=3.0 ;;
-    3.6.*) BALDSSL_OPENSSL_COMPAT=3.6 ;;
-    *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
-esac
-export BALDSSL_OPENSSL_COMPAT
+# shellcheck source=scripts/interop-profile.sh
+source "$ROOT/scripts/interop-profile.sh"
 pass=0
 fail=0
 
@@ -111,5 +106,4 @@ for args in "" "-outform DER" "-text -noout" "-pubout" "-check -noout"; do
 done
 same "no public key, SEC 1 DER" -in "$WORK/zero0.der" -inform DER
 
-echo "pkey-interop: $pass passed, $fail failed"
-[[ "$fail" -eq 0 ]]
+interop_summary pkey-interop "$pass" "$fail"

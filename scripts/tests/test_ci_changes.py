@@ -36,9 +36,11 @@ def test_os_rng_follows_the_crypto_crate_only() -> None:
 
 
 def test_an_interop_script_needs_interop_not_the_test_matrix() -> None:
-    groups = on(["scripts/pkey-interop.sh"])
-    assert "interop" in groups
-    assert "rust" not in groups
+    for path in ["scripts/pkey-interop.sh", "scripts/interop-profile.sh"]:
+        groups = on([path])
+        assert "interop" in groups
+        assert "rust" not in groups
+    assert "interop" in on(["scripts/find-openssl.sh"])
 
 
 def test_a_python_script_needs_python() -> None:

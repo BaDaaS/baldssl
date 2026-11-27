@@ -14,9 +14,13 @@ SHELL_SCRIPTS := $(wildcard scripts/*.sh)
 
 .PHONY: help
 help: ## Ask for help!
-	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; \
 		{printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo
+	@echo "OpenSSL binaries on this machine, for make interop OPENSSL=..."
+	@echo "(now OPENSSL=$(OPENSSL)):"
+	@scripts/find-openssl.sh
 
 # --- Build -------------------------------------------------------------------
 
@@ -261,6 +265,10 @@ interop: build fixtures ## Diff baldssl against $(OPENSSL), both directions
 	scripts/pkey-interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/verify-interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/dgst-interop.sh $(OPENSSL) $(BALDSSL)
+	@echo "interop: every suite passed against $$($(OPENSSL) version)."
+	@echo "Another release: make interop OPENSSL=/path/to/openssl; the"
+	@echo "profile follows its version (3.0, 3, 3.6 or 4). The releases CI"
+	@echo "tests are in .github/workflows/ci.yml."
 
 .PHONY: golden
 golden: fixtures ## Regenerate golden files from OpenSSL 3.0, 3.5 and 4.1
