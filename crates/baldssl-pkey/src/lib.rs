@@ -1102,6 +1102,31 @@ impl AnyPrivateKey {
     pub fn pkcs8(&self) -> SecretBytes {
         self.with(Pkcs8)
     }
+
+    /// The key in DER, in the given form. A key with no traditional form
+    /// (Ed25519) is written as PKCS#8 for
+    /// [`PrivateKeyDer::Traditional`], as OpenSSL's `i2d_PrivateKey`
+    /// (`crypto/asn1/i2d_evp.c`) tries the "type-specific" structure, then
+    /// "PrivateKeyInfo". In memory that is wiped when dropped.
+    #[must_use]
+    pub fn der(&self, form: PrivateKeyDer) -> SecretBytes {
+        match form {
+            PrivateKeyDer::Traditional => {
+                self.traditional_opt().unwrap_or_else(|| self.pkcs8())
+            }
+            PrivateKeyDer::Pkcs8 => self.pkcs8(),
+        }
+    }
+}
+
+/// The form a private key is written in DER ([`AnyPrivateKey::der`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateKeyDer {
+    /// The algorithm's own form, when it has one (SEC 1 for EC), and
+    /// PKCS#8 otherwise.
+    Traditional,
+    /// PKCS#8 (Public-Key Cryptography Standards #8), as for PEM.
+    Pkcs8,
 }
 
 /// As the typed key it holds.

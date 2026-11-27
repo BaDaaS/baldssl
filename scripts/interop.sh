@@ -117,6 +117,10 @@ mode() { perl -e 'printf "%o", (stat shift)[2] & 0777' "$1"; }
 structure() {
     "$OPENSSL" asn1parse -in "$1" -i | sed -E 's/\[HEX DUMP\]:[0-9A-F]+//'
 }
+structure_der() {
+    "$OPENSSL" asn1parse -inform DER -in "$1" -i |
+        sed -E 's/\[HEX DUMP\]:[0-9A-F]+//'
+}
 for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
     "EC ec_paramgen_curve:P-521" "ED25519"; do
     read -r alg opt <<<"$spec"
@@ -144,6 +148,19 @@ for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
         fail=$((fail + 1))
     else
         pass=$((pass + 1))
+    fi
+    # In DER, the key has the structure of OpenSSL's: the traditional form
+    # or PKCS#8, by release line.
+    "$BALDSSL" genpkey "${args[@]}" -outform DER -out "$WORK/b-key.der"
+    "$OPENSSL" genpkey "${args[@]}" -outform DER -out "$WORK/o-key.der"
+    if cmp -s <(structure_der "$WORK/b-key.der") \
+        <(structure_der "$WORK/o-key.der"); then
+        pass=$((pass + 1))
+    else
+        echo "FAIL $label -outform DER: structure differs from OpenSSL's"
+        diff <(structure_der "$WORK/o-key.der") \
+            <(structure_der "$WORK/b-key.der") || true
+        fail=$((fail + 1))
     fi
     # -text follows the key with its text: what OpenSSL's pkey -text prints
     # of the key written.

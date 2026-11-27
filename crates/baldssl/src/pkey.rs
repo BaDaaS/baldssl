@@ -28,9 +28,7 @@ use baldssl_core::{
 };
 use baldssl_fs::Access;
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
-use baldssl_x509::{
-    Format, PrivateKeyDer, print_private_key_text, print_public_key_text,
-};
+use baldssl_x509::{Format, print_private_key_text, print_public_key_text};
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
@@ -328,13 +326,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
             Access::OwnerOnly
         }
         (Written::AsRead, Key::Private(k), Format::Der) => {
-            let encoding = match compat.private_key_der() {
-                PrivateKeyDer::Traditional => {
-                    k.traditional_opt().unwrap_or_else(|| k.pkcs8())
-                }
-                PrivateKeyDer::Pkcs8 => k.pkcs8(),
-            };
-            out.extend_from_slice(encoding.expose());
+            out.extend_from_slice(k.der(compat.private_key_der()).expose());
             Access::OwnerOnly
         }
         (Written::AsRead | Written::Public, _, Format::Pem) => {
