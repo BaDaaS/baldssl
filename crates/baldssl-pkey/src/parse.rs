@@ -49,7 +49,8 @@ use baldssl_crypto::{
 };
 
 use crate::{
-    Algorithm, AnyPrivateKey, ED25519_KEY_LEN, PublicOf, ReadPublic, Signing,
+    Algorithm, AnyPrivateKey, ED25519_KEY_LEN, PublicKeyField, PublicOf,
+    ReadPublic, Signing,
     asn1::{
         ALGORITHM_IDENTIFIER, AlgorithmIdentifierValue, EC_PRIVATE_KEY_VERSION,
         ID_EC_PUBLIC_KEY, ID_ED25519, OTHER_ALGORITHMS, SubjectPublicKeyInfo,
@@ -688,7 +689,13 @@ fn sec1(
     };
     let secret = full_length_opt(scalar, algorithm.secret_len())
         .ok_or_else(|| Error::invalid("private scalar not in [1, n - 1]"))?;
-    let key = AnyPrivateKey::from_secret(algorithm, secret.expose())?;
+    // The key reads as written: without `[1]`, it writes back without it.
+    let field = match public {
+        Some(_) => PublicKeyField::Included,
+        None => PublicKeyField::Omitted,
+    };
+    let key =
+        AnyPrivateKey::from_secret_with(algorithm, secret.expose(), field)?;
     if let Some(public) = public
         && !matches_public(&key, public)
     {

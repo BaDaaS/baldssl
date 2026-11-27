@@ -16,7 +16,7 @@ use proptest::prelude::*;
 use baldssl_crypto::models::weierstrass::COMPRESSED_EVEN;
 
 use crate::{
-    Algorithm, AnyPrivateKey, PublicKey,
+    Algorithm, AnyPrivateKey, PublicKey, PublicKeyField,
     asn1::{PRIVATE_KEY_INFO, SubjectPublicKeyInfo},
 };
 
@@ -70,11 +70,21 @@ fn reads_every_openssl_encoding() {
             .into_iter()
             .flatten()
         {
+            // OpenSSL's SEC 1, with the public key or without it, reads
+            // back to itself; with the public key written, it is the PKCS#8
+            // key.
             let from_der = AnyPrivateKey::decode(&sec1).unwrap();
-            assert_eq!(from_der.encode(), pkcs8, "{name}: SEC 1");
+            let traditional = |k: &AnyPrivateKey| {
+                k.traditional_opt().map(|t| t.expose().to_vec())
+            };
+            assert_eq!(traditional(&from_der), Some(sec1.clone()), "{name}");
+            let full =
+                AnyPrivateKey::from_secret(alg, from_der.secret().expose())
+                    .unwrap();
+            assert_eq!(full.encode(), pkcs8, "{name}: SEC 1");
             let pem = pem::encode("EC PRIVATE KEY", &sec1);
             let from_pem = AnyPrivateKey::from_pem(pem.as_bytes()).unwrap();
-            assert_eq!(from_pem.encode(), pkcs8, "{name}: SEC 1 PEM");
+            assert_eq!(traditional(&from_pem), Some(sec1), "{name}: SEC 1 PEM");
         }
 
         // The writer, from the same description as the reader: OpenSSL's
@@ -104,17 +114,58 @@ fn reads_every_openssl_encoding() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
-    /// Reading what baldssl writes gives the same key, in DER and PEM.
+    /// Reading what baldssl writes gives the same key, in DER and PEM, its
+    /// public key written or not; and the traditional encoding reads back
+    /// to itself.
     #[test]
-    fn round_trip(index in 0usize..4, bytes in prop::collection::vec(any::<u8>(), 66)) {
+    fn round_trip(
+        index in 0usize..4,
+        bytes in prop::collection::vec(any::<u8>(), 66),
+        field in prop::sample::select(vec![PublicKeyField::Included, PublicKeyField::Omitted]),
+    ) {
         let alg = Algorithm::ALL[index];
-        let Ok(key) = AnyPrivateKey::from_secret(alg, &bytes[..alg.secret_len()]) else {
+        let Ok(key) = AnyPrivateKey::from_secret_with(alg, &bytes[..alg.secret_len()], field) else {
             return Ok(());
         };
+        if let Some(sec1) = key.traditional_opt() {
+            let sec1 = sec1.expose().to_vec();
+            let again = AnyPrivateKey::decode(&sec1).unwrap().traditional_opt();
+            prop_assert_eq!(again.map(|t| t.expose().to_vec()), Some(sec1));
+        }
         let der = key.encode();
         prop_assert_eq!(AnyPrivateKey::decode(&der).unwrap().encode(), der.clone());
         let from_pem = AnyPrivateKey::from_pem(key.to_pem().as_bytes()).unwrap();
         prop_assert_eq!(from_pem.encode(), der);
+    }
+}
+
+/// An EC key whose ECPrivateKey has no public key reads and writes back as
+/// OpenSSL keeps it: OpenSSL 4.1.0's PKCS#8 and OpenSSL 3.5.9's traditional
+/// DER of the P-256 key with secret 01 02 .. 20, both without `[1]` (from
+/// `openssl pkey -outform DER` of that SEC 1 key). The public key is still
+/// the secret's.
+#[test]
+fn ec_key_without_public_key() {
+    let pkcs8 = hex(
+        "3041020100301306072a8648ce3d020106082a8648ce3d0301070427302502010104\
+         200102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    );
+    let sec1 = hex(
+        "303102010104200102030405060708090a0b0c0d0e0f101112131415161718191a1b\
+         1c1d1e1f20a00a06082a8648ce3d030107",
+    );
+    let secret: Vec<u8> = (1..=32).collect();
+    let full = AnyPrivateKey::from_secret(Algorithm::P256, &secret).unwrap();
+    assert_eq!(full.public_key_field(), PublicKeyField::Included);
+    for bytes in [&pkcs8, &sec1] {
+        let key = AnyPrivateKey::decode(bytes).unwrap();
+        assert_eq!(key.public_key_field(), PublicKeyField::Omitted);
+        assert_eq!(key.encode(), pkcs8);
+        assert_eq!(
+            key.traditional_opt().map(|t| t.expose().to_vec()),
+            Some(sec1.clone())
+        );
+        assert_eq!(key.public_key_bytes(), full.public_key_bytes());
     }
 }
 
@@ -213,9 +264,10 @@ fn scalar_range_and_length() {
     for short_or_long in [vec![1u8], [&[0u8][..], &d].concat()] {
         let key = AnyPrivateKey::decode(p8(&short_or_long).as_bytes()).unwrap();
         assert_eq!(key.public_key_bytes(), g);
+        // The secret at full length, and still no public key.
         assert_eq!(
             key.encode(),
-            ec_pkcs8(P256, &ec_private_key(1, &d, None, Some(&g))).as_bytes()
+            ec_pkcs8(P256, &ec_private_key(1, &d, None, None)).as_bytes()
         );
     }
 }

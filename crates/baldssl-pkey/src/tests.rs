@@ -16,7 +16,7 @@ use baldssl_crypto::{
 
 use super::{
     Algorithm, AnyPrivateKey, ED25519_KEY_LEN, KeyAlgorithm, PrivateKey,
-    PrivateKeyDer, PublicKey, Signing, WithKeyAlgorithm,
+    PrivateKeyDer, PublicKey, PublicKeyField, Signing, WithKeyAlgorithm,
 };
 use crate::asn1::{
     CURVE_PRIVATE_KEY, EC_PRIVATE_KEY, ID_EC_PUBLIC_KEY, ID_ED448, ID_ED25519,
@@ -272,9 +272,11 @@ impl WithKeyAlgorithm for Agrees<'_> {
         assert_eq!(any.algorithm(), A::ALGORITHM);
         assert_eq!(
             any.traditional_opt().map(|t| t.expose().to_vec()),
-            A::traditional_opt(typed.key_pair()).map(|t| t.expose().to_vec())
+            A::traditional_opt(typed.key_pair(), typed.public_key_field())
+                .map(|t| t.expose().to_vec())
         );
         assert_eq!(any.pkcs8().expose(), typed.pkcs8().expose());
+        assert_eq!(any.public_key_field(), typed.public_key_field());
         assert_eq!(any.encode(), typed.encode());
         assert_eq!(any.secret().expose(), typed.secret().expose());
         assert_eq!(any.public_key_bytes(), typed.public_key_bytes());
@@ -313,23 +315,34 @@ impl WithKeyAlgorithm for Laws<'_> {
         assert_eq!(A::secret(&again).expose(), A::secret(&pair).expose());
         assert_eq!(A::public_key(&again), A::public_key(&pair));
         assert_eq!(A::secret(&pair).expose(), self.0);
-        // pkcs8 decodes, and re-encodes to the same bytes.
-        let pkcs8 = A::pkcs8(&pair);
-        let read = AnyPrivateKey::decode(pkcs8.expose()).unwrap();
-        assert_eq!(read.algorithm(), A::ALGORITHM);
-        assert_eq!(
-            PublicKey::from(&read),
-            A::public_into_any(A::subject_public_key(&pair))
-        );
-        assert_eq!(read.pkcs8().expose(), pkcs8.expose());
+        // pkcs8 decodes, and re-encodes to the same bytes, its public key
+        // written or not; the public key is the secret's either way.
+        let pkcs8 = A::pkcs8(&pair, PublicKeyField::Included);
         records_round_trip(pkcs8.expose());
-        // traditional_opt round-trips through SEC 1, in DER and in PEM.
-        if let Some(sec1) = A::traditional_opt(&pair) {
-            let from_der = AnyPrivateKey::decode(sec1.expose()).unwrap();
-            assert_eq!(from_der.pkcs8().expose(), pkcs8.expose());
-            let block = pem::encode("EC PRIVATE KEY", sec1.expose());
-            let from_pem = AnyPrivateKey::from_pem(block.as_bytes()).unwrap();
-            assert_eq!(from_pem.pkcs8().expose(), pkcs8.expose());
+        for field in [PublicKeyField::Included, PublicKeyField::Omitted] {
+            let pkcs8 = A::pkcs8(&pair, field);
+            let read = AnyPrivateKey::decode(pkcs8.expose()).unwrap();
+            assert_eq!(read.algorithm(), A::ALGORITHM);
+            assert_eq!(
+                PublicKey::from(&read),
+                A::public_into_any(A::subject_public_key(&pair))
+            );
+            assert_eq!(read.pkcs8().expose(), pkcs8.expose());
+            // traditional_opt round-trips through SEC 1, in DER and in PEM,
+            // to the key whose PKCS#8 is pkcs8.
+            if let Some(sec1) = A::traditional_opt(&pair, field) {
+                let from_der = AnyPrivateKey::decode(sec1.expose()).unwrap();
+                assert_eq!(from_der.public_key_field(), field);
+                assert_eq!(from_der.pkcs8().expose(), pkcs8.expose());
+                assert_eq!(
+                    from_der.traditional_opt().map(|t| t.expose().to_vec()),
+                    Some(sec1.expose().to_vec())
+                );
+                let block = pem::encode("EC PRIVATE KEY", sec1.expose());
+                let from_pem =
+                    AnyPrivateKey::from_pem(block.as_bytes()).unwrap();
+                assert_eq!(from_pem.pkcs8().expose(), pkcs8.expose());
+            }
         }
         // The key a SubjectPublicKeyInfo holds reads back to itself.
         let public = A::subject_public_key(&pair);
