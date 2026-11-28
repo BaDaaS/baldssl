@@ -43,14 +43,13 @@ use baldssl_crypto::{
 };
 use baldssl_fs::Access;
 use baldssl_pkey::{AnyPrivateKey, PublicKey, SignatureCheck};
-use baldssl_x509::{
-    Compat, Format, KeyLoadMessage, OneshotSigning, PublicKeyLoading,
-};
+use baldssl_x509::{Compat, Format, OneshotSigning, PublicKeyLoading};
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
     digest::DigestName,
     input::{compat, format_value, read_input},
+    load::{Credential, LoadFailure, load_line},
     outputs::Outputs,
 };
 
@@ -248,25 +247,12 @@ const HMAC_KEY_TYPE: &str = "HMAC";
 const EC_KEY_TYPE: &str = "EC";
 /// See [`HMAC_KEY_TYPE`].
 const ED25519_KEY_TYPE: &str = "ED25519";
-/// The parts of the line OpenSSL prints when it cannot load a key
-/// (`load_key_certs_crls` in `apps/lib/apps.c`).
-const COULD_NOT_OPEN: &str = "Could not open file or uri for loading";
-/// See [`COULD_NOT_OPEN`]: OpenSSL 3.0's word for a key it cannot read.
-const COULD_NOT_READ: &str = "Could not read";
-/// See [`COULD_NOT_OPEN`]: OpenSSL 3.2 to 3.6.
-const COULD_NOT_FIND: &str = "Could not find";
-/// See [`COULD_NOT_OPEN`]: OpenSSL 4.
-const COULD_NOT_FIND_OR_DECODE: &str = "Could not find or decode";
-/// See [`COULD_NOT_OPEN`]: what follows a missing file from OpenSSL 3.2.
-const NO_SUCH_FILE: &str = "No such file or directory";
 /// How OpenSSL describes the key it loads (`load_key` and `load_pubkey` in
 /// `apps/lib/apps.c`): a private key.
 const PRIVATE_KEY_DESC: &str = "private key";
-/// See [`PRIVATE_KEY_DESC`]: a public key, in OpenSSL 3.0.
+/// See [`PRIVATE_KEY_DESC`]: a public key, also when OpenSSL 3.2 and later
+/// fall back to loading a private key for it.
 const PUBLIC_KEY_DESC: &str = "public key";
-/// See [`PRIVATE_KEY_DESC`]: a public key from OpenSSL 3.2, as the
-/// failure of its fallback describes it.
-const PUBLIC_KEY_FALLBACK_DESC: &str = "private key of public key";
 
 /// How a digest, MAC or signature is printed in hexadecimal (`-c`, `-r`;
 /// the last given wins, as in OpenSSL).
@@ -509,52 +495,27 @@ fn report(out: &mut Outputs, line: &str) -> Error {
     }
 }
 
-/// Why a key did not load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LoadFailure {
-    /// The file does not exist.
-    Missing,
-    /// The file holds no such key.
-    NoKey,
-}
-
 /// The line OpenSSL prints when it cannot load the key of `-sign` or
-/// `-prverify` (private) or `-verify` (public) from `path`
-/// (`load_key_certs_crls` in `apps/lib/apps.c`): the file is missing, or
-/// holds no such key. A public key that fails to load where OpenSSL falls
-/// back to a private key ([`Compat::public_key_loading`]) is described as a
-/// private key "of public key", the failure of that fallback.
+/// `-prverify` (private) or `-verify` (public) from `path`. A public key
+/// that fails to load where OpenSSL falls back to a private key
+/// ([`Compat::public_key_loading`]) is reported as that fallback's failure,
+/// a private key described as "public key".
 fn key_load_line(
     path: &str,
     kind: KeyKind,
     failure: LoadFailure,
     compat: Compat,
 ) -> String {
-    let what = match (kind, compat.public_key_loading()) {
-        (KeyKind::Private, _) => PRIVATE_KEY_DESC,
-        (KeyKind::Public, PublicKeyLoading::PublicOnly) => PUBLIC_KEY_DESC,
+    let (credential, desc) = match (kind, compat.public_key_loading()) {
+        (KeyKind::Private, _) => (Credential::PrivateKey, PRIVATE_KEY_DESC),
+        (KeyKind::Public, PublicKeyLoading::PublicOnly) => {
+            (Credential::PublicKey, PUBLIC_KEY_DESC)
+        }
         (KeyKind::Public, PublicKeyLoading::PrivateFallback) => {
-            PUBLIC_KEY_FALLBACK_DESC
+            (Credential::PrivateKey, PUBLIC_KEY_DESC)
         }
     };
-    match (failure, compat.key_load_message()) {
-        (LoadFailure::Missing, KeyLoadMessage::Read) => {
-            format!("{COULD_NOT_OPEN} {what} from {path}")
-        }
-        (
-            LoadFailure::Missing,
-            KeyLoadMessage::Find | KeyLoadMessage::FindOrDecode,
-        ) => format!("{COULD_NOT_OPEN} {what} from {path}: {NO_SUCH_FILE}"),
-        (LoadFailure::NoKey, KeyLoadMessage::Read) => {
-            format!("{COULD_NOT_READ} {what} from {path}")
-        }
-        (LoadFailure::NoKey, KeyLoadMessage::Find) => {
-            format!("{COULD_NOT_FIND} {what} from {path}")
-        }
-        (LoadFailure::NoKey, KeyLoadMessage::FindOrDecode) => {
-            format!("{COULD_NOT_FIND_OR_DECODE} {what} from {path}")
-        }
-    }
+    load_line(credential, desc, path, failure, compat)
 }
 
 /// A private key, PEM or DER.
@@ -596,19 +557,19 @@ fn load_key(
     match (kind, compat.public_key_loading()) {
         (KeyKind::Private, _) => private_key(&bytes, format)
             .map(Operation::Sign)
-            .map_err(|_| fail(LoadFailure::NoKey)),
+            .map_err(|_| fail(LoadFailure::Undecoded)),
         (KeyKind::Public, loading) => {
             match (public_key(&bytes, format), loading) {
                 (Ok(public), _) => Ok(Operation::Verify(public, Vec::new())),
                 (Err(_), PublicKeyLoading::PublicOnly) => {
-                    Err(fail(LoadFailure::NoKey))
+                    Err(fail(LoadFailure::Undecoded))
                 }
                 (Err(_), PublicKeyLoading::PrivateFallback) => {
                     private_key(&bytes, format)
                         .map(|k| {
                             Operation::Verify(PublicKey::from(&k), Vec::new())
                         })
-                        .map_err(|_| fail(LoadFailure::NoKey))
+                        .map_err(|_| fail(LoadFailure::Undecoded))
                 }
             }
         }

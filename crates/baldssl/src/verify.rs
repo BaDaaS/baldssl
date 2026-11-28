@@ -13,23 +13,33 @@
 //! checks are those of [`baldssl_x509::TrustStore::verify`], with OpenSSL's error
 //! numbers and messages by the release line `BALDSSL_OPENSSL_COMPAT` names.
 //!
+//! Files load as OpenSSL loads them, and those that do not are reported
+//! with its loader's lines (see the `load` module). An `-untrusted` file
+//! loads when its option is read and each `-CAfile` once all options are,
+//! and either failing ends the command with exit code 1 (`Error loading
+//! file <file>` for a `-CAfile`, from `setup_verify` in `apps/lib/apps.c`).
+//! A certificate to verify that does not load is reported, and the others
+//! are still verified, as `check` in `apps/verify.c` does; the command then
+//! exits 2.
+//!
 //! Unlike OpenSSL, baldssl has no default trust store: without `-CAfile`
 //! nothing is trusted. Not supported, and reported as such: `-CApath`,
 //! `-CAstore`, CRLs, policies and purposes, and the chains
 //! [`baldssl_x509::TrustStore::verify`] refuses.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 
 use baldssl_core::{Error, Result, der::syntax::RawTlv};
 use baldssl_x509::{
-    Certificate, Reported, TrustStore, Verification, certificate_der,
-    certificates_der,
+    Certificate, CertificateLoadSummary, Compat, Reported, TrustStore,
+    Verification, certificate_der, certificates_der,
 };
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
     input::{compat, read_input},
     issuing::unix_now,
+    load::{Credential, LoadFailure, load_line},
     outputs::Outputs,
 };
 
@@ -38,6 +48,20 @@ const COMMAND: &str = "verify";
 
 /// The label of standard input in `verify`'s messages (`apps/verify.c`).
 const STDIN_LABEL: &str = "stdin";
+/// The name of standard input in the loader's messages
+/// (`load_key_certs_crls` in `apps/lib/apps.c`).
+const STDIN_URI: &str = "<stdin>";
+/// How `check` describes a certificate to verify (`apps/verify.c`).
+const TARGET_DESC: &str = "certificate file";
+/// How `-untrusted` describes its certificates (`apps/verify.c`).
+const UNTRUSTED_DESC: &str = "untrusted certificates";
+/// What `setup_verify` (`apps/lib/apps.c`) prints before a `-CAfile` that
+/// does not load.
+const ERROR_LOADING_FILE: &str = "Error loading file";
+/// What `load_cert` (`apps/lib/apps.c`) prints before the description of a
+/// certificate it could not load, where it does
+/// ([`Compat::certificate_load_summary`]).
+const UNABLE_TO_LOAD: &str = "Unable to load";
 
 /// An option of `baldssl verify`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,16 +115,128 @@ pub(crate) const SPECS: &[Spec<Opt>] = &[
 ];
 
 /// The exit code of `openssl verify` when a certificate does not verify
-/// (`apps/verify.c`: `ret = 2` unless every certificate verifies).
+/// or does not load (`apps/verify.c`: `ret = 2` unless every certificate
+/// verifies).
 const VERIFY_FAILED: u8 = 2;
 
-/// The certificates of every file named, in order.
-fn load_all(paths: &[OsString]) -> Result<Vec<RawTlv>> {
-    let mut out = Vec::new();
-    for path in paths {
-        out.extend(certificates_der(&read_input(Some(path))?)?);
+/// The exit code of `openssl verify` when an `-untrusted` or `-CAfile`
+/// file does not load: `ret` is still 1, its first value in `apps/verify.c`.
+const LOAD_FAILED: u8 = 1;
+
+/// Why a file gave no certificates.
+enum Unloaded {
+    /// OpenSSL's loader reports it ([`load_line`]).
+    Reported(LoadFailure),
+    /// Anything else, which baldssl reports as its own error.
+    Error(Error),
+}
+
+impl From<Error> for Unloaded {
+    fn from(e: Error) -> Self {
+        Unloaded::Error(e)
     }
-    Ok(out)
+}
+
+/// The bytes of `path`, or standard input without one.
+fn read(path: Option<&OsStr>) -> core::result::Result<Vec<u8>, Unloaded> {
+    match read_input(path) {
+        Err(Error::NotFound { .. }) => {
+            Err(Unloaded::Reported(LoadFailure::Missing))
+        }
+        other => Ok(other?),
+    }
+}
+
+/// Whether `der` decodes as a certificate.
+fn decodes(der: &[u8]) -> core::result::Result<(), Unloaded> {
+    Certificate::from_der(der)
+        .map(|_| ())
+        .map_err(|_| Unloaded::Reported(LoadFailure::Undecoded))
+}
+
+/// The certificates of a file of them, every one decoding; a file with
+/// none, or one that does not decode, does not load, as `load_certs` in
+/// `apps/lib/apps.c` refuses it.
+fn certificates_of(
+    path: &OsStr,
+) -> core::result::Result<Vec<RawTlv>, Unloaded> {
+    let ders = certificates_der(&read(Some(path))?)
+        .map_err(|_| Unloaded::Reported(LoadFailure::Undecoded))?;
+    if ders.is_empty() {
+        return Err(Unloaded::Reported(LoadFailure::Undecoded));
+    }
+    for der in &ders {
+        decodes(der.as_bytes())?;
+    }
+    Ok(ders)
+}
+
+/// The certificate to verify in `path`, or standard input without one.
+/// What baldssl does not read (a `TRUSTED CERTIFICATE`) stays its own
+/// error; anything else that does not decode does not load.
+fn target_of(path: Option<&OsStr>) -> core::result::Result<Vec<u8>, Unloaded> {
+    let der = match certificate_der(&read(path)?, None) {
+        Ok(der) => der,
+        Err(e @ Error::Unsupported(_)) => return Err(Unloaded::Error(e)),
+        Err(_) => return Err(Unloaded::Reported(LoadFailure::Undecoded)),
+    };
+    decodes(&der)?;
+    Ok(der)
+}
+
+/// The intermediates in `path`, or the loader's line and exit code 1.
+fn load_untrusted(
+    outputs: &mut Outputs,
+    path: &OsStr,
+    compat: Compat,
+) -> Result<Vec<RawTlv>> {
+    certificates_of(path).map_err(|unloaded| match unloaded {
+        Unloaded::Error(e) => e,
+        Unloaded::Reported(failure) => {
+            outputs.diagnostic(load_line(
+                Credential::Certificates,
+                UNTRUSTED_DESC,
+                &path.to_string_lossy(),
+                failure,
+                compat,
+            ));
+            Error::Reported {
+                code: LOAD_FAILED,
+                output: Vec::new(),
+            }
+        }
+    })
+}
+
+/// The trust anchors in `path`, or `setup_verify`'s line and exit code 1.
+fn load_trusted(outputs: &mut Outputs, path: &OsStr) -> Result<Vec<RawTlv>> {
+    certificates_of(path).map_err(|unloaded| match unloaded {
+        Unloaded::Error(e) => e,
+        Unloaded::Reported(_) => {
+            outputs.diagnostic(format!(
+                "{ERROR_LOADING_FILE} {}",
+                path.to_string_lossy()
+            ));
+            Error::Reported {
+                code: LOAD_FAILED,
+                output: Vec::new(),
+            }
+        }
+    })
+}
+
+/// What OpenSSL prints for a certificate to verify that did not load from
+/// `file`: the loader's line, then `load_cert`'s where the release line
+/// prints it.
+fn target_report(file: &str, failure: LoadFailure, compat: Compat) -> String {
+    let line =
+        load_line(Credential::Certificate, TARGET_DESC, file, failure, compat);
+    match compat.certificate_load_summary() {
+        CertificateLoadSummary::Printed => {
+            format!("{line}\n{UNABLE_TO_LOAD} {TARGET_DESC}\n")
+        }
+        CertificateLoadSummary::Omitted => format!("{line}\n"),
+    }
 }
 
 /// Parses DER certificates.
@@ -120,8 +256,9 @@ fn parse_all(ders: &[RawTlv]) -> Result<Vec<Certificate<'_>>> {
 pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
     let (opts, files) =
         args::parse_with_operands(COMMAND, raw, SPECS, Unknown::Refused)?;
+    let compat = compat()?;
     let mut trusted_paths = Vec::new();
-    let mut untrusted_paths = Vec::new();
+    let mut untrusted_ders = Vec::new();
     let mut at_time = None;
     for given in opts {
         match given.option {
@@ -130,7 +267,9 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
                 return Ok(());
             }
             Opt::CaFile(v) => trusted_paths.push(v),
-            Opt::Untrusted(v) => untrusted_paths.push(v),
+            Opt::Untrusted(v) => {
+                untrusted_ders.extend(load_untrusted(outputs, &v, compat)?);
+            }
             Opt::AtTime(v) => at_time = Some(args::intmax(COMMAND, &v)?),
             Opt::CaPath(_) | Opt::CaStore(_) => {
                 return Err(Error::unsupported(format!(
@@ -140,9 +279,10 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
             }
         }
     }
-    let compat = compat()?;
-    let trusted_ders = load_all(&trusted_paths)?;
-    let untrusted_ders = load_all(&untrusted_paths)?;
+    let mut trusted_ders = Vec::new();
+    for path in &trusted_paths {
+        trusted_ders.extend(load_trusted(outputs, path)?);
+    }
     let trusted = parse_all(&trusted_ders)?;
     let untrusted = parse_all(&untrusted_ders)?;
     let store = TrustStore::new(&trusted, &untrusted)?;
@@ -163,7 +303,18 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
             || STDIN_LABEL.into(),
             |p| p.to_string_lossy().into_owned(),
         );
-        let der = certificate_der(&read_input(path.as_deref())?, None)?;
+        let der = match target_of(path.as_deref()) {
+            Ok(der) => der,
+            Err(Unloaded::Error(e)) => return Err(e),
+            Err(Unloaded::Reported(failure)) => {
+                failed = true;
+                let file = path
+                    .as_ref()
+                    .map_or_else(|| STDIN_URI.into(), |p| p.to_string_lossy());
+                outputs.stderr(target_report(&file, failure, compat));
+                continue;
+            }
+        };
         let target = Certificate::from_der(&der)?;
         match store.verify(&target, now, compat)? {
             Verification::Verified(_) => {

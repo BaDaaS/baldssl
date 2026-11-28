@@ -283,17 +283,34 @@ impl Compat {
         }
     }
 
-    /// The message `load_key_certs_crls` in `apps/lib/apps.c` prints for a
-    /// key it cannot load: "Could not read" in 3.0, without the reason for a
-    /// missing file; "Could not find" from 3.2, followed by the system's
-    /// reason ("No such file or directory") for a missing file; "Could not
-    /// find or decode" in 4.
+    /// The form of the message `load_key_certs_crls` in `apps/lib/apps.c`
+    /// prints for keys or certificates it cannot load. 3.0 says "Could not
+    /// read" (with " any" for a list of certificates), names the credential
+    /// as its first draft did ("key", "cert", "certs"), and gives no reason
+    /// for a file that does not open. 3.2 rewrote it with `FAIL_NAME`: "Could
+    /// not find", the credential named in full ("private key",
+    /// "certificate", "certificates"), and the system's reason ("No such
+    /// file or directory") after a file that does not open. 4 says "Could
+    /// not find or decode".
     #[must_use]
-    pub fn key_load_message(self) -> KeyLoadMessage {
+    pub fn load_message(self) -> LoadMessage {
         match self {
-            Compat::V30 => KeyLoadMessage::Read,
-            Compat::V3 | Compat::V36 => KeyLoadMessage::Find,
-            Compat::V4 => KeyLoadMessage::FindOrDecode,
+            Compat::V30 => LoadMessage::Read,
+            Compat::V3 | Compat::V36 => LoadMessage::Find,
+            Compat::V4 => LoadMessage::FindOrDecode,
+        }
+    }
+
+    /// Whether `load_cert` in `apps/lib/apps.c` follows a certificate it
+    /// could not load with `Unable to load <desc>`: 3.0 does after every
+    /// failure; from 3.2 it does only for a certificate fetched over HTTP.
+    #[must_use]
+    pub fn certificate_load_summary(self) -> CertificateLoadSummary {
+        match self {
+            Compat::V30 => CertificateLoadSummary::Printed,
+            Compat::V3 | Compat::V36 | Compat::V4 => {
+                CertificateLoadSummary::Omitted
+            }
         }
     }
 
@@ -404,16 +421,28 @@ pub enum PublicKeyLoading {
     PrivateFallback,
 }
 
-/// The message for a key that does not load
-/// ([`Compat::key_load_message`]).
+/// The form of the message for keys or certificates that do not load
+/// ([`Compat::load_message`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyLoadMessage {
-    /// "Could not read", and no reason for a missing file (3.0).
+pub enum LoadMessage {
+    /// "Could not read", the first draft's names, and no reason for a file
+    /// that does not open (3.0).
     Read,
-    /// "Could not find", and the reason for a missing file.
+    /// "Could not find", the full names, and the reason for a file that
+    /// does not open (3.2 to 3.6).
     Find,
-    /// "Could not find or decode", and the reason for a missing file.
+    /// "Could not find or decode", otherwise as [`LoadMessage::Find`] (4).
     FindOrDecode,
+}
+
+/// Whether a certificate that does not load is followed by
+/// `Unable to load <desc>` ([`Compat::certificate_load_summary`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateLoadSummary {
+    /// It is (3.0).
+    Printed,
+    /// It is not.
+    Omitted,
 }
 
 /// Whether `dgst` signs with a one-shot key such as Ed25519
