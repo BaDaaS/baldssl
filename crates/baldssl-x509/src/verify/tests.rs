@@ -15,6 +15,7 @@ use crate::{
     IssuedExtensions, Profile, SerialNumber, SignatureAlgorithm, Validity,
     WithProfile,
     dn::{DistinguishedName, InputEncoding, RdnMode, UTF8_ONLY},
+    profile::AnyProfile,
 };
 
 /// What a profile says: how it compares times, and its message for a
@@ -67,12 +68,11 @@ fn name(subj: &str) -> DistinguishedName {
 
 /// A root valid over `[from, to]`.
 fn root(k: &AnyPrivateKey, from: u64, to: u64) -> Vec<u8> {
-    CertificateTemplate::self_signed(
+    CertificateTemplate::self_signed::<AnyProfile>(
         &name("/CN=Root"),
         &PublicKey::from(k),
         SerialNumber::new_opt(&[1]).unwrap(),
         Validity::from_unix_seconds(from, to),
-        Compat::V3,
     )
     .sign(k, SignatureAlgorithm::Ed25519)
     .unwrap()
@@ -102,7 +102,7 @@ fn issue(
         })]
         .into_iter()
         .collect();
-    CertificateTemplate::issued(
+    CertificateTemplate::issued::<AnyProfile>(
         &request,
         &Certificate::from_der(ca).unwrap(),
         ca_key,
@@ -112,7 +112,6 @@ fn issue(
             extensions,
             extension_file: ExtensionFile::Given,
         },
-        Compat::V3,
     )
     .unwrap()
     .sign(ca_key, SignatureAlgorithm::Ed25519)
