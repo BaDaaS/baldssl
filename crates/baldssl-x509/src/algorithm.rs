@@ -3,10 +3,11 @@
 //! SHA hash ([RFC 3279 section 2.2.3], [RFC 5758 section 3.2]) and Ed25519
 //! ([RFC 8410 section 3]).
 //!
-//! [`oid`] is an exhaustive `match`, so every algorithm has a name by
-//! construction; the `TryFrom` of [`SignatureAlgorithm`] is its inverse,
-//! found by searching the finite set of algorithms, so the two cannot
-//! disagree.
+//! [`oid_opt`] is an exhaustive `match`, so every algorithm is decided by
+//! construction: it has its name, or none (ECDSA with SHA-512/224 or
+//! SHA-512/256, which RFC 5758 does not name). The `TryFrom` of
+//! [`SignatureAlgorithm`] is its inverse, found by searching the finite set
+//! of algorithms, so the two cannot disagree.
 //!
 //! [RFC 3279 section 2.2.3]: https://www.rfc-editor.org/rfc/rfc3279#section-2.2.3
 //! [RFC 5758 section 3.2]: https://www.rfc-editor.org/rfc/rfc5758#section-3.2
@@ -73,7 +74,8 @@ pub(crate) fn algorithm_identifier() -> AlgorithmIdentifierSyntax {
     )
 }
 
-/// Every signature algorithm: ECDSA with each hash, and Ed25519.
+/// Every signature algorithm: ECDSA with each hash, and Ed25519. Not every
+/// one has an identifier ([`oid_opt`]).
 fn all() -> impl Iterator<Item = SignatureAlgorithm> {
     Hash::ALL
         .into_iter()
@@ -81,26 +83,42 @@ fn all() -> impl Iterator<Item = SignatureAlgorithm> {
         .chain([SignatureAlgorithm::Ed25519])
 }
 
-/// The object identifier of an algorithm.
-pub(crate) fn oid(algorithm: SignatureAlgorithm) -> ObjectId {
+/// The object identifier of an algorithm, when it has one. ECDSA with
+/// SHA-512/224 or SHA-512/256 has none: RFC 5758 section 3.2 names ECDSA
+/// with SHA-224 to SHA-512 only, and OpenSSL refuses to sign a certificate
+/// or a request with them, while `dgst` signs with them.
+pub(crate) fn oid_opt(algorithm: SignatureAlgorithm) -> Option<ObjectId> {
     match algorithm {
-        SignatureAlgorithm::Ecdsa(Hash::Sha1) => ECDSA_WITH_SHA1,
-        SignatureAlgorithm::Ecdsa(Hash::Sha224) => ECDSA_WITH_SHA224,
-        SignatureAlgorithm::Ecdsa(Hash::Sha256) => ECDSA_WITH_SHA256,
-        SignatureAlgorithm::Ecdsa(Hash::Sha384) => ECDSA_WITH_SHA384,
-        SignatureAlgorithm::Ecdsa(Hash::Sha512) => ECDSA_WITH_SHA512,
-        SignatureAlgorithm::Ed25519 => ID_ED25519,
+        SignatureAlgorithm::Ecdsa(Hash::Sha1) => Some(ECDSA_WITH_SHA1),
+        SignatureAlgorithm::Ecdsa(Hash::Sha224) => Some(ECDSA_WITH_SHA224),
+        SignatureAlgorithm::Ecdsa(Hash::Sha256) => Some(ECDSA_WITH_SHA256),
+        SignatureAlgorithm::Ecdsa(Hash::Sha384) => Some(ECDSA_WITH_SHA384),
+        SignatureAlgorithm::Ecdsa(Hash::Sha512) => Some(ECDSA_WITH_SHA512),
+        SignatureAlgorithm::Ecdsa(Hash::Sha512_224 | Hash::Sha512_256) => None,
+        SignatureAlgorithm::Ed25519 => Some(ID_ED25519),
     }
 }
 
 /// The `AlgorithmIdentifier` of a signature algorithm: its OID, no
 /// parameters.
-impl From<SignatureAlgorithm> for AlgorithmIdentifier {
-    fn from(algorithm: SignatureAlgorithm) -> Self {
-        AlgorithmIdentifier {
-            oid: oid(algorithm),
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] for an algorithm without one ([`oid_opt`]).
+impl TryFrom<SignatureAlgorithm> for AlgorithmIdentifier {
+    type Error = Error;
+
+    fn try_from(algorithm: SignatureAlgorithm) -> Result<Self> {
+        let oid = oid_opt(algorithm).ok_or_else(|| {
+            Error::unsupported(format!(
+                "signing a certificate or request with {algorithm:?}, which \
+                 has no algorithm identifier"
+            ))
+        })?;
+        Ok(AlgorithmIdentifier {
+            oid,
             parameters: None,
-        }
+        })
     }
 }
 
@@ -116,7 +134,9 @@ impl TryFrom<&AlgorithmIdentifier> for SignatureAlgorithm {
     type Error = Error;
 
     fn try_from(id: &AlgorithmIdentifier) -> Result<Self> {
-        let Some(algorithm) = all().find(|&a| oid(a) == id.oid) else {
+        let Some(algorithm) =
+            all().find(|&a| oid_opt(a) == Some(id.oid.clone()))
+        else {
             return Err(Error::unsupported(format!(
                 "signature algorithm {}",
                 id.oid.to_dotted()?
@@ -140,12 +160,33 @@ mod tests {
 
     use super::*;
 
-    /// The `TryFrom` inverts the `From`, so the OIDs are distinct.
+    /// Reading an identifier inverts writing it, so the OIDs are distinct;
+    /// the algorithms without one are exactly ECDSA with SHA-512/224 and
+    /// SHA-512/256.
     #[test]
     fn identifiers_round_trip() {
         for a in all() {
-            let id = AlgorithmIdentifier::from(a);
-            assert_eq!(SignatureAlgorithm::try_from(&id), Ok(a), "{a:?}");
+            match AlgorithmIdentifier::try_from(a) {
+                Ok(id) => {
+                    assert_eq!(
+                        SignatureAlgorithm::try_from(&id),
+                        Ok(a),
+                        "{a:?}"
+                    );
+                }
+                Err(e) => {
+                    assert!(matches!(e, Error::Unsupported(_)), "{a:?}");
+                    assert!(
+                        matches!(
+                            a,
+                            SignatureAlgorithm::Ecdsa(
+                                Hash::Sha512_224 | Hash::Sha512_256
+                            )
+                        ),
+                        "{a:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -159,7 +200,7 @@ mod tests {
             parameters: Some(RawTlv::encode(&Null, &())),
         };
         for id in [
-            AlgorithmIdentifier::from(SignatureAlgorithm::Ed25519),
+            AlgorithmIdentifier::try_from(SignatureAlgorithm::Ed25519).unwrap(),
             with_null,
         ] {
             round_trip(&syntax, &id, b"");
@@ -168,7 +209,8 @@ mod tests {
         // SEQUENCE { OID 1.3.101.112 }, as RFC 8410 writes Ed25519.
         assert_eq!(
             decode(&syntax, &[0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]),
-            Ok(AlgorithmIdentifier::from(SignatureAlgorithm::Ed25519))
+            Ok(AlgorithmIdentifier::try_from(SignatureAlgorithm::Ed25519)
+                .unwrap())
         );
         for bad in [
             // No algorithm.
@@ -195,7 +237,7 @@ mod tests {
     /// The dotted names, from RFC 3279, RFC 5758 and RFC 8410.
     #[test]
     fn dotted_names() {
-        let dotted = |a| oid(a).to_dotted().unwrap();
+        let dotted = |a| oid_opt(a).unwrap().to_dotted().unwrap();
         assert_eq!(
             dotted(SignatureAlgorithm::Ecdsa(Hash::Sha1)),
             "1.2.840.10045.4.1"

@@ -1035,7 +1035,7 @@ impl Text for CertificationRequest {
         extensions.print_list(&mut out, ExtensionIndent::Request)?;
         print_signed(
             &mut out,
-            &AlgorithmIdentifier::from(self.algorithm()),
+            self.algorithm_id(),
             &BitString::from_bytes(self.signature()),
             compat,
         )?;

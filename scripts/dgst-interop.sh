@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Differential tests of `dgst` (and its shortcuts `sha1` to `sha512`)
+# Differential tests of `dgst` (and its shortcuts `sha1` to `sha512-256`)
 # against a real OpenSSL:
 #
 # - every digest, on an empty file, "abc", and 100000 random bytes, in each
@@ -100,7 +100,7 @@ printf 'abc!' >other.txt
 
 # 1. Digests and MACs.
 long_key=$(printf 'k%.0s' $(seq 1 200))
-for d in sha1 sha224 sha256 sha384 sha512; do
+for d in sha1 sha224 sha256 sha384 sha512 sha512-224 sha512-256; do
     for f in empty.txt abc.txt random.bin; do
         same "$f" dgst "-$d" "$f"
         same "$f" dgst "-$d" -c "$f"
@@ -137,7 +137,8 @@ while read -r curve _ _ pkcs8; do
     if [[ "$curve" == ED25519 ]]; then
         digests=("")
     else
-        digests=(-sha1 -sha224 -sha256 -sha384 -sha512 "")
+        digests=(-sha1 -sha224 -sha256 -sha384 -sha512 -sha512-224 \
+            -sha512-256 "")
     fi
     for d in "${digests[@]}"; do
         dd=()
@@ -169,7 +170,8 @@ while read -r curve _ _ pkcs8; do
         else
             "$BALDSSL" dgst ${dd[@]+"${dd[@]}"} -sign key.pem -hex abc.txt \
                 >b.hex
-            check "$label: -hex label" grep -q '^EC-SHA[0-9-]*(abc.txt)= ' b.hex
+            check "$label: -hex label" grep -q '^EC-SHA[0-9/-]*(abc.txt)= ' \
+                b.hex
         fi
     done
     same abc.txt dgst -sign key.pem -verify pub.pem abc.txt

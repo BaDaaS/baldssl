@@ -1,7 +1,7 @@
 //! `baldssl dgst`: hash, MAC (message authentication code), sign and
 //! verify files, like `openssl dgst` (`apps/dgst.c`); and its shortcuts
-//! `sha1`, `sha224`, `sha256`, `sha384` and `sha512`, which are
-//! `dgst -<digest>`.
+//! `sha1`, `sha224`, `sha256`, `sha384`, `sha512`, `sha512-224` and
+//! `sha512-256`, which are `dgst -<digest>`.
 //!
 //! Terms: SHA, the Secure Hash Algorithm family of [FIPS 180-4]; HMAC, the
 //! hash-based MAC of [RFC 2104]; ECDSA, the Elliptic Curve Digital

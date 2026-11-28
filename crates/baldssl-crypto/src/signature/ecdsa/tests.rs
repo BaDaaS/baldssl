@@ -24,7 +24,10 @@ use crate::{
         model::AffineModel,
     },
     drbg::DrbgHash,
-    hash::{Algorithm, Sha1, Sha224, Sha256, Sha384, Sha512, WithHash},
+    hash::{
+        Algorithm, Sha1, Sha224, Sha256, Sha384, Sha512, Sha512_224,
+        Sha512_256, WithHash,
+    },
     instances::{P256, P384, P521},
     keys::EcKeyPair,
     secret::SecretScalar,
@@ -805,14 +808,22 @@ where
 {
     let pair = EcKeyPair::<C>::from_secret_opt(C::Scalar::ONE + C::Scalar::ONE)
         .unwrap();
-    let typed = [
-        Ecdsa::<C, Sha1>::sign_encoded(&pair, message),
-        Ecdsa::<C, Sha224>::sign_encoded(&pair, message),
-        Ecdsa::<C, Sha256>::sign_encoded(&pair, message),
-        Ecdsa::<C, Sha384>::sign_encoded(&pair, message),
-        Ecdsa::<C, Sha512>::sign_encoded(&pair, message),
-    ];
-    for (hash, typed) in Algorithm::ALL.into_iter().zip(typed) {
+    // An exhaustive match: a new hash is a compile error here.
+    let typed = |hash| match hash {
+        Algorithm::Sha1 => Ecdsa::<C, Sha1>::sign_encoded(&pair, message),
+        Algorithm::Sha224 => Ecdsa::<C, Sha224>::sign_encoded(&pair, message),
+        Algorithm::Sha256 => Ecdsa::<C, Sha256>::sign_encoded(&pair, message),
+        Algorithm::Sha384 => Ecdsa::<C, Sha384>::sign_encoded(&pair, message),
+        Algorithm::Sha512 => Ecdsa::<C, Sha512>::sign_encoded(&pair, message),
+        Algorithm::Sha512_224 => {
+            Ecdsa::<C, Sha512_224>::sign_encoded(&pair, message)
+        }
+        Algorithm::Sha512_256 => {
+            Ecdsa::<C, Sha512_256>::sign_encoded(&pair, message)
+        }
+    };
+    for hash in Algorithm::ALL {
+        let typed = typed(hash);
         let signature = sign_with_hash(hash, &pair, message).unwrap();
         assert_eq!(signature, typed.unwrap(), "{hash:?}");
         for other in Algorithm::ALL {

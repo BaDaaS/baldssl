@@ -636,10 +636,9 @@ fn issue(o: &Options, compat: Compat, out: &mut Outputs) -> Result<Vec<u8>> {
     }
     let digest = match s.digest {
         None => None,
-        Some(d) => Some(
-            signing_digest_opt(d)
-                .ok_or_else(|| Error::unsupported("x509 -req: digest sha1"))?,
-        ),
+        Some(d) => Some(signing_digest_opt(d).ok_or_else(|| {
+            Error::unsupported(format!("x509 -req: digest {}", d.name()))
+        })?),
     };
     CertificateTemplate::issued::<Line>(
         &request,

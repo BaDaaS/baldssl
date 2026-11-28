@@ -301,12 +301,14 @@ impl SerialSource {
     }
 }
 
-/// The digest a certificate can be signed with: every digest baldssl has
-/// but SHA-1, which baldssl does not sign with. `None` for SHA-1.
+/// The digest a certificate or a request can be signed with: every digest
+/// baldssl has but SHA-1, which baldssl does not sign with, and SHA-512/224
+/// and SHA-512/256, with which ECDSA has no algorithm identifier, so that
+/// OpenSSL refuses to sign with them too (exit code 1). `None` for those.
 #[must_use]
 pub(crate) fn signing_digest_opt(digest: Digest) -> Option<Digest> {
     match digest {
-        Digest::Sha1 => None,
+        Digest::Sha1 | Digest::Sha512_224 | Digest::Sha512_256 => None,
         d @ (Digest::Sha224
         | Digest::Sha256
         | Digest::Sha384

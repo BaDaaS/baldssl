@@ -1,4 +1,13 @@
-//! SHA-384 and SHA-512, [FIPS 180-4][fips180] sections 5.3.4, 5.3.5 and 6.4.
+//! SHA-384, SHA-512, SHA-512/224 and SHA-512/256, [FIPS 180-4][fips180]
+//! sections 5.3.4 to 5.3.6 and 6.4 to 6.7.
+//!
+//! The four share the compression function and the padding; each has its
+//! own initial hash value and keeps a prefix of the final one: SHA-384 its
+//! first six words, SHA-512/224 its first 224 bits (three words and a
+//! half), SHA-512/256 its first four words (section 6.7). The initial
+//! values of SHA-512/t are themselves SHA-512 outputs: the hash of the
+//! string `SHA-512/t`, from SHA-512's initial value with every byte XORed
+//! with `0xa5` (section 5.3.6), which the tests recompute.
 //!
 //! Same discipline as `sha256`: fixed-size arrays indexed by loop counters
 //! below their length, and `wrapping_*` for addition modulo 2^64.
@@ -133,6 +142,36 @@ const H384: [u64; 8] = [
     0x47b5_481d_befa_4fa4,
 ];
 
+/// The initial hash value of SHA-512/224 ([FIPS 180-4][fips180], section
+/// 5.3.6.1).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+const H512_224: [u64; 8] = [
+    0x8c3d_37c8_1954_4da2,
+    0x73e1_9966_89dc_d4d6,
+    0x1dfa_b7ae_32ff_9c82,
+    0x679d_d514_582f_9fcf,
+    0x0f6d_2b69_7bd4_4da8,
+    0x77e3_6f73_04c4_8942,
+    0x3f9d_85a8_6a1d_36c8,
+    0x1112_e6ad_91d6_92a1,
+];
+
+/// The initial hash value of SHA-512/256 ([FIPS 180-4][fips180], section
+/// 5.3.6.2).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+const H512_256: [u64; 8] = [
+    0x2231_2194_fc2b_f72c,
+    0x9f55_5fa3_c84c_64c2,
+    0x2393_b86b_6f53_b151,
+    0x9638_7719_5940_eabd,
+    0x9628_3ee2_a88e_ffe3,
+    0xbe5e_1e25_5386_3992,
+    0x2b01_99fc_2c85_b8aa,
+    0x0eb7_2ddc_81c5_2ca2,
+];
+
 /// The compression function ([FIPS 180-4][fips180], section 6.4.2).
 ///
 /// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
@@ -245,8 +284,15 @@ impl Engine {
     }
 }
 
-fn output(h: &[u64; 8], words: usize) -> Vec<u8> {
-    h[..words].iter().flat_map(|w| w.to_be_bytes()).collect()
+/// The first `bytes` bytes of the final hash value, big-endian word by
+/// word: the truncation of [FIPS 180-4][fips180], section 6.7 (224 bits of
+/// SHA-512/224 end in the middle of the fourth word).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+fn output(h: &[u64; 8], bytes: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = h.iter().flat_map(|w| w.to_be_bytes()).collect();
+    out.truncate(bytes);
+    out
 }
 
 /// SHA-512.
@@ -265,7 +311,7 @@ impl Digest for Sha512 {
         self.0.update(data);
     }
     fn finalize(self) -> Vec<u8> {
-        output(&self.0.finalize(), 8)
+        output(&self.0.finalize(), Self::OUTPUT_LEN)
     }
 }
 
@@ -285,6 +331,79 @@ impl Digest for Sha384 {
         self.0.update(data);
     }
     fn finalize(self) -> Vec<u8> {
-        output(&self.0.finalize(), 6)
+        output(&self.0.finalize(), Self::OUTPUT_LEN)
+    }
+}
+
+/// SHA-512/224: SHA-512 with its own IV, truncated to 224 bits
+/// ([FIPS 180-4][fips180], section 6.7).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+#[derive(Clone)]
+pub struct Sha512_224(Engine);
+
+impl crate::sealed::Sealed for Sha512_224 {}
+
+impl Digest for Sha512_224 {
+    const OUTPUT_LEN: usize = 28;
+    const BLOCK_LEN: usize = 128;
+    fn new() -> Self {
+        Sha512_224(Engine::new(H512_224))
+    }
+    fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+    fn finalize(self) -> Vec<u8> {
+        output(&self.0.finalize(), Self::OUTPUT_LEN)
+    }
+}
+
+/// SHA-512/256: SHA-512 with its own IV, truncated to 256 bits
+/// ([FIPS 180-4][fips180], section 6.7).
+///
+/// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+#[derive(Clone)]
+pub struct Sha512_256(Engine);
+
+impl crate::sealed::Sealed for Sha512_256 {}
+
+impl Digest for Sha512_256 {
+    const OUTPUT_LEN: usize = 32;
+    const BLOCK_LEN: usize = 128;
+    fn new() -> Self {
+        Sha512_256(Engine::new(H512_256))
+    }
+    fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+    fn finalize(self) -> Vec<u8> {
+        output(&self.0.finalize(), Self::OUTPUT_LEN)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Engine, H512, H512_224, H512_256};
+
+    /// The XOR that turns SHA-512's initial value into the one the IV
+    /// generation function starts from ([FIPS 180-4][fips180], section
+    /// 5.3.6: each byte with `a5`).
+    ///
+    /// [fips180]: https://csrc.nist.gov/pubs/fips/180-4/upd1/final
+    const IV_MASK: u64 = 0xa5a5_a5a5_a5a5_a5a5;
+
+    /// The initial values of SHA-512/224 and SHA-512/256 are what the
+    /// standard's IV generation function gives: SHA-512, from the masked
+    /// initial value, of `SHA-512/224` and `SHA-512/256`.
+    #[test]
+    fn initial_values_are_generated() {
+        let masked = H512.map(|w| w ^ IV_MASK);
+        for (name, iv) in
+            [(&b"SHA-512/224"[..], H512_224), (b"SHA-512/256", H512_256)]
+        {
+            let mut engine = Engine::new(masked);
+            engine.update(name);
+            assert_eq!(engine.finalize(), iv);
+        }
     }
 }

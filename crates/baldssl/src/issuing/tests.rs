@@ -67,7 +67,9 @@ fn signing_digests() {
     ] {
         assert_eq!(signing_digest_opt(d), Some(d));
     }
-    assert_eq!(signing_digest_opt(Digest::Sha1), None);
+    for d in [Digest::Sha1, Digest::Sha512_224, Digest::Sha512_256] {
+        assert_eq!(signing_digest_opt(d), None, "{d:?}");
+    }
 }
 
 /// The file is read and incremented, and its new contents are an effect

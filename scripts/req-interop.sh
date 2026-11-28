@@ -301,4 +301,18 @@ for who in OPENSSL BALDSSL; do
 done
 same "-subj=<Latin-1>" "$WORK/OPENSSL.der" "$WORK/BALDSSL.der"
 
+# ECDSA with SHA-512/224 or SHA-512/256 has no algorithm identifier
+# (RFC 5758 names SHA-224 to SHA-512 only), so neither signs a request or
+# a certificate with it.
+"$OPENSSL" genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+    -out "$WORK/ec.pem"
+for who in OPENSSL BALDSSL; do
+    for d in -sha512-224 -sha512-256; do
+        refuse "$who refuses req $d" "${!who}" req -new -key "$WORK/ec.pem" \
+            -subj /CN=x "$d" -out "$WORK/x.pem"
+        refuse "$who refuses req -x509 $d" "${!who}" req -new -x509 \
+            -key "$WORK/ec.pem" -subj /CN=x "$d" -out "$WORK/x.pem"
+    done
+done
+
 interop_summary req-interop "$pass" "$fail"
