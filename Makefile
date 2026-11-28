@@ -8,6 +8,9 @@ OPENSSL_3 ?= openssl
 OPENSSL_4 ?= openssl
 OPENSSL ?= openssl
 BALDSSL ?= target/debug/baldssl
+# VERBOSE=1 makes make interop print a PASS line for every passing case.
+VERBOSE ?= 0
+export VERBOSE
 FUZZ_TARGET ?= x509
 FUZZ_SECONDS ?= 60
 SHELL_SCRIPTS := $(wildcard scripts/*.sh)
@@ -258,7 +261,7 @@ fuzz: ## Fuzz a target: make fuzz FUZZ_TARGET=x509 FUZZ_SECONDS=60
 		-- -max_total_time=$(FUZZ_SECONDS)
 
 .PHONY: interop
-interop: build fixtures ## Diff baldssl against $(OPENSSL), both directions
+interop: build fixtures ## Diff baldssl against $(OPENSSL) (VERBOSE=1: every case)
 	scripts/interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/req-interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/x509-req-interop.sh $(OPENSSL) $(BALDSSL)

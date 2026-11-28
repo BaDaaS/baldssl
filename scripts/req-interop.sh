@@ -54,7 +54,7 @@ check() {
     local label=$1
     shift
     if "$@" >"$WORK/out" 2>&1; then
-        pass=$((pass + 1))
+        interop_pass "$label"
     else
         echo "FAIL $label: $(head -3 "$WORK/out")"
         fail=$((fail + 1))
@@ -69,14 +69,14 @@ refuse() {
         echo "FAIL $label: accepted"
         fail=$((fail + 1))
     else
-        pass=$((pass + 1))
+        interop_pass "$label (refused)"
     fi
 }
 
 same() {
     # same <label> <file> <file>
     if cmp -s "$2" "$3"; then
-        pass=$((pass + 1))
+        interop_pass "$1"
     else
         echo "FAIL $1: outputs differ"
         fail=$((fail + 1))
@@ -131,7 +131,7 @@ while read -r curve _private _public pkcs8; do
         if [[ "$OPENSSL_VERSION" == 3.0.* ]]; then
             if "$OPENSSL" req -in "$WORK/bad.der" -inform DER -verify \
                 -noout 2>&1 | grep -q "verify failure"; then
-                pass=$((pass + 1))
+                interop_pass "$label"
             else
                 echo "FAIL $label: OpenSSL 3.0 does not report the failure"
                 fail=$((fail + 1))
@@ -259,7 +259,7 @@ for spec in "${newkeys[@]}"; do
     same "$label: the key is the request's" "$WORK/k.pub" "$WORK/r.pub"
     same "$label: standard error" "$WORK/OPENSSL/err.txt" "$b/err.txt"
     if [[ "$(mode "$b/privkey.pem")" == 600 ]]; then
-        pass=$((pass + 1))
+        interop_pass "$label: key file mode"
     else
         echo "FAIL $label: key file mode $(mode "$b/privkey.pem")"
         fail=$((fail + 1))

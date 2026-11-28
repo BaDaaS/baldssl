@@ -35,17 +35,21 @@ source "$ROOT/scripts/interop-profile.sh"
 pass=0
 fail=0
 
-ok() { pass=$((pass + 1)); }
+ok() { interop_pass "$1"; }
 ko() {
     echo "FAIL $1"
     fail=$((fail + 1))
 }
-same() { if cmp -s "$2" "$3"; then ok; else ko "$1: outputs differ"; fi; }
+same() { if cmp -s "$2" "$3"; then ok "$1"; else ko "$1: outputs differ"; fi; }
 refuse() {
     # refuse <label> <command...>: the command must fail.
     local label=$1
     shift
-    if "$@" >/dev/null 2>&1; then ko "$label: accepted"; else ok; fi
+    if "$@" >/dev/null 2>&1; then
+        ko "$label: accepted"
+    else
+        ok "$label (refused)"
+    fi
 }
 unhex() { perl -e 'print pack("H*", shift)' "$1"; }
 
@@ -84,7 +88,7 @@ while read -r ca_curve _ _ ca_pkcs8; do
         fi
         if "$OPENSSL" verify -CAfile "$WORK/ca.crt" "$WORK/b.pem" \
             >/dev/null 2>&1; then
-            ok
+            ok "$label: OpenSSL verifies baldssl's certificate"
         else
             ko "$label: OpenSSL does not verify baldssl's certificate"
         fi
@@ -107,7 +111,7 @@ while read -r ca_curve _ _ ca_pkcs8; do
     if [[ -f "$WORK/b-ca.srl" ]] &&
         [[ "serial=$(cat "$WORK/b-ca.srl")" == \
         "$("$OPENSSL" x509 -in "$WORK/b.pem" -noout -serial)" ]]; then
-        ok
+        ok "$label: -CAcreateserial"
     else
         ko "$label: -CAcreateserial"
     fi
@@ -133,14 +137,14 @@ while read -r ca_curve _ _ ca_pkcs8; do
             -set_serial 1 -out "$WORK/x.pem" >/dev/null 2>&1; then
             ko "CA $ca_curve: $who accepts a changed request"
         else
-            ok
+            ok "CA $ca_curve: $who refuses a changed request"
         fi
         if "${!who}" x509 -req -in "$WORK/r.csr" -CA "$WORK/ca.crt" \
             -CAkey "$WORK/leaf.der" -CAkeyform DER -set_serial 1 \
             -out "$WORK/x.pem" >/dev/null 2>&1; then
             ko "CA $ca_curve: $who accepts another CA key"
         else
-            ok
+            ok "CA $ca_curve: $who refuses another CA key"
         fi
     done
 done <<<"$keys"
