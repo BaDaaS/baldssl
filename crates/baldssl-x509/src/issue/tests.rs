@@ -19,11 +19,20 @@ use baldssl_test_utils::{fixture, hex};
 use super::{
     CertificateTemplate, CopyExtensions, IssuedExtensions, SerialNumber,
 };
+#[cfg(feature = "openssl-4")]
+use crate::OpenSsl4;
+#[cfg(feature = "openssl-3-0")]
+use crate::OpenSsl30;
+#[cfg(feature = "openssl-3-5")]
+use crate::OpenSsl35;
+#[cfg(feature = "openssl-3-6")]
+use crate::OpenSsl36;
 use crate::{
-    Certificate, CertificationRequest, Compat, SignatureAlgorithm,
+    Certificate, CertificationRequest, Profile, SignatureAlgorithm,
     cert::Validity,
     dn::{DistinguishedName, InputEncoding, RdnMode, UTF8_ONLY},
     extension::{ExtensionValue, Extensions},
+    profile::AnyProfile,
 };
 
 /// The parts of a DER certificate: what is signed, and the signature.
@@ -33,7 +42,8 @@ fn split(der: &[u8]) -> (RawTlv, Vec<u8>) {
     (tbs, signature)
 }
 
-/// baldssl's certificate against OpenSSL's, for every fixture line.
+/// baldssl's certificate against OpenSSL 3.5's, for every fixture line.
+#[cfg(feature = "openssl-3-5")]
 #[test]
 fn matches_openssl() {
     let mut count = 0;
@@ -65,12 +75,8 @@ fn matches_openssl() {
         let theirs = hex(f[6]);
         let public = PublicKey::from(&key);
         let signature_algorithm = key.default_signature_algorithm();
-        let ours = CertificateTemplate::self_signed(
-            &subject,
-            &public,
-            serial,
-            validity,
-            Compat::V3,
+        let ours = CertificateTemplate::self_signed::<OpenSsl35>(
+            &subject, &public, serial, validity,
         )
         .sign(&key, signature_algorithm)
         .unwrap();
@@ -110,22 +116,49 @@ fn authority_key_identifier_by_release() {
     )
     .unwrap()
     .name;
-    let has_authority = |compat| {
-        CertificateTemplate::self_signed(
+    let has_authority = |template: CertificateTemplate| {
+        template.extensions.as_slice().iter().any(|e| {
+            matches!(e.value, ExtensionValue::AuthorityKeyIdentifier(_))
+        })
+    };
+    let serial = || SerialNumber::new_opt(&[1]).unwrap();
+    let validity = || Validity::from_unix_seconds(0, 1);
+    #[cfg(feature = "openssl-3-0")]
+    assert!(has_authority(
+        CertificateTemplate::self_signed::<OpenSsl30>(
             &subject,
             &public,
-            SerialNumber::new_opt(&[1]).unwrap(),
-            Validity::from_unix_seconds(0, 1),
-            compat,
+            serial(),
+            validity(),
         )
-        .extensions
-        .as_slice()
-        .iter()
-        .any(|e| matches!(e.value, ExtensionValue::AuthorityKeyIdentifier(_)))
-    };
-    assert!(has_authority(Compat::V30));
-    assert!(has_authority(Compat::V3));
-    assert!(!has_authority(Compat::V4));
+    ));
+    #[cfg(feature = "openssl-3-5")]
+    assert!(has_authority(
+        CertificateTemplate::self_signed::<OpenSsl35>(
+            &subject,
+            &public,
+            serial(),
+            validity(),
+        )
+    ));
+    #[cfg(feature = "openssl-3-6")]
+    assert!(has_authority(
+        CertificateTemplate::self_signed::<OpenSsl36>(
+            &subject,
+            &public,
+            serial(),
+            validity(),
+        )
+    ));
+    #[cfg(feature = "openssl-4")]
+    assert!(!has_authority(
+        CertificateTemplate::self_signed::<OpenSsl4>(
+            &subject,
+            &public,
+            serial(),
+            validity(),
+        )
+    ));
 }
 
 /// baldssl's certificate for a request against the one `openssl x509 -req`
@@ -134,11 +167,25 @@ fn authority_key_identifier_by_release() {
 /// key as the subject, the CA's own key included.
 #[test]
 fn issued_matches_openssl() {
-    for (file, compat) in [
-        ("x509-req/issued-v30.txt", Compat::V30),
-        ("x509-req/issued-v3.txt", Compat::V3),
-        ("x509-req/issued-v4.txt", Compat::V4),
-    ] {
+    #[cfg(feature = "openssl-3-0")]
+    issued_matches::<OpenSsl30>("x509-req/issued-v30.txt");
+    #[cfg(feature = "openssl-3-5")]
+    issued_matches::<OpenSsl35>("x509-req/issued-v3.txt");
+    #[cfg(feature = "openssl-4")]
+    issued_matches::<OpenSsl4>("x509-req/issued-v4.txt");
+}
+
+/// The certificates of the fixture `file`, recorded from the release line
+/// `P`, against baldssl's.
+#[allow(
+    dead_code,
+    reason = "unused when none of the lines with a fixture is compiled in"
+)]
+fn issued_matches<P>(file: &str)
+where
+    P: Profile,
+{
+    {
         let mut count = 0;
         for line in fixture(file).lines().filter(|l| !l.starts_with('#')) {
             let f: Vec<&str> = line.split(' ').collect();
@@ -156,14 +203,13 @@ fn issued_matches_openssl() {
             let theirs = hex(f[4]);
             let validity = Certificate::from_der(&theirs).unwrap().validity;
             let signature_algorithm = ca_key.default_signature_algorithm();
-            let ours = CertificateTemplate::issued(
+            let ours = CertificateTemplate::issued::<P>(
                 &request,
                 &ca,
                 &ca_key,
                 SerialNumber::new_opt(&[1, 2]).unwrap(),
                 validity,
                 &IssuedExtensions::default(),
-                compat,
             )
             .unwrap()
             .sign(&ca_key, signature_algorithm)
@@ -207,14 +253,13 @@ fn issued_needs_the_ca_key() {
     let other =
         AnyPrivateKey::from_secret(Algorithm::Ed25519, &[9; 32]).unwrap();
     assert!(
-        CertificateTemplate::issued(
+        CertificateTemplate::issued::<AnyProfile>(
             &request,
             &ca,
             &other,
             SerialNumber::new_opt(&[1]).unwrap(),
             Validity::from_unix_seconds(0, 1),
             &IssuedExtensions::default(),
-            Compat::V3,
         )
         .is_err()
     );
@@ -236,12 +281,11 @@ fn issued_needs_a_ca_key_identifier() {
         .unwrap()
         .name
     };
-    let mut ca = CertificateTemplate::self_signed(
+    let mut ca = CertificateTemplate::self_signed::<AnyProfile>(
         &name(b"/CN=CA"),
         &PublicKey::from(&ca_key),
         SerialNumber::new_opt(&[1]).unwrap(),
         Validity::from_unix_seconds(0, 1),
-        Compat::V3,
     );
     ca.extensions = crate::extension::Extensions::new();
     let ca_der = ca.sign(&ca_key, SignatureAlgorithm::Ed25519).unwrap();
@@ -255,23 +299,51 @@ fn issued_needs_a_ca_key_identifier() {
         &Extensions::new(),
     )
     .unwrap();
-    for compat in [Compat::V3, Compat::V4] {
-        assert!(
-            matches!(
-                CertificateTemplate::issued(
-                    &request,
-                    &ca,
-                    &ca_key,
-                    SerialNumber::new_opt(&[2]).unwrap(),
-                    Validity::from_unix_seconds(0, 1),
-                    &IssuedExtensions::default(),
-                    compat,
-                ),
-                Err(baldssl_core::Error::Unsupported(_))
-            ),
-            "{compat:?}"
-        );
-    }
+    let refused = |issued: Result<CertificateTemplate, Error>| {
+        matches!(issued, Err(Error::Unsupported(_)))
+    };
+    let serial = || SerialNumber::new_opt(&[2]).unwrap();
+    let validity = || Validity::from_unix_seconds(0, 1);
+    let extensions = IssuedExtensions::default();
+    // At signing (3.2 to 3.6) and from the configuration (4) alike. 3.0
+    // adds no key identifier to a certificate without extensions, so it
+    // has none to look for.
+    #[cfg(feature = "openssl-3-0")]
+    assert!(!refused(CertificateTemplate::issued::<OpenSsl30>(
+        &request,
+        &ca,
+        &ca_key,
+        serial(),
+        validity(),
+        &extensions,
+    )));
+    #[cfg(feature = "openssl-3-5")]
+    assert!(refused(CertificateTemplate::issued::<OpenSsl35>(
+        &request,
+        &ca,
+        &ca_key,
+        serial(),
+        validity(),
+        &extensions,
+    )));
+    #[cfg(feature = "openssl-3-6")]
+    assert!(refused(CertificateTemplate::issued::<OpenSsl36>(
+        &request,
+        &ca,
+        &ca_key,
+        serial(),
+        validity(),
+        &extensions,
+    )));
+    #[cfg(feature = "openssl-4")]
+    assert!(refused(CertificateTemplate::issued::<OpenSsl4>(
+        &request,
+        &ca,
+        &ca_key,
+        serial(),
+        validity(),
+        &extensions,
+    )));
 }
 
 #[test]

@@ -137,21 +137,6 @@ impl Compat {
         }
     }
 
-    /// Whether `req -x509` with the default configuration writes an
-    /// authority key identifier in a self-signed certificate: the `v3_ca`
-    /// section of `apps/openssl.cnf` says `keyid:always,issuer` in 3.x, and
-    /// `keyid:nonss,issuer:nonss` ("non-self-signed") in 4.
-    pub(crate) fn self_signed_authority_key_id(
-        self,
-    ) -> SelfSignedAuthorityKeyId {
-        match self {
-            Compat::V30 | Compat::V3 | Compat::V36 => {
-                SelfSignedAuthorityKeyId::Written
-            }
-            Compat::V4 => SelfSignedAuthorityKeyId::Omitted,
-        }
-    }
-
     /// What a second option an application does not declare does
     /// (`opt_next` in `apps/lib/opt.c`): OpenSSL 3.0 and 3.1 keep the last
     /// one, and from 3.2 the second is refused as it is read ("Multiple
@@ -184,19 +169,6 @@ impl Compat {
         match self {
             Compat::V30 => "Unknown cipher",
             Compat::V3 | Compat::V36 | Compat::V4 => "Unknown option or cipher",
-        }
-    }
-
-    /// Where `x509 -req -CA` takes the key identifiers it adds from. In 3.x,
-    /// `do_X509_sign` (`apps/lib/apps.c`) adds the missing ones when it
-    /// signs, which 3.0 does only for a certificate with extensions; in 4,
-    /// they come from the `default_skid_akid` section of `apps/openssl.cnf`
-    /// (`extensions = default_skid_akid`).
-    pub(crate) fn default_key_identifiers(self) -> DefaultKeyIdentifiers {
-        match self {
-            Compat::V30 => DefaultKeyIdentifiers::AtSigningWithExtensions,
-            Compat::V3 | Compat::V36 => DefaultKeyIdentifiers::AtSigning,
-            Compat::V4 => DefaultKeyIdentifiers::FromConfiguration,
         }
     }
 
@@ -475,16 +447,6 @@ enum EcKeySize {
     BitsAndSecurity,
 }
 
-/// Whether a self-signed certificate gets an authority key identifier
-/// ([`Compat::self_signed_authority_key_id`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SelfSignedAuthorityKeyId {
-    /// It does, its own key identifier.
-    Written,
-    /// It does not.
-    Omitted,
-}
-
 /// What a second undeclared option does ([`Compat::undeclared_options`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UndeclaredOptions {
@@ -503,21 +465,6 @@ pub enum ExtraOperands {
     HintOnly,
     /// With a line naming it, then the hint (from OpenSSL 3.2).
     Named,
-}
-
-/// When `x509 -req -CA` adds a subject and an authority key identifier
-/// ([`Compat::default_key_identifiers`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DefaultKeyIdentifiers {
-    /// When signing, each one missing, the authority's left out when the
-    /// request's key is the CA's.
-    AtSigning,
-    /// As [`DefaultKeyIdentifiers::AtSigning`], and only to a certificate
-    /// that has extensions already.
-    AtSigningWithExtensions,
-    /// From the default configuration, after the copied extensions, and
-    /// only without an extension file.
-    FromConfiguration,
 }
 
 /// The months as `ASN1_TIME_print` names them.

@@ -24,7 +24,8 @@
 //! req -x509` uses: a subject key identifier (the SHA-1 of the key's bits,
 //! [RFC 5280 section 4.2.1.2], method 1), an authority key identifier, and
 //! basic constraints, critical, `CA:TRUE`. The authority key identifier
-//! depends on the release line ([`Compat`]): OpenSSL 3's file says
+//! depends on the release line
+//! ([`Profile::SELF_SIGNED_AUTHORITY_KEY_ID`]): OpenSSL 3's file says
 //! `keyid:always,issuer`, so a self-signed certificate carries its own key
 //! identifier there too; OpenSSL 4's says `keyid:nonss,issuer:nonss`
 //! ("non-self-signed"), so it carries none. baldssl reads no configuration
@@ -65,12 +66,12 @@ use baldssl_crypto::{
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
 
 use crate::{
-    Certificate, CertificationRequest, Compat,
+    Certificate, CertificationRequest, DefaultKeyIdentifiers, Profile,
+    SelfSignedAuthorityKeyId,
     algorithm::{AlgorithmIdentifier, algorithm_identifier},
     cert::Validity,
     dn::DistinguishedName,
     extension::{Extension, ExtensionValue, Extensions},
-    text::{DefaultKeyIdentifiers, SelfSignedAuthorityKeyId},
     version::{Version, version_field},
 };
 
@@ -377,23 +378,25 @@ pub struct CertificateTemplate {
 
 impl CertificateTemplate {
     /// The self-signed CA certificate `openssl req -x509` of the release
-    /// line `compat` writes with its default configuration: issuer and
+    /// line `P` writes with its default configuration: issuer and
     /// subject the same name, and the extensions of `v3_ca` (see the module
     /// documentation).
     #[must_use]
-    pub fn self_signed(
+    pub fn self_signed<P>(
         subject: &DistinguishedName,
         key: &PublicKey,
         serial: SerialNumber,
         validity: Validity,
-        compat: Compat,
-    ) -> Self {
+    ) -> Self
+    where
+        P: Profile,
+    {
         let name = subject.to_raw();
         let id = key_identifier(key);
         let mut extensions = vec![Extension::new(
             ExtensionValue::SubjectKeyIdentifier(id.clone()),
         )];
-        match compat.self_signed_authority_key_id() {
+        match P::SELF_SIGNED_AUTHORITY_KEY_ID {
             SelfSignedAuthorityKeyId::Written => extensions.push(
                 Extension::new(ExtensionValue::AuthorityKeyIdentifier(id)),
             ),
@@ -416,7 +419,7 @@ impl CertificateTemplate {
     }
 
     /// The certificate a CA issues for `request`, as `openssl x509 -req -CA`
-    /// of the release line `compat` writes it: the request's subject and
+    /// of the release line `P` writes it: the request's subject and
     /// key, the CA's subject as issuer, and `extensions` (see
     /// [`IssuedExtensions`]) with the key identifiers OpenSSL adds. The
     /// request's signature is not checked here.
@@ -437,15 +440,17 @@ impl CertificateTemplate {
     /// certificate and CA private key do not match"; unsupported when the
     /// CA certificate has no subject key identifier, where OpenSSL names
     /// the issuer and serial instead.
-    pub fn issued(
+    pub fn issued<P>(
         request: &CertificationRequest,
         ca: &Certificate<'_>,
         ca_key: &AnyPrivateKey,
         serial: SerialNumber,
         validity: Validity,
         extensions: &IssuedExtensions,
-        compat: Compat,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        P: Profile,
+    {
         if !ca.matches_private_key(ca_key) {
             return Err(Error::invalid(
                 "CA certificate and CA private key do not match",
@@ -479,7 +484,7 @@ impl CertificateTemplate {
             }
             Ok(given.as_slice().iter().cloned().chain(defaults).collect())
         };
-        let all = match compat.default_key_identifiers() {
+        let all = match P::DEFAULT_KEY_IDENTIFIERS {
             DefaultKeyIdentifiers::FromConfiguration => {
                 match extensions.extension_file {
                     ExtensionFile::Given => given.clone(),
