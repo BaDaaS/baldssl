@@ -9,10 +9,10 @@ use baldssl_crypto::{hash::Algorithm, secret::SecretBytes};
 use baldssl_x509::Compat;
 
 use super::{
-    Encoding, Escape, EscapedName, KeyKind, KeyRole, Labels, LoadFailure,
-    Operation, Options, Separator, key_load_line, parse_options, prepare,
+    Encoding, Escape, EscapedName, KeyKind, KeyRole, Labels, Operation,
+    Options, Separator, key_load_line, parse_options, prepare,
 };
-use crate::outputs::Outputs;
+use crate::{load::LoadFailure, outputs::Outputs};
 
 fn os(v: &[&str]) -> Vec<OsString> {
     v.iter().map(OsString::from).collect()
@@ -173,7 +173,7 @@ fn key_load_lines() {
         "Could not open file or uri for loading public key from k"
     );
     assert_eq!(
-        line(KeyKind::Public, LoadFailure::NoKey, Compat::V3),
+        line(KeyKind::Public, LoadFailure::Undecoded, Compat::V3),
         "Could not find private key of public key from k"
     );
     assert_eq!(
@@ -182,11 +182,11 @@ fn key_load_lines() {
          file or directory"
     );
     assert_eq!(
-        line(KeyKind::Private, LoadFailure::NoKey, Compat::V30),
+        line(KeyKind::Private, LoadFailure::Undecoded, Compat::V30),
         "Could not read private key from k"
     );
     assert_eq!(
-        line(KeyKind::Private, LoadFailure::NoKey, Compat::V4),
+        line(KeyKind::Private, LoadFailure::Undecoded, Compat::V4),
         "Could not find or decode private key from k"
     );
 }

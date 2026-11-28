@@ -30,6 +30,7 @@ mod genpkey;
 mod input;
 mod issuing;
 mod keygen;
+mod load;
 mod outputs;
 mod pkey;
 mod req;

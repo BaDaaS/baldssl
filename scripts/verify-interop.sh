@@ -45,9 +45,11 @@ same() {
     shift
     "$OPENSSL" verify "$@" >o.out 2>o.err || ro=$?
     "$BALDSSL" verify "$@" >b.out 2>b.err || rb=$?
-    # The report: every line up to "verification failed"; OpenSSL may
-    # print its error stack after it.
-    sed '/verification failed/q' o.err >o3
+    # The report: every line up to "verification failed", without
+    # OpenSSL's error stack, which it prints after it or after a file it
+    # could not load.
+    sed '/verification failed/q' o.err | grep -Ev '^[0-9A-F]+:error:' >o3 ||
+        true
     sed '/verification failed/q' b.err >b3
     if [[ "$ro" -eq "$rb" ]] && cmp -s o.out b.out && cmp -s o3 b3; then
         interop_pass "$label"
@@ -191,5 +193,24 @@ if [[ "$OPENSSL_VERSION" != 3.0.* ]]; then
             -CAfile forever.pem forever.pem
     done
 fi
+
+# Files that do not load: a certificate to verify is reported and the
+# others verified; intermediates (loaded when their option is read) and
+# trust anchors (loaded after) end the command.
+printf 'not a certificate\n' >garbage.txt
+: >empty.pem
+same "load: missing target" -CAfile root.pem missing.pem
+same "load: garbage target" -CAfile root.pem garbage.txt
+same "load: empty target" -CAfile root.pem empty.pem
+same "load: one of several" -CAfile root.pem -untrusted mid.pem \
+    missing.pem garbage.txt leaf.pem
+same "load: missing untrusted" -CAfile root.pem -untrusted missing.pem leaf.pem
+same "load: garbage untrusted" -CAfile root.pem -untrusted garbage.txt leaf.pem
+same "load: empty untrusted" -CAfile root.pem -untrusted empty.pem leaf.pem
+same "load: missing CAfile" -CAfile missing.pem leaf.pem
+same "load: garbage CAfile" -CAfile garbage.txt leaf.pem
+same "load: empty CAfile" -CAfile empty.pem leaf.pem
+same "load: untrusted before CAfile" -CAfile missing.pem \
+    -untrusted missing.pem leaf.pem
 
 interop_summary verify-interop "$pass" "$fail"
