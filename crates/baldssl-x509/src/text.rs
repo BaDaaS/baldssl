@@ -27,7 +27,7 @@ use baldssl_crypto::models::weierstrass::{
 use baldssl_pkey::{AnyPrivateKey, ED25519_KEY_LEN, PublicKey};
 
 use crate::{
-    CertificationRequest,
+    BnSignByte, CertificationRequest, EcKeySize,
     algorithm::AlgorithmIdentifier,
     cert::{Certificate, SubjectPublicKeyInfo},
     ext::ExtensionIndent,
@@ -100,52 +100,6 @@ impl Default for Compat {
 }
 
 impl Compat {
-    /// Bytes per line in `ASN1_buf_print` (keys, modulus).
-    fn key_bytes_per_line(self) -> usize {
-        match self {
-            Compat::V30 | Compat::V3 | Compat::V36 => 15,
-            Compat::V4 => 16,
-        }
-    }
-
-    /// Bytes per line in `X509_signature_dump`.
-    fn signature_bytes_per_line(self) -> usize {
-        match self {
-            Compat::V30 | Compat::V3 | Compat::V36 => 18,
-            Compat::V4 => 24,
-        }
-    }
-
-    /// Whether a bignum with its top bit set is printed with a leading
-    /// `00:` (the two's-complement sign byte): `ASN1_bn_print` in
-    /// `crypto/asn1/t_pkey.c` adds it in 3.x, and OpenSSL 4 no longer does.
-    fn bn_sign_byte(self) -> bool {
-        match self {
-            Compat::V30 | Compat::V3 | Compat::V36 => true,
-            Compat::V4 => false,
-        }
-    }
-
-    /// The size an EC key's header gives (`Public-Key: (...)`), as
-    /// `ec_to_text` in
-    /// `providers/implementations/encode_decode/encode_key2text.c` writes
-    /// it: the field size in 3.x, and the security level too in 4.
-    fn ec_key_size(self) -> EcKeySize {
-        match self {
-            Compat::V30 | Compat::V3 | Compat::V36 => EcKeySize::Bits,
-            Compat::V4 => EcKeySize::BitsAndSecurity,
-        }
-    }
-
-    /// How this release line prints names.
-    #[must_use]
-    pub fn name_style(self) -> NameStyle {
-        match self {
-            Compat::V30 => NameStyle::Oneline,
-            Compat::V3 | Compat::V36 | Compat::V4 => NameStyle::Utf8,
-        }
-    }
-
     /// The short name of the line: the release, or its major version when
     /// the line covers several minor ones.
     #[must_use]
@@ -200,13 +154,67 @@ impl FromStr for Compat {
     }
 }
 
-/// What an EC key's header gives as its size ([`Compat::ec_key_size`]).
+/// How a release line lays out `-text`: the [`Profile`] items text
+/// printing reads, as a value ([`Text::Layout`] of certificates and
+/// requests).
+///
+/// [`Profile`]: crate::Profile
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EcKeySize {
-    /// `256 bit`.
-    Bits,
-    /// `256 bit field, 128 bit security level`.
-    BitsAndSecurity,
+pub struct TextLayout {
+    /// [`Profile::KEY_BYTES_PER_LINE`](crate::Profile::KEY_BYTES_PER_LINE).
+    key_bytes_per_line: usize,
+    /// [`Profile::SIGNATURE_BYTES_PER_LINE`](crate::Profile::SIGNATURE_BYTES_PER_LINE).
+    signature_bytes_per_line: usize,
+    /// [`Profile::BN_SIGN_BYTE`](crate::Profile::BN_SIGN_BYTE).
+    bn_sign_byte: BnSignByte,
+    /// [`Profile::EC_KEY_SIZE`](crate::Profile::EC_KEY_SIZE).
+    ec_key_size: EcKeySize,
+    /// [`Profile::NAME_STYLE`](crate::Profile::NAME_STYLE).
+    name_style: NameStyle,
+}
+
+impl TextLayout {
+    /// The layout of the release line `P`.
+    #[must_use]
+    pub const fn of<P>() -> Self
+    where
+        P: crate::Profile,
+    {
+        TextLayout {
+            key_bytes_per_line: P::KEY_BYTES_PER_LINE,
+            signature_bytes_per_line: P::SIGNATURE_BYTES_PER_LINE,
+            bn_sign_byte: P::BN_SIGN_BYTE,
+            ec_key_size: P::EC_KEY_SIZE,
+            name_style: P::NAME_STYLE,
+        }
+    }
+}
+
+/// The layout of the release line a value names, through [`Compat::run`].
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] when the line is not compiled in.
+impl TryFrom<Compat> for TextLayout {
+    type Error = Error;
+
+    fn try_from(compat: Compat) -> Result<Self> {
+        /// The layout of the profile it is applied to.
+        struct Of;
+
+        impl crate::WithProfile for Of {
+            type Output = TextLayout;
+
+            fn call<P>(self) -> TextLayout
+            where
+                P: crate::Profile,
+            {
+                TextLayout::of::<P>()
+            }
+        }
+
+        compat.run(Of)
+    }
 }
 
 /// The months as `ASN1_TIME_print` names them.
@@ -269,7 +277,7 @@ fn bn_print(
     label: &str,
     n: &Integer,
     indent: usize,
-    compat: Compat,
+    layout: TextLayout,
 ) {
     out.extend_from_slice(" ".repeat(indent).as_bytes());
     let neg = if n.is_negative() { "-" } else { "" };
@@ -289,9 +297,13 @@ fn bn_print(
     let tail = if n.is_negative() { " (Negative)" } else { "" };
     out.extend_from_slice(format!("{label}{tail}\n").as_bytes());
     let mut buf = Vec::with_capacity(n.magnitude().len().saturating_add(1));
-    if compat.bn_sign_byte()
-        && n.magnitude().first().is_some_and(|b| b & 0x80 != 0)
-    {
+    let sign_byte = match layout.bn_sign_byte {
+        BnSignByte::Printed => {
+            n.magnitude().first().is_some_and(|b| b & 0x80 != 0)
+        }
+        BnSignByte::Omitted => false,
+    };
+    if sign_byte {
         buf.push(0);
     }
     buf.extend_from_slice(n.magnitude());
@@ -299,7 +311,7 @@ fn bn_print(
         out,
         &buf,
         indent.saturating_add(DUMP_STEP),
-        compat.key_bytes_per_line(),
+        layout.key_bytes_per_line,
     );
 }
 
@@ -429,15 +441,15 @@ struct KeyLayout<'a> {
     per_line: usize,
     /// Private or public.
     kind: KeyKind,
-    /// The release line.
-    compat: Compat,
+    /// The release line's layout.
+    text: TextLayout,
 }
 
 /// An EC key on a named curve.
 fn print_ec_key(
     out: &mut Vec<u8>,
     spki: &SubjectPublicKeyInfo<'_>,
-    layout: &KeyLayout<'_>,
+    key_layout: &KeyLayout<'_>,
 ) -> Result<()> {
     let KeyLayout {
         key,
@@ -446,10 +458,10 @@ fn print_ec_key(
         data,
         per_line,
         kind,
-        compat,
-    } = layout;
-    let (key, secret, data, per_line, compat) =
-        (*key, *secret, *data, *per_line, *compat);
+        text: layout,
+    } = key_layout;
+    let (key, secret, data, per_line, layout) =
+        (*key, *secret, *data, *per_line, *layout);
     let kind = kind.as_str();
     let params = spki
         .algorithm
@@ -487,7 +499,7 @@ fn print_ec_key(
     if !well_formed {
         return Err(Error::invalid("EC point encoding"));
     }
-    let size = match compat.ec_key_size() {
+    let size = match layout.ec_key_size {
         EcKeySize::Bits => format!("{} bit", c.bits),
         EcKeySize::BitsAndSecurity => {
             format!("{} bit field, {} bit security level", c.bits, c.security)
@@ -518,9 +530,9 @@ fn print_key(
     spki: &SubjectPublicKeyInfo<'_>,
     secret: Option<&[u8]>,
     indent: usize,
-    compat: Compat,
+    layout: TextLayout,
 ) -> Result<()> {
-    let per_line = compat.key_bytes_per_line();
+    let per_line = layout.key_bytes_per_line;
     let kind = if secret.is_some() {
         KeyKind::Private
     } else {
@@ -533,14 +545,14 @@ fn print_key(
         return Err(Error::invalid("public key BIT STRING with unused bits"));
     }
     let pad16 = " ".repeat(indent);
-    let layout = KeyLayout {
+    let key_layout = KeyLayout {
         key,
         secret,
         pad: pad16.clone(),
         data,
         per_line,
         kind,
-        compat,
+        text: layout,
     };
     if *alg == RSA_ENCRYPTION {
         // RSAPublicKey ::= SEQUENCE { n INTEGER, e INTEGER }, RFC 8017
@@ -563,10 +575,10 @@ fn print_key(
         out.extend_from_slice(
             format!("{pad16}Public-Key: ({} bit)\n", n.bits()).as_bytes(),
         );
-        bn_print(out, "Modulus:", &n, indent, compat);
-        bn_print(out, "Exponent:", &e, indent, compat);
+        bn_print(out, "Modulus:", &n, indent, layout);
+        bn_print(out, "Exponent:", &e, indent, layout);
     } else if *alg == ID_EC_PUBLIC_KEY {
-        print_ec_key(out, spki, &layout)?;
+        print_ec_key(out, spki, &key_layout)?;
     } else if *alg == ID_ED25519 {
         // No parameters, and the 32-byte key, RFC 8410 section 3:
         // https://www.rfc-editor.org/rfc/rfc8410#section-3
@@ -609,8 +621,7 @@ fn version_line(version: &Version) -> String {
     }
 }
 
-/// The `openssl x509 -text` block of a certificate, in the layout of the
-/// release line `compat` names.
+/// The `openssl x509 -text` block of a certificate, in `layout`.
 ///
 /// # Errors
 ///
@@ -619,17 +630,17 @@ fn version_line(version: &Version) -> String {
 /// SM2 signatures, keys other than RSA, EC on a named curve and Ed25519);
 /// [`Error::Invalid`] for malformed contents.
 impl Text for Certificate<'_> {
-    type Layout = Compat;
+    type Layout = TextLayout;
 
-    fn to_text(&self, compat: Compat) -> Result<Vec<u8>> {
-        print_certificate(self, compat)
+    fn to_text(&self, layout: TextLayout) -> Result<Vec<u8>> {
+        print_certificate(self, layout)
     }
 }
 
 /// The text form of a certificate, for its [`Text`] impl.
 fn print_certificate(
     cert: &Certificate<'_>,
-    compat: Compat,
+    layout: TextLayout,
 ) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(b"Certificate:\n    Data:\n");
@@ -638,17 +649,17 @@ fn print_certificate(
     out.extend_from_slice(b"        Signature Algorithm: ");
     out.extend_from_slice(signature_name(&cert.tbs_signature)?.as_bytes());
     out.extend_from_slice(b"\n        Issuer: ");
-    out.extend_from_slice(&cert.issuer.to_openssl(compat.name_style())?);
+    out.extend_from_slice(&cert.issuer.to_openssl(layout.name_style)?);
     out.extend_from_slice(b"\n        Validity\n            Not Before: ");
     out.extend_from_slice(time_rfc822(&cert.validity.not_before).as_bytes());
     out.extend_from_slice(b"\n            Not After : ");
     out.extend_from_slice(time_rfc822(&cert.validity.not_after).as_bytes());
     out.extend_from_slice(b"\n        Subject: ");
-    out.extend_from_slice(&cert.subject.to_openssl(compat.name_style())?);
+    out.extend_from_slice(&cert.subject.to_openssl(layout.name_style)?);
     out.push(b'\n');
-    print_subject_public_key_info(&mut out, &cert.spki, compat)?;
+    print_subject_public_key_info(&mut out, &cert.spki, layout)?;
     cert.extensions.print_certificate_block(&mut out)?;
-    print_signed(&mut out, &cert.signature_algorithm, &cert.signature, compat)?;
+    print_signed(&mut out, &cert.signature_algorithm, &cert.signature, layout)?;
     Ok(out)
 }
 
@@ -656,7 +667,7 @@ fn print_certificate(
 fn print_subject_public_key_info(
     out: &mut Vec<u8>,
     spki: &SubjectPublicKeyInfo<'_>,
-    compat: Compat,
+    layout: TextLayout,
 ) -> Result<()> {
     out.extend_from_slice(
         b"        Subject Public Key Info:\n            Public Key Algorithm: ",
@@ -665,7 +676,7 @@ fn print_subject_public_key_info(
         objects::long_name(&spki.algorithm.oid.as_oid())?.as_bytes(),
     );
     out.push(b'\n');
-    print_key(out, spki, None, SPKI_KEY_INDENT, compat)
+    print_key(out, spki, None, SPKI_KEY_INDENT, layout)
 }
 
 /// `openssl pkey -text`: a private key as OpenSSL prints it, by release
@@ -676,13 +687,13 @@ fn print_subject_public_key_info(
 /// As for a certificate's key (the [`Text`] of [`Certificate`]).
 pub fn print_private_key_text(
     key: &AnyPrivateKey,
-    compat: Compat,
+    layout: TextLayout,
 ) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let der = PublicKey::from(key).encode();
     let spki = spki_view(&der)?;
     let secret = key.secret();
-    print_key(&mut out, &spki, Some(secret.expose()), PKEY_INDENT, compat)?;
+    print_key(&mut out, &spki, Some(secret.expose()), PKEY_INDENT, layout)?;
     Ok(out)
 }
 
@@ -706,11 +717,11 @@ fn spki_view(der: &[u8]) -> Result<SubjectPublicKeyInfo<'_>> {
 /// As for a certificate's key (the [`Text`] of [`Certificate`]).
 pub fn print_public_key_text(
     key: &PublicKey,
-    compat: Compat,
+    layout: TextLayout,
 ) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let der = key.encode();
-    print_key(&mut out, &spki_view(&der)?, None, PKEY_INDENT, compat)?;
+    print_key(&mut out, &spki_view(&der)?, None, PKEY_INDENT, layout)?;
     Ok(out)
 }
 
@@ -723,7 +734,7 @@ fn print_signed(
     out: &mut Vec<u8>,
     algorithm: &AlgorithmIdentifier,
     signature: &BitString<'_>,
-    compat: Compat,
+    layout: TextLayout,
 ) -> Result<()> {
     out.extend_from_slice(b"    Signature Algorithm: ");
     out.extend_from_slice(signature_name(algorithm)?.as_bytes());
@@ -737,13 +748,13 @@ fn print_signed(
         out,
         signature.bytes(),
         SIGNATURE_INDENT,
-        compat.signature_bytes_per_line(),
+        layout.signature_bytes_per_line,
     );
     Ok(())
 }
 
 /// The `openssl req -text` block of a request, in the layout of the release
-/// line `compat` names: the `CertificationRequestInfo` (version, subject,
+/// line laid out by `layout`: the `CertificationRequestInfo` (version, subject,
 /// key, attributes), then the signature as for a certificate. OpenSSL
 /// prints `Requested Extensions:` under the attributes even when there are
 /// none, so this does too.
@@ -754,19 +765,19 @@ fn print_signed(
 /// extensions, and as for a [`Certificate`] for the key, the extensions
 /// and the signature.
 impl Text for CertificationRequest {
-    type Layout = Compat;
+    type Layout = TextLayout;
 
-    fn to_text(&self, compat: Compat) -> Result<Vec<u8>> {
+    fn to_text(&self, layout: TextLayout) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         out.extend_from_slice(
             b"Certificate Request:\n    Data:\n        Version: 1 (0x0)\n        Subject: ",
         );
         out.extend_from_slice(
-            &self.subject_name()?.to_openssl(compat.name_style())?,
+            &self.subject_name()?.to_openssl(layout.name_style)?,
         );
         out.push(b'\n');
         let key = self.public_key().encode();
-        print_subject_public_key_info(&mut out, &spki_view(&key)?, compat)?;
+        print_subject_public_key_info(&mut out, &spki_view(&key)?, layout)?;
         let requested = self.requested_extensions()?;
         let extensions = requested.views()?;
         out.extend_from_slice(b"        Attributes:\n");
@@ -779,7 +790,7 @@ impl Text for CertificationRequest {
             &mut out,
             &AlgorithmIdentifier::from(self.algorithm()),
             &BitString::from_bytes(self.signature()),
-            compat,
+            layout,
         )?;
         Ok(out)
     }
@@ -878,26 +889,28 @@ mod tests {
         let mut out = Vec::new();
         hex_dump(&mut out, &[0x01; 19], 1, 18);
         assert_eq!(out.iter().filter(|&&b| b == b'\n').count(), 2);
+        let any = TextLayout::of::<crate::profile::AnyProfile>();
         let mut out = Vec::new();
-        bn_print(
-            &mut out,
-            "Exponent:",
-            &int(&[0x01, 0x00, 0x01]),
-            0,
-            Compat::V3,
-        );
+        bn_print(&mut out, "Exponent:", &int(&[0x01, 0x00, 0x01]), 0, any);
         assert_eq!(out, b"Exponent: 65537 (0x10001)\n");
         let mut out = Vec::new();
-        bn_print(&mut out, "Modulus:", &int(&[0x00]), 0, Compat::V3);
+        bn_print(&mut out, "Modulus:", &int(&[0x00]), 0, any);
         assert_eq!(out, b"Modulus: 0\n");
+        // The sign byte, in the lines compiled in.
         let mut big = vec![0x00];
         big.extend([0x80; 9]);
-        let mut out = Vec::new();
-        bn_print(&mut out, "Modulus:", &int(&big), 0, Compat::V3);
-        assert!(out.starts_with(b"Modulus:\n    00:80:"));
-        let mut out = Vec::new();
-        bn_print(&mut out, "Modulus:", &int(&big), 0, Compat::V4);
-        assert!(out.starts_with(b"Modulus:\n    80:80:"));
+        for (compat, start) in [
+            (Compat::V30, &b"Modulus:\n    00:80:"[..]),
+            (Compat::V3, b"Modulus:\n    00:80:"),
+            (Compat::V36, b"Modulus:\n    00:80:"),
+            (Compat::V4, b"Modulus:\n    80:80:"),
+        ] {
+            if let Ok(layout) = TextLayout::try_from(compat) {
+                let mut out = Vec::new();
+                bn_print(&mut out, "Modulus:", &int(&big), 0, layout);
+                assert!(out.starts_with(start), "{compat:?}");
+            }
+        }
         let parse = |s: &str| s.parse::<Compat>().ok();
         assert_eq!(parse("4.1.0"), Some(Compat::V4));
         assert_eq!(parse("3"), Some(Compat::V3));
@@ -929,13 +942,16 @@ mod tests {
             ("req/text-v3.txt", Compat::V3),
             ("req/text-v4.txt", Compat::V4),
         ] {
+            let Ok(layout) = TextLayout::try_from(compat) else {
+                continue;
+            };
             let mut count = 0;
             for line in fixture(file).lines().filter(|l| !l.starts_with('#')) {
                 let (request, text) = line.split_once(' ').unwrap();
                 let request =
                     CertificationRequest::decode(&hex(request)).unwrap();
                 assert_eq!(
-                    String::from_utf8(request.to_text(compat).unwrap())
+                    String::from_utf8(request.to_text(layout).unwrap())
                         .unwrap(),
                     String::from_utf8(hex(text)).unwrap(),
                     "{file} {count}"

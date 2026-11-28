@@ -59,7 +59,7 @@ use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
     Certificate, CertificateTemplate, CertificationRequest, DistinguishedName,
     Extension, Extensions, Format, InputEncoding, ParsedSubject, RdnMode,
-    RdnPosition, SubjWarning, UTF8_ONLY,
+    RdnPosition, SubjWarning, TextLayout, UTF8_ONLY,
 };
 
 use crate::{
@@ -70,7 +70,7 @@ use crate::{
         signing_digest_opt, validity_time,
     },
     keygen::{KeyParameters, utf8},
-    line::{Apps as _, Line, Stream, compat},
+    line::{Apps as _, Line, Stream},
     outputs::Outputs,
 };
 
@@ -671,7 +671,6 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
         out.stdout(args::usage(COMMAND, SPECS));
         return Ok(());
     };
-    let compat = compat();
     let mut bytes = Vec::new();
     match o.product {
         Product::Certificate => {
@@ -679,7 +678,10 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
             match o.text {
                 Text::Omitted => {}
                 Text::Printed => {
-                    bytes.extend(Certificate::from_der(&der)?.to_text(compat)?);
+                    bytes.extend(
+                        Certificate::from_der(&der)?
+                            .to_text(TextLayout::of::<Line>())?,
+                    );
                 }
             }
             match o.output {
@@ -701,7 +703,9 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
             }
             match o.text {
                 Text::Omitted => {}
-                Text::Printed => bytes.extend(request.to_text(compat)?),
+                Text::Printed => {
+                    bytes.extend(request.to_text(TextLayout::of::<Line>())?);
+                }
             }
             match o.output {
                 OutputForm::Nothing => {}

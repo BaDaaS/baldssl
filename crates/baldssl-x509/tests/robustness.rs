@@ -4,7 +4,15 @@
 use std::{fs, path::Path};
 
 use baldssl_core::text::Text as _;
-use baldssl_x509::{Certificate, Compat, Format, certificate_der};
+use baldssl_x509::{Certificate, Compat, Format, TextLayout, certificate_der};
+
+/// The layouts of the release lines compiled in.
+fn layouts() -> Vec<TextLayout> {
+    Compat::ALL
+        .into_iter()
+        .filter_map(|c| TextLayout::try_from(c).ok())
+        .collect()
+}
 use proptest::prelude::*;
 
 fn fixture_ders() -> Vec<Vec<u8>> {
@@ -28,8 +36,9 @@ fn fixtures_parse_and_keep_their_encoding() {
     for der in fixture_ders() {
         let cert = Certificate::from_der(&der).unwrap();
         assert_eq!(cert.der, &der[..]);
-        cert.to_text(Compat::V3).unwrap();
-        cert.to_text(Compat::V4).unwrap();
+        for layout in layouts() {
+            cert.to_text(layout).unwrap();
+        }
     }
 }
 
@@ -67,8 +76,9 @@ proptest! {
             der[i] = byte;
         }
         if let Ok(cert) = Certificate::from_der(&der) {
-            let _ = cert.to_text(Compat::V3);
-            let _ = cert.to_text(Compat::V4);
+            for layout in layouts() {
+                let _ = cert.to_text(layout);
+            }
             let _ = cert.subject.to_openssl(baldssl_x509::NameStyle::Utf8);
         }
         let _ = certificate_der(&der, Some(Format::Pem));

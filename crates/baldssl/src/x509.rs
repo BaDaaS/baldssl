@@ -45,9 +45,9 @@ use baldssl_core::{Error, Result, pem, text::Text as _};
 use baldssl_crypto::Algorithm;
 use baldssl_fs::Access;
 use baldssl_x509::{
-    Certificate, CertificateTemplate, Compat, Config, CopyExtensions,
-    ExtensionFile, Extensions, Format, IssuedExtensions, SerialNumber,
-    certificate_der, fingerprint_line, serial_line, time_rfc822,
+    Certificate, CertificateTemplate, Config, CopyExtensions, ExtensionFile,
+    Extensions, Format, IssuedExtensions, Profile as _, SerialNumber,
+    TextLayout, certificate_der, fingerprint_line, serial_line, time_rfc822,
 };
 
 use crate::{
@@ -59,9 +59,7 @@ use crate::{
         set_serial, signature_algorithm, signing_digest_opt, validity_time,
     },
     keygen::utf8,
-    line::{
-        Apps as _, CsrSignatureWarning, ExtensionsWithoutFile, Line, compat,
-    },
+    line::{Apps as _, CsrSignatureWarning, ExtensionsWithoutFile, Line},
     outputs::Outputs,
 };
 
@@ -592,7 +590,7 @@ fn extension_file(s: &Signing, out: &mut Outputs) -> Result<Extensions> {
 
 /// The certificate `-req` signs: the request of the input, checked, then
 /// signed by the CA. Records what OpenSSL prints on standard error.
-fn issue(o: &Options, compat: Compat, out: &mut Outputs) -> Result<Vec<u8>> {
+fn issue(o: &Options, out: &mut Outputs) -> Result<Vec<u8>> {
     let s = &o.signing;
     // OpenSSL checks the extension file before it reads the request.
     let section = extension_file(s, out)?;
@@ -612,7 +610,7 @@ fn issue(o: &Options, compat: Compat, out: &mut Outputs) -> Result<Vec<u8>> {
     out.diagnostic(message::REQUEST_OK);
     let mut subject = message::SUBJECT.as_bytes().to_vec();
     subject.extend_from_slice(
-        &request.subject_name()?.to_openssl(compat.name_style())?,
+        &request.subject_name()?.to_openssl(Line::NAME_STYLE)?,
     );
     out.diagnostic(subject);
     let ca_path = s
@@ -669,9 +667,8 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
         outputs.stdout(args::usage(COMMAND, SPECS));
         return Ok(());
     };
-    let compat = compat();
     let der = match o.source {
-        Source::Request => issue(&o, compat, outputs)?,
+        Source::Request => issue(&o, outputs)?,
         Source::Certificate => {
             certificate_der(&read_input(o.input.as_deref())?, o.inform)?
         }
@@ -684,14 +681,14 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
             Print::Issuer => {
                 out.extend_from_slice(message::ISSUER.as_bytes());
                 out.extend_from_slice(
-                    &cert.issuer.to_openssl(compat.name_style())?,
+                    &cert.issuer.to_openssl(Line::NAME_STYLE)?,
                 );
                 out.push(b'\n');
             }
             Print::Subject => {
                 out.extend_from_slice(message::SUBJECT.as_bytes());
                 out.extend_from_slice(
-                    &cert.subject.to_openssl(compat.name_style())?,
+                    &cert.subject.to_openssl(Line::NAME_STYLE)?,
                 );
                 out.push(b'\n');
             }
@@ -716,7 +713,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
                     fingerprint_line(cert.der, *algorithm, label).as_bytes(),
                 );
             }
-            Print::Text => out.extend(cert.to_text(compat)?),
+            Print::Text => out.extend(cert.to_text(TextLayout::of::<Line>())?),
         }
     }
     match o.output {
@@ -732,6 +729,8 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use baldssl_x509::Compat;
+
     use super::*;
 
     fn os(v: &[&str]) -> Vec<OsString> {

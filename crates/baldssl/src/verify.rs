@@ -259,7 +259,6 @@ where
 {
     let (opts, files) =
         args::parse_with_operands(COMMAND, raw, SPECS, Unknown::Refused)?;
-    let compat = P::COMPAT;
     let mut trusted_paths = Vec::new();
     let mut untrusted_ders = Vec::new();
     let mut at_time = None;
@@ -331,8 +330,7 @@ where
                     // the certificate being verified.
                     let cert =
                         failure.chain.get(*depth).copied().unwrap_or(&target);
-                    report
-                        .extend(cert.subject.to_openssl(compat.name_style())?);
+                    report.extend(cert.subject.to_openssl(P::NAME_STYLE)?);
                     report.extend_from_slice(
                         format!(
                             "\nerror {} at {depth} depth lookup: {}\n",
