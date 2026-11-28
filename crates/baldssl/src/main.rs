@@ -30,6 +30,7 @@ mod genpkey;
 mod input;
 mod issuing;
 mod keygen;
+mod line;
 mod load;
 mod outputs;
 mod pkey;
@@ -41,6 +42,7 @@ use std::{ffi::OsString, fmt::Write as _, process::ExitCode, str::FromStr};
 
 use baldssl_core::{Error, Result};
 use baldssl_crypto::hash::Algorithm;
+use baldssl_x509::Profile;
 
 use crate::outputs::Outputs;
 
@@ -147,7 +149,12 @@ impl Command {
             Command::Req => req::run(args, out),
             Command::Verify => verify::run(args, out),
             Command::Version => {
-                out.stdout(format!("baldssl {}\n", env!("CARGO_PKG_VERSION")));
+                out.stdout(format!(
+                    "baldssl {}, imitating {} (feature {})\n",
+                    env!("CARGO_PKG_VERSION"),
+                    <line::Line as Profile>::NAME,
+                    <line::Line as Profile>::FEATURE,
+                ));
                 Ok(())
             }
             Command::X509 => x509::run(args, out),

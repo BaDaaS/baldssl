@@ -83,6 +83,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         *OPENSSL_BUILD,
         "scripts/*interop*.sh",
         "scripts/find-openssl.sh",
+        "scripts/openssl-feature.sh",
         "scripts/gen-certs.sh",
     ),
     # website-examples: every command the website shows.
@@ -91,6 +92,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         *OPENSSL_BUILD,
         "website/src/examples.json",
         "scripts/check_website_examples.py",
+        "scripts/openssl-feature.sh",
     ),
     # golden: OpenSSL's output against the pinned fixtures (no baldssl).
     "golden": (

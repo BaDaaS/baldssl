@@ -1,11 +1,7 @@
-//! Reading a command's input, the `-inform`/`-outform` values, and the
-//! release line to imitate, shared by the commands.
+//! Reading a command's input and the `-inform`/`-outform` values, shared by
+//! the commands.
 
-use std::{
-    env::{self, VarError},
-    ffi::OsStr,
-    path::Path,
-};
+use std::{ffi::OsStr, path::Path};
 
 use baldssl_core::{
     Error, Result,
@@ -14,29 +10,7 @@ use baldssl_core::{
 };
 use baldssl_fs::read_input as read_fs;
 use baldssl_pkey::AnyPrivateKey;
-use baldssl_x509::{CertificationRequest, Compat, Format};
-
-/// The environment variable selecting the OpenSSL release line to imitate.
-pub(crate) const COMPAT_ENV: &str = "BALDSSL_OPENSSL_COMPAT";
-
-/// The release line [`COMPAT_ENV`] names (see the `FromStr` of
-/// [`Compat`]), or the default without it.
-///
-/// # Errors
-///
-/// [`Error::Usage`] for a value that names no profile, or is not UTF-8.
-pub(crate) fn compat() -> Result<Compat> {
-    match env::var(COMPAT_ENV) {
-        Err(VarError::NotPresent) => Ok(Compat::default()),
-        Err(VarError::NotUnicode(v)) => Err(Error::Usage(format!(
-            "{COMPAT_ENV}: not UTF-8: {}",
-            v.display()
-        ))),
-        Ok(v) => v
-            .parse()
-            .map_err(|e| Error::Usage(format!("{COMPAT_ENV}: {e}"))),
-    }
-}
+use baldssl_x509::{CertificationRequest, Format};
 
 /// The bytes of the file `path`, or of standard input without one.
 ///

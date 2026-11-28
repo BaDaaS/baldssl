@@ -34,7 +34,7 @@
 //!   `-days`). The certificate carries the extensions of the `v3_ca`
 //!   section of OpenSSL's default configuration file, which differs
 //!   between OpenSSL 3 and 4 in the authority key identifier; the release
-//!   line is the one `BALDSSL_OPENSSL_COMPAT` names, as for `x509` (see
+//!   line is the one baldssl is built for, as for `x509` (see
 //!   [`baldssl_x509::CertificateTemplate::self_signed`]).
 //!
 //! As in OpenSSL, `-key` does not imply `-new`: without `-new`, `-newkey`
@@ -64,12 +64,13 @@ use baldssl_x509::{
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
-    input::{OutputForm, compat, format_value, read_key, read_request},
+    input::{OutputForm, format_value, read_key, read_request},
     issuing::{
         Lifetime, SerialSource, set_serial, signature_algorithm,
         signing_digest_opt, validity_time,
     },
     keygen::{KeyParameters, utf8},
+    line::compat,
     outputs::Outputs,
 };
 
@@ -679,7 +680,7 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
         out.stdout(args::usage(COMMAND, SPECS));
         return Ok(());
     };
-    let compat = compat()?;
+    let compat = compat();
     let mut bytes = Vec::new();
     match o.product {
         Product::Certificate => {

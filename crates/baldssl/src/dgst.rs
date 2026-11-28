@@ -48,7 +48,8 @@ use baldssl_x509::{Compat, Format, OneshotSigning, PublicKeyLoading};
 use crate::{
     args::{self, Kind, Spec, Unknown},
     digest::DigestName,
-    input::{compat, format_value, read_input},
+    input::{format_value, read_input},
+    line::compat,
     load::{Credential, LoadFailure, load_line},
     outputs::Outputs,
 };
@@ -897,7 +898,7 @@ pub(crate) fn run(
         out.stdout(args::usage(command, SPECS));
         return Ok(());
     };
-    let compat = compat()?;
+    let compat = compat();
     let operation = prepare(out, command, &o, compat)?;
     let mut results = Vec::new();
     let mut outcome = Outcome::Done;

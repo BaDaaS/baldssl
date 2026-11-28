@@ -31,6 +31,13 @@ help: ## Ask for help!
 build: ## Build in debug mode
 	cargo build --workspace
 
+# baldssl imitates one OpenSSL release line, chosen by a Cargo feature;
+# this builds it for the line of $(OPENSSL) (scripts/openssl-feature.sh).
+.PHONY: build-for-openssl
+build-for-openssl: ## Build baldssl for the release line of $(OPENSSL)
+	feature=$$(scripts/openssl-feature.sh $(OPENSSL)) && \
+		cargo build -p baldssl --no-default-features --features "$$feature"
+
 .PHONY: build-release
 build-release: ## Build in release mode
 	cargo build --workspace --release
@@ -274,7 +281,7 @@ fuzz: ## Fuzz a target: make fuzz FUZZ_TARGET=x509 FUZZ_SECONDS=60
 		-- -max_total_time=$(FUZZ_SECONDS)
 
 .PHONY: interop
-interop: build fixtures ## Diff baldssl against $(OPENSSL) (VERBOSE=1: every case)
+interop: build-for-openssl fixtures ## Diff baldssl against $(OPENSSL) (VERBOSE=1: every case)
 	scripts/interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/req-interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/x509-req-interop.sh $(OPENSSL) $(BALDSSL)
@@ -282,8 +289,8 @@ interop: build fixtures ## Diff baldssl against $(OPENSSL) (VERBOSE=1: every cas
 	scripts/verify-interop.sh $(OPENSSL) $(BALDSSL)
 	scripts/dgst-interop.sh $(OPENSSL) $(BALDSSL)
 	@echo "interop: every suite passed against $$($(OPENSSL) version)."
-	@echo "Another release: make interop OPENSSL=/path/to/openssl; the"
-	@echo "profile follows its version (3.0, 3, 3.6 or 4). The releases CI"
+	@echo "Another release: make interop OPENSSL=/path/to/openssl, which"
+	@echo "builds baldssl for its line (3.0, 3.5, 3.6 or 4). The releases CI"
 	@echo "tests are in .github/workflows/ci.yml."
 
 .PHONY: golden
@@ -318,7 +325,7 @@ website-build: ## Build the static website into website/dist
 	cd website && npx vite build
 
 .PHONY: website-examples
-website-examples: build ## Run every command shown on the website ($(OPENSSL))
+website-examples: build-for-openssl ## Run every command shown on the website ($(OPENSSL))
 	scripts/check_website_examples.py --openssl $(OPENSSL) \
 		--baldssl $(BALDSSL) $(if $(INSTALL),--install)
 

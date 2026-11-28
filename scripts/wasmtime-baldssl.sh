@@ -14,9 +14,5 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WASM=${BALDSSL_WASM:-$ROOT/target/wasm32-wasip1/release/baldssl.wasm}
 
 # The whole host filesystem is visible at the same paths, as for a native
-# process; the compatibility profile is the one environment variable read.
-args=(run --dir /)
-if [[ -n "${BALDSSL_OPENSSL_COMPAT:-}" ]]; then
-    args+=(--env "BALDSSL_OPENSSL_COMPAT=$BALDSSL_OPENSSL_COMPAT")
-fi
-exec wasmtime "${args[@]}" "$WASM" "$@"
+# process.
+exec wasmtime run --dir / "$WASM" "$@"

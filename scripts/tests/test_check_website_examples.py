@@ -1,5 +1,5 @@
-"""The display rules of the website's examples, and the profile chosen for
-an OpenSSL version."""
+"""The display rules of the website's examples, and the install commands
+they run."""
 
 from conftest import load
 
@@ -45,9 +45,8 @@ def test_the_baldssl_variant_replaces_the_program_only() -> None:
     )
 
 
-def test_profiles_follow_the_release_lines() -> None:
-    assert examples.profile("3.0.22") == "3.0"
-    assert examples.profile("3.5.9") == "3"
-    assert examples.profile("3.6.1") == "3.6"
-    assert examples.profile("4.1.0") == "4"
-    assert examples.profile("3.60.0") == "3"
+def test_install_commands_build_this_checkout() -> None:
+    shown = "cargo install --git https://github.com/BaDaaS/baldssl baldssl"
+    local = examples.local_install(shown)
+    assert local == f"cargo install --git {examples.ROOT.as_uri()} baldssl"
+    assert examples.local_install("baldssl version") == "baldssl version"

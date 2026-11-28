@@ -28,8 +28,8 @@
 //! those of a section of `-extfile` (`-extensions`, or the `extensions`
 //! value of the default section, or the default section; each replacing
 //! one of its kind, which then comes after the others), then the key
-//! identifiers OpenSSL adds, by the release line `BALDSSL_OPENSSL_COMPAT`
-//! names (see [`baldssl_x509::CertificateTemplate::issued`]). The serial
+//! identifiers OpenSSL adds, by the release line baldssl is built for
+//! (see [`baldssl_x509::CertificateTemplate::issued`]). The serial
 //! number is
 //! `-set_serial`, or the next one of the serial file (`-CAserial`, or with
 //! `-CAcreateserial` the `-CA` file name with `.srl`), or 159 random bits;
@@ -54,14 +54,13 @@ use baldssl_x509::{
 use crate::{
     args::{self, Kind, Spec, Unknown},
     digest::DigestName,
-    input::{
-        OutputForm, compat, format_value, read_input, read_key, read_request,
-    },
+    input::{OutputForm, format_value, read_input, read_key, read_request},
     issuing::{
         Lifetime, MissingSerialFile, SerialSource, default_serial_file,
         set_serial, signature_algorithm, signing_digest_opt, validity_time,
     },
     keygen::utf8,
+    line::compat,
     outputs::Outputs,
 };
 
@@ -674,7 +673,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
         outputs.stdout(args::usage(COMMAND, SPECS));
         return Ok(());
     };
-    let compat = compat()?;
+    let compat = compat();
     let der = match o.source {
         Source::Request => issue(&o, compat, outputs)?,
         Source::Certificate => {

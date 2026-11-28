@@ -32,7 +32,7 @@ fail=0
 
 # shellcheck source=scripts/interop-profile.sh
 source "$ROOT/scripts/interop-profile.sh"
-echo "OpenSSL: $("$OPENSSL" version) (profile $BALDSSL_OPENSSL_COMPAT)"
+echo "OpenSSL: $("$OPENSSL" version) (baldssl feature $FEATURE)"
 echo "baldssl: $("$BALDSSL" version)"
 
 "$ROOT/scripts/gen-certs.sh" "$OPENSSL" "$WORK" || fail=$((fail + 1))

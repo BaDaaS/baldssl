@@ -143,7 +143,7 @@ while read -r curve _ _ pkcs8; do
         dd=()
         [[ -n "$d" ]] && dd=("$d")
         label="key $n $curve ${d:-default}"
-        if [[ "$curve" == ED25519 && "$BALDSSL_OPENSSL_COMPAT" == 3.0 ]]; then
+        if [[ "$curve" == ED25519 && "$OPENSSL_VERSION" == 3.0.* ]]; then
             same abc.txt dgst -sign key.pem abc.txt
             same abc.txt dgst -verify pub.pem -signature key.der abc.txt
             continue
