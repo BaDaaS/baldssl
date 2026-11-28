@@ -22,7 +22,7 @@
 //! - reading one: `-in <file>` (standard input without it), `-inform`;
 //! - `-verify` (a failure on standard error, exit 1; success on standard
 //!   error with OpenSSL 3.0 and on standard output from 3.2, see
-//!   [`baldssl_x509::Compat::request_verified_stream`]), `-text` (the request, or the `-x509` certificate, as OpenSSL
+//!   [`Apps::REQUEST_VERIFIED_STREAM`](crate::line::Apps::REQUEST_VERIFIED_STREAM)), `-text` (the request, or the `-x509` certificate, as OpenSSL
 //!   prints it, before the PEM or DER), `-out`, `-outform PEM|DER`,
 //!   `-noout`;
 //! - a self-signed certificate instead of a request: `-x509`, which
@@ -57,9 +57,9 @@ use baldssl_crypto::Algorithm as Digest;
 use baldssl_fs::Access;
 use baldssl_pkey::AnyPrivateKey;
 use baldssl_x509::{
-    Certificate, CertificateTemplate, CertificationRequest, Compat,
-    DistinguishedName, Extension, Extensions, Format, InputEncoding,
-    ParsedSubject, RdnMode, RdnPosition, Stream, SubjWarning, UTF8_ONLY,
+    Certificate, CertificateTemplate, CertificationRequest, DistinguishedName,
+    Extension, Extensions, Format, InputEncoding, ParsedSubject, RdnMode,
+    RdnPosition, SubjWarning, UTF8_ONLY,
 };
 
 use crate::{
@@ -70,7 +70,7 @@ use crate::{
         signing_digest_opt, validity_time,
     },
     keygen::{KeyParameters, utf8},
-    line::{Line, compat},
+    line::{Apps as _, Line, Stream, compat},
     outputs::Outputs,
 };
 
@@ -645,18 +645,14 @@ fn parse_options(raw: &[OsString]) -> Result<Option<Options>> {
 }
 
 /// `-verify`: the outcome, on the stream the release line prints it on.
-fn verify(
-    request: &CertificationRequest,
-    compat: Compat,
-    out: &mut Outputs,
-) -> Result<()> {
+fn verify(request: &CertificationRequest, out: &mut Outputs) -> Result<()> {
     if !request.verify() {
         out.diagnostic(VERIFY_FAILURE);
         return Err(Error::invalid(
             "certificate request self-signature verify failure",
         ));
     }
-    match compat.request_verified_stream() {
+    match Line::REQUEST_VERIFIED_STREAM {
         Stream::Stderr => out.diagnostic(VERIFY_OK),
         Stream::Stdout => out.stdout(format!("{VERIFY_OK}\n")),
     }
@@ -701,7 +697,7 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
             };
             match o.verify {
                 Verify::Skipped => {}
-                Verify::SelfSignature => verify(&request, compat, out)?,
+                Verify::SelfSignature => verify(&request, out)?,
             }
             match o.text {
                 Text::Omitted => {}

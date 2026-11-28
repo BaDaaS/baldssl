@@ -12,7 +12,9 @@ use super::{
     Encoding, Escape, EscapedName, KeyKind, KeyRole, Labels, Operation,
     Options, Separator, key_load_line, parse_options, prepare,
 };
-use crate::{load::LoadFailure, outputs::Outputs};
+use crate::{
+    line::compat as compat_built, load::LoadFailure, outputs::Outputs,
+};
 
 fn os(v: &[&str]) -> Vec<OsString> {
     v.iter().map(OsString::from).collect()
@@ -140,7 +142,7 @@ fn checks() {
     let refused = |v: &[&str]| {
         let mut out = Outputs::default();
         matches!(
-            prepare(&mut out, "dgst", &options(v), Compat::V3),
+            prepare(&mut out, "dgst", &options(v)),
             Err(Error::Reported { code: 1, .. })
         ) && !out.stderr_bytes().is_empty()
     };
@@ -162,31 +164,47 @@ fn checks() {
     ));
 }
 
-/// The line for a key that does not load, in every release line: the
-/// public-key fallback of 3.2 and later, and each message.
+/// The line for a key that does not load, by release line: the
+/// public-key fallback of 3.2 and later, and each message. A build checks
+/// the cases of the line it imitates (`make check-profiles` builds each).
 #[test]
 fn key_load_lines() {
-    let line =
-        |kind, failure, compat| key_load_line("k", kind, failure, compat);
-    assert_eq!(
-        line(KeyKind::Public, LoadFailure::Missing, Compat::V30),
-        "Could not open file or uri for loading public key from k"
-    );
-    assert_eq!(
-        line(KeyKind::Public, LoadFailure::Undecoded, Compat::V3),
-        "Could not find private key of public key from k"
-    );
-    assert_eq!(
-        line(KeyKind::Private, LoadFailure::Missing, Compat::V36),
-        "Could not open file or uri for loading private key from k: No such \
-         file or directory"
-    );
-    assert_eq!(
-        line(KeyKind::Private, LoadFailure::Undecoded, Compat::V30),
-        "Could not read private key from k"
-    );
-    assert_eq!(
-        line(KeyKind::Private, LoadFailure::Undecoded, Compat::V4),
-        "Could not find or decode private key from k"
-    );
+    let cases = [
+        (
+            KeyKind::Public,
+            LoadFailure::Missing,
+            Compat::V30,
+            "Could not open file or uri for loading public key from k",
+        ),
+        (
+            KeyKind::Public,
+            LoadFailure::Undecoded,
+            Compat::V3,
+            "Could not find private key of public key from k",
+        ),
+        (
+            KeyKind::Private,
+            LoadFailure::Missing,
+            Compat::V36,
+            "Could not open file or uri for loading private key from k: No \
+             such file or directory",
+        ),
+        (
+            KeyKind::Private,
+            LoadFailure::Undecoded,
+            Compat::V30,
+            "Could not read private key from k",
+        ),
+        (
+            KeyKind::Private,
+            LoadFailure::Undecoded,
+            Compat::V4,
+            "Could not find or decode private key from k",
+        ),
+    ];
+    for (kind, failure, compat, expected) in cases {
+        if compat == compat_built() {
+            assert_eq!(key_load_line("k", kind, failure), expected);
+        }
+    }
 }

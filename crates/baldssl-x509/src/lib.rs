@@ -100,10 +100,8 @@ pub use profile::{
     WithProfile,
 };
 pub use text::{
-    CertificateLoadSummary, Compat, CsrSignatureWarning, ExtensionsWithoutFile,
-    ExtraOperands, LoadMessage, OneshotSigning, PublicKeyLoading, Stream,
-    UndeclaredOptions, print_private_key_text, print_public_key_text,
-    serial_line, time_rfc822,
+    Compat, print_private_key_text, print_public_key_text, serial_line,
+    time_rfc822,
 };
 pub use verify::{Failure, Reported, TrustStore, Verification, VerifyError};
 

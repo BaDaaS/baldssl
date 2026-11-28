@@ -31,15 +31,15 @@ use std::ffi::{OsStr, OsString};
 
 use baldssl_core::{Error, Result, der::syntax::RawTlv};
 use baldssl_x509::{
-    Certificate, CertificateLoadSummary, Compat, Profile, Reported, TrustStore,
-    Verification, certificate_der, certificates_der,
+    Certificate, Profile, Reported, TrustStore, Verification, certificate_der,
+    certificates_der,
 };
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
     input::read_input,
     issuing::unix_now,
-    line::Line,
+    line::{Apps as _, CertificateLoadSummary, Line},
     load::{Credential, LoadFailure, load_line},
     outputs::Outputs,
 };
@@ -61,7 +61,7 @@ const UNTRUSTED_DESC: &str = "untrusted certificates";
 const ERROR_LOADING_FILE: &str = "Error loading file";
 /// What `load_cert` (`apps/lib/apps.c`) prints before the description of a
 /// certificate it could not load, where it does
-/// ([`Compat::certificate_load_summary`]).
+/// ([`Apps::CERTIFICATE_LOAD_SUMMARY`](crate::line::Apps::CERTIFICATE_LOAD_SUMMARY)).
 const UNABLE_TO_LOAD: &str = "Unable to load";
 
 /// An option of `baldssl verify`.
@@ -186,11 +186,7 @@ fn target_of(path: Option<&OsStr>) -> core::result::Result<Vec<u8>, Unloaded> {
 }
 
 /// The intermediates in `path`, or the loader's line and exit code 1.
-fn load_untrusted(
-    outputs: &mut Outputs,
-    path: &OsStr,
-    compat: Compat,
-) -> Result<Vec<RawTlv>> {
+fn load_untrusted(outputs: &mut Outputs, path: &OsStr) -> Result<Vec<RawTlv>> {
     certificates_of(path).map_err(|unloaded| match unloaded {
         Unloaded::Error(e) => e,
         Unloaded::Reported(failure) => {
@@ -199,7 +195,6 @@ fn load_untrusted(
                 UNTRUSTED_DESC,
                 &path.to_string_lossy(),
                 failure,
-                compat,
             ));
             Error::Reported {
                 code: LOAD_FAILED,
@@ -229,10 +224,9 @@ fn load_trusted(outputs: &mut Outputs, path: &OsStr) -> Result<Vec<RawTlv>> {
 /// What OpenSSL prints for a certificate to verify that did not load from
 /// `file`: the loader's line, then `load_cert`'s where the release line
 /// prints it.
-fn target_report(file: &str, failure: LoadFailure, compat: Compat) -> String {
-    let line =
-        load_line(Credential::Certificate, TARGET_DESC, file, failure, compat);
-    match compat.certificate_load_summary() {
+fn target_report(file: &str, failure: LoadFailure) -> String {
+    let line = load_line(Credential::Certificate, TARGET_DESC, file, failure);
+    match Line::CERTIFICATE_LOAD_SUMMARY {
         CertificateLoadSummary::Printed => {
             format!("{line}\n{UNABLE_TO_LOAD} {TARGET_DESC}\n")
         }
@@ -277,7 +271,7 @@ where
             }
             Opt::CaFile(v) => trusted_paths.push(v),
             Opt::Untrusted(v) => {
-                untrusted_ders.extend(load_untrusted(outputs, &v, compat)?);
+                untrusted_ders.extend(load_untrusted(outputs, &v)?);
             }
             Opt::AtTime(v) => at_time = Some(args::intmax(COMMAND, &v)?),
             Opt::CaPath(_) | Opt::CaStore(_) => {
@@ -320,7 +314,7 @@ where
                 let file = path
                     .as_ref()
                     .map_or_else(|| STDIN_URI.into(), |p| p.to_string_lossy());
-                outputs.stderr(target_report(&file, failure, compat));
+                outputs.stderr(target_report(&file, failure));
                 continue;
             }
         };

@@ -4,7 +4,7 @@
 //! Supported: `-algorithm EC` with `-pkeyopt ec_paramgen_curve:<curve>` for
 //! P-256 (`prime256v1`), P-384 (`secp384r1`) and P-521 (`secp521r1`), and
 //! `-algorithm ED25519`; `-out`, `-outform PEM|DER` (in DER, the form
-//! [`Compat::generated_key_der`](baldssl_x509::Compat::generated_key_der)
+//! [`Apps::GENERATED_KEY_DER`](crate::line::Apps::GENERATED_KEY_DER)
 //! names for the release line), and `-text`, which follows the key with its
 //! text as `pkey -text` prints it, to the same output, as `apps/genpkey.c`
 //! does with `EVP_PKEY_print_private`.
@@ -24,7 +24,7 @@ use crate::{
     args::{self, Kind, Spec, Unknown},
     input::format_value,
     keygen::KeyParameters,
-    line::compat,
+    line::{Apps as _, Line, compat},
     outputs::Outputs,
 };
 
@@ -128,7 +128,7 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
     let compat = compat();
     let key = AnyPrivateKey::generate(parameters.algorithm()?)?;
     let mut bytes = match format {
-        Format::Der => key.der(compat.generated_key_der()).expose().to_vec(),
+        Format::Der => key.der(Line::GENERATED_KEY_DER).expose().to_vec(),
         Format::Pem => key.to_pem().into_bytes(),
     };
     match text {
@@ -210,7 +210,7 @@ mod tests {
                 let (_, len) = parse_tlv(&der).unwrap();
                 let key = AnyPrivateKey::decode(&der[..len]).unwrap();
                 let expected = [
-                    key.der(compat.generated_key_der()).expose().to_vec(),
+                    key.der(Line::GENERATED_KEY_DER).expose().to_vec(),
                     print_private_key_text(&key, compat).unwrap(),
                 ]
                 .concat();

@@ -13,7 +13,7 @@ use super::{
     VERIFY_FAILED, run, target_report,
 };
 use crate::{
-    line::compat,
+    line::{Apps as _, CertificateLoadSummary, Line, compat},
     load::{Credential, LoadFailure, load_line},
     outputs::Outputs,
 };
@@ -75,19 +75,14 @@ fn exit_code_opt(result: &Result<()>) -> Option<u8> {
 /// then one with no certificate, which both end in exit code 2.
 #[test]
 fn targets_that_do_not_load() {
-    let compat = compat();
     let garbage = scratch("targets", "garbage.txt", "not a certificate\n");
     let missing = garbage.with_file_name("missing.pem");
     let (result, stderr) =
         run_args(&[missing.as_os_str(), garbage.as_os_str()]);
     assert_eq!(exit_code_opt(&result), Some(VERIFY_FAILED));
     let expected = [
-        target_report(&missing.to_string_lossy(), LoadFailure::Missing, compat),
-        target_report(
-            &garbage.to_string_lossy(),
-            LoadFailure::Undecoded,
-            compat,
-        ),
+        target_report(&missing.to_string_lossy(), LoadFailure::Missing),
+        target_report(&garbage.to_string_lossy(), LoadFailure::Undecoded),
     ]
     .concat();
     assert_eq!(stderr, expected);
@@ -98,7 +93,6 @@ fn targets_that_do_not_load() {
 /// command with exit code 1; `-CAfile` reports `setup_verify`'s line.
 #[test]
 fn intermediates_and_anchors_that_do_not_load() {
-    let compat = compat();
     let empty = scratch("lists", "empty.pem", "");
     let missing = empty.with_file_name("missing.pem");
     let (result, stderr) = run_args(&[
@@ -114,7 +108,6 @@ fn intermediates_and_anchors_that_do_not_load() {
         UNTRUSTED_DESC,
         &empty.to_string_lossy(),
         LoadFailure::Undecoded,
-        compat,
     );
     assert_eq!(stderr, format!("{line}\n"));
 
@@ -151,24 +144,20 @@ fn unsupported_targets_stay_errors() {
 /// other lines do not.
 #[test]
 fn target_reports_by_release_line() {
-    assert_eq!(
-        target_report("f", LoadFailure::Undecoded, Compat::V30),
-        "Could not read certificate file from f\n\
-         Unable to load certificate file\n"
+    let line = load_line(
+        Credential::Certificate,
+        TARGET_DESC,
+        "f",
+        LoadFailure::Undecoded,
     );
-    for compat in [Compat::V3, Compat::V36, Compat::V4] {
-        assert_eq!(
-            target_report("f", LoadFailure::Undecoded, compat),
-            format!(
-                "{}\n",
-                load_line(
-                    Credential::Certificate,
-                    TARGET_DESC,
-                    "f",
-                    LoadFailure::Undecoded,
-                    compat
-                )
-            )
-        );
+    let expected = match Line::CERTIFICATE_LOAD_SUMMARY {
+        CertificateLoadSummary::Printed => {
+            format!("{line}\nUnable to load certificate file\n")
+        }
+        CertificateLoadSummary::Omitted => format!("{line}\n"),
+    };
+    assert_eq!(target_report("f", LoadFailure::Undecoded), expected);
+    if compat() == Compat::V30 {
+        assert_eq!(line, "Could not read certificate file from f");
     }
 }
