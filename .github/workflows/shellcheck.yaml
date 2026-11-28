@@ -1,9 +1,18 @@
 name: Shellcheck
 
+# Only when a shell script, or what runs shellcheck, changes.
 on:
   push:
     branches: [main]
+    paths:
+      - '**.sh'
+      - Makefile
+      - .github/workflows/shellcheck.yaml
   pull_request:
+    paths:
+      - '**.sh'
+      - Makefile
+      - .github/workflows/shellcheck.yaml
 
 permissions:
   contents: read

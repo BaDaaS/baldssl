@@ -18,9 +18,42 @@ env:
   SCCACHE_GHA_ENABLED: 'true'
 
 jobs:
+  # The groups of jobs this change needs (scripts/ci-changes.py). A pull
+  # request runs the jobs whose files it changes, compared with its base (the
+  # first parent of the merge commit CI checks out); a push to main runs
+  # every job.
+  changes:
+    runs-on: ubuntu-26.04
+    outputs:
+      rust: ${{ steps.changes.outputs.rust }}
+      os-rng: ${{ steps.changes.outputs.os-rng }}
+      format: ${{ steps.changes.outputs.format }}
+      hygiene: ${{ steps.changes.outputs.hygiene }}
+      python: ${{ steps.changes.outputs.python }}
+      links: ${{ steps.changes.outputs.links }}
+      interop: ${{ steps.changes.outputs.interop }}
+      website-examples: ${{ steps.changes.outputs.website-examples }}
+      golden: ${{ steps.changes.outputs.golden }}
+      lean: ${{ steps.changes.outputs.lean }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: changes
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        # bash -eo pipefail: a failure of make fails the job rather than
+        # leaving every output empty, which would skip every job.
+        shell: bash
+        run: |
+          make -s ci-changes CHANGES_BASE="$BASE" | tee -a "$GITHUB_OUTPUT"
+
   # Clippy and the full test suite (unit, property, golden files) on every
   # native platform, under the pinned stable, beta and nightly.
   test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     name: test (${{ matrix.os }}, ${{ matrix.toolchain }})
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.toolchain == 'nightly' }}
@@ -66,6 +99,8 @@ jobs:
   # and has to be bumped: read the new version with
   # `apt-cache policy <package>` on the runner, or from the failing log.
   cross:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     name: cross (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -150,6 +185,8 @@ jobs:
   # documented, with their sources, in crates/baldssl-crypto/src/os_rng.rs.
   # No sccache here: the builds are small and some run inside containers.
   platforms:
+    needs: changes
+    if: needs.changes.outputs.os-rng == 'true'
     runs-on: ubuntu-26.04
     outputs:
       glibc: ${{ steps.matrix.outputs.glibc }}
@@ -342,6 +379,8 @@ jobs:
   # WebAssembly: the libraries build for the browser target, and the CLI,
   # built for WASI, passes the same golden suite as the native binary.
   wasm:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -360,6 +399,8 @@ jobs:
           path: target/wasm32-wasip1/release/baldssl.wasm
 
   format:
+    needs: changes
+    if: needs.changes.outputs.format == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -375,6 +416,8 @@ jobs:
 
   # Zero-dependency policy, docs, the `--cfg aeneas` build, shell scripts.
   hygiene:
+    needs: changes
+    if: needs.changes.outputs.hygiene == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -397,6 +440,8 @@ jobs:
   # The Python scripts: formatted, linted, type-checked (strict) and tested,
   # with the tools pinned in uv.lock.
   python:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -408,6 +453,8 @@ jobs:
   # Every URL in the sources and in the rendered Rust documentation must be
   # reachable, and every #fragment must name an element of its page.
   links:
+    needs: changes
+    if: needs.changes.outputs.links == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -419,6 +466,8 @@ jobs:
       - run: make check-urls
 
   coverage:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-26.04
     env:
       # Instrumented builds are not cached; do not route them through sccache.
@@ -442,6 +491,8 @@ jobs:
   # scripts/interop.sh). Every listed release must pass; 3.0 runs with the
   # 3.0 compatibility profile.
   interop:
+    needs: changes
+    if: needs.changes.outputs.interop == 'true'
     name: interop (OpenSSL ${{ matrix.version }})
     runs-on: ubuntu-26.04
     strategy:
@@ -478,6 +529,8 @@ jobs:
   # Every command on the website, run as a reader would paste it: against
   # OpenSSL, and against baldssl where the website says it is supported.
   website-examples:
+    needs: changes
+    if: needs.changes.outputs.website-examples == 'true'
     name: website examples (OpenSSL ${{ matrix.version }})
     runs-on: ubuntu-26.04
     strategy:
@@ -511,6 +564,8 @@ jobs:
   # The committed golden files must be exactly what the supported OpenSSL
   # releases print today.
   golden:
+    needs: changes
+    if: needs.changes.outputs.golden == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -542,6 +597,8 @@ jobs:
 
   # The Lean 4 skeleton must keep building against the pinned Aeneas.
   lean:
+    needs: changes
+    if: needs.changes.outputs.lean == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
