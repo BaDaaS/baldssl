@@ -60,7 +60,7 @@ use crate::{
         set_serial, signature_algorithm, signing_digest_opt, validity_time,
     },
     keygen::utf8,
-    line::compat,
+    line::{Line, compat},
     outputs::Outputs,
 };
 
@@ -641,7 +641,7 @@ fn issue(o: &Options, compat: Compat, out: &mut Outputs) -> Result<Vec<u8>> {
                 .ok_or_else(|| Error::unsupported("x509 -req: digest sha1"))?,
         ),
     };
-    CertificateTemplate::issued(
+    CertificateTemplate::issued::<Line>(
         &request,
         &ca,
         &ca_key,
@@ -657,7 +657,6 @@ fn issue(o: &Options, compat: Compat, out: &mut Outputs) -> Result<Vec<u8>> {
                 None => ExtensionFile::Absent,
             },
         },
-        compat,
     )?
     .sign(&ca_key, signature_algorithm(&ca_key, digest))
 }

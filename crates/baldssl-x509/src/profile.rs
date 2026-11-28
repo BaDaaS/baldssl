@@ -10,8 +10,10 @@
 //! for each line, so adding an item without deciding it for every line
 //! does not compile, and a line's code is built only with its feature.
 //!
-//! The modules move onto the profile one by one: path validation is on it
-//! ([`TrustStore::verify`](crate::TrustStore::verify)); the others still
+//! The modules move onto the profile one by one: path validation
+//! ([`TrustStore::verify`](crate::TrustStore::verify)) and issuing
+//! ([`CertificateTemplate`](crate::CertificateTemplate)) are on it; the
+//! others still
 //! ask the methods of [`Compat`], the line as a value, which each profile
 //! names ([`Profile::COMPAT`]).
 //!
@@ -78,6 +80,37 @@ pub enum CertificateTimes {
     PosixCompared,
 }
 
+/// Whether `req -x509` with the default configuration writes an authority
+/// key identifier in a self-signed certificate
+/// ([`Profile::SELF_SIGNED_AUTHORITY_KEY_ID`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfSignedAuthorityKeyId {
+    /// It does, its own key identifier: the `v3_ca` section of
+    /// `apps/openssl.cnf` says `keyid:always,issuer` (OpenSSL 3).
+    Written,
+    /// It does not: `v3_ca` says `keyid:nonss,issuer:nonss`
+    /// ("non-self-signed", OpenSSL 4).
+    Omitted,
+}
+
+/// When `x509 -req -CA` adds a subject and an authority key identifier
+/// ([`Profile::DEFAULT_KEY_IDENTIFIERS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultKeyIdentifiers {
+    /// When signing (`do_X509_sign` in `apps/lib/apps.c`), each one
+    /// missing, the authority's left out when the request's key is the
+    /// CA's (OpenSSL 3.2 to 3.6).
+    AtSigning,
+    /// As [`DefaultKeyIdentifiers::AtSigning`], and only to a certificate
+    /// that has extensions already, so that without any it is version 1
+    /// (OpenSSL 3.0).
+    AtSigningWithExtensions,
+    /// From the `default_skid_akid` section of `apps/openssl.cnf`
+    /// (`extensions = default_skid_akid`), after the copied extensions,
+    /// and only without an extension file (OpenSSL 4).
+    FromConfiguration,
+}
+
 /// The message of `X509_V_ERR_CERT_NOT_YET_VALID` (error 9) up to OpenSSL
 /// 3.5 (`crypto/x509/x509_txt.c`).
 const NOT_YET_VALID: &str = "certificate is not yet valid";
@@ -104,6 +137,15 @@ pub trait Profile: sealed::Sealed + 'static {
 
     /// How validity times compare with the verification time.
     const CERTIFICATE_TIMES: CertificateTimes = CertificateTimes::Asn1Compared;
+
+    /// Whether `req -x509` puts an authority key identifier on the
+    /// self-signed certificate it writes with the default configuration.
+    const SELF_SIGNED_AUTHORITY_KEY_ID: SelfSignedAuthorityKeyId =
+        SelfSignedAuthorityKeyId::Written;
+
+    /// Where `x509 -req -CA` takes the key identifiers it adds from.
+    const DEFAULT_KEY_IDENTIFIERS: DefaultKeyIdentifiers =
+        DefaultKeyIdentifiers::AtSigning;
 }
 
 /// OpenSSL 3.0.
@@ -119,6 +161,8 @@ impl Profile for OpenSsl30 {
     const COMPAT: Compat = Compat::V30;
     const NAME: &'static str = "OpenSSL 3.0";
     const FEATURE: &'static str = "openssl-3-0";
+    const DEFAULT_KEY_IDENTIFIERS: DefaultKeyIdentifiers =
+        DefaultKeyIdentifiers::AtSigningWithExtensions;
 }
 
 /// OpenSSL 3.2 to 3.5, measured on 3.5.
@@ -167,7 +211,36 @@ impl Profile for OpenSsl4 {
     const FEATURE: &'static str = "openssl-4";
     const NOT_YET_VALID: &'static str = NOT_YET_VALID_OR_CLOCK;
     const CERTIFICATE_TIMES: CertificateTimes = CertificateTimes::PosixCompared;
+    const SELF_SIGNED_AUTHORITY_KEY_ID: SelfSignedAuthorityKeyId =
+        SelfSignedAuthorityKeyId::Omitted;
+    const DEFAULT_KEY_IDENTIFIERS: DefaultKeyIdentifiers =
+        DefaultKeyIdentifiers::FromConfiguration;
 }
+
+/// A release line compiled in, for tests whose subject does not depend on
+/// the line: 3.5 when it is compiled in, otherwise the newest that is.
+#[cfg(all(test, feature = "openssl-3-5"))]
+pub(crate) type AnyProfile = OpenSsl35;
+/// See the item of the same name compiled with `openssl-3-5`.
+#[cfg(all(test, not(feature = "openssl-3-5"), feature = "openssl-4"))]
+pub(crate) type AnyProfile = OpenSsl4;
+/// See the item of the same name compiled with `openssl-3-5`.
+#[cfg(all(
+    test,
+    not(feature = "openssl-3-5"),
+    not(feature = "openssl-4"),
+    feature = "openssl-3-6"
+))]
+pub(crate) type AnyProfile = OpenSsl36;
+/// See the item of the same name compiled with `openssl-3-5`.
+#[cfg(all(
+    test,
+    not(feature = "openssl-3-5"),
+    not(feature = "openssl-4"),
+    not(feature = "openssl-3-6"),
+    feature = "openssl-3-0"
+))]
+pub(crate) type AnyProfile = OpenSsl30;
 
 /// A computation for any profile, `forall P: Profile. Output`: what
 /// [`Compat::run`] applies to the profile chosen at run time.

@@ -70,7 +70,7 @@ use crate::{
         signing_digest_opt, validity_time,
     },
     keygen::{KeyParameters, utf8},
-    line::compat,
+    line::{Line, compat},
     outputs::Outputs,
 };
 
@@ -491,19 +491,14 @@ fn create(o: &Options, out: &mut Outputs) -> Result<CertificationRequest> {
 
 /// A new self-signed certificate, DER, from `-key`, `-subj` and the
 /// validity and serial options.
-fn self_sign(
-    o: &Options,
-    compat: Compat,
-    out: &mut Outputs,
-) -> Result<Vec<u8>> {
+fn self_sign(o: &Options, out: &mut Outputs) -> Result<Vec<u8>> {
     let key = key(o, out)?;
     let subject = subject(o, out)?;
-    let mut template = CertificateTemplate::self_signed(
+    let mut template = CertificateTemplate::self_signed::<Line>(
         &subject,
         &(&key).into(),
         o.serial.next(out)?,
         o.lifetime.validity()?,
-        compat,
     );
     // -addext replaces v3_ca's extension of the same kind (which moves to
     // the end) and adds the others, as OpenSSL's replace mode does.
@@ -684,7 +679,7 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
     let mut bytes = Vec::new();
     match o.product {
         Product::Certificate => {
-            let der = self_sign(&o, compat, out)?;
+            let der = self_sign(&o, out)?;
             match o.text {
                 Text::Omitted => {}
                 Text::Printed => {

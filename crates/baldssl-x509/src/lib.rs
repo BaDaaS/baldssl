@@ -95,7 +95,10 @@ pub use profile::OpenSsl30;
 pub use profile::OpenSsl35;
 #[cfg(feature = "openssl-3-6")]
 pub use profile::OpenSsl36;
-pub use profile::{CertificateTimes, Profile, WithProfile};
+pub use profile::{
+    CertificateTimes, DefaultKeyIdentifiers, Profile, SelfSignedAuthorityKeyId,
+    WithProfile,
+};
 pub use text::{
     CertificateLoadSummary, Compat, CsrSignatureWarning, ExtensionsWithoutFile,
     ExtraOperands, LoadMessage, OneshotSigning, PublicKeyLoading, Stream,
