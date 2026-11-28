@@ -1,5 +1,5 @@
 {
-  "comment": "Every command shown on the website, as the lines it is displayed in (joined with backslash continuations, at most 38 characters each so they fit a phone screen). scripts/check_website_examples.py runs them in this order, in one directory, against OpenSSL 3.5 and 4.1 (CI job `website examples`). Tasks are shown with openssl or baldssl (a toggle on the page); the baldssl variant replaces the program name. A task with status `supported` must give the same output and files with baldssl; a deterministic `not-yet` task fails the check once baldssl reproduces it. `deterministic: false` marks commands whose output is random (keys, serials); a supported random task lists `verify` commands, run with OpenSSL on what baldssl produced. Sections: `tasks`, `install`, `usage`, `compatibility`.",
+  "comment": "Every command shown on the website, as the lines it is displayed in (joined with backslash continuations, at most 38 characters each so they fit a phone screen). scripts/check_website_examples.py runs them in this order, in one directory, against OpenSSL 3.5 and 4.1 (CI job `website examples`). Tasks are shown with openssl or baldssl (a toggle on the page); the baldssl variant replaces the program name. A task with status `supported` must give the same output and files with baldssl; a deterministic `not-yet` task fails the check once baldssl reproduces it. `deterministic: false` marks commands whose output is random (keys, serials); a supported random task lists `verify` commands, run with OpenSSL on what baldssl produced. Sections: `tasks`, `install`, `usage`. The `install` commands, run only with --install, install from this checkout in place of the repository URL shown.",
   "examples": [
     {
       "id": "genpkey-ec",
@@ -68,9 +68,7 @@
         "  -subj \"/CN=example.com\" \\",
         "  -out request.csr"
       ],
-      "verify": [
-        "openssl req -in request.csr -noout -verify"
-      ]
+      "verify": ["openssl req -in request.csr -noout -verify"]
     },
     {
       "id": "req-text",
@@ -95,9 +93,7 @@
         "  -out ca.crt -days 3650 \\",
         "  -subj \"/CN=Example CA\""
       ],
-      "verify": [
-        "openssl verify -CAfile ca.crt ca.crt"
-      ]
+      "verify": ["openssl verify -CAfile ca.crt ca.crt"]
     },
     {
       "id": "sign",
@@ -112,9 +108,7 @@
         "  -CAcreateserial -days 90 \\",
         "  -out cert.crt"
       ],
-      "verify": [
-        "openssl verify -CAfile ca.crt cert.crt"
-      ]
+      "verify": ["openssl verify -CAfile ca.crt cert.crt"]
     },
     {
       "id": "x509-text",
@@ -327,18 +321,45 @@
       ]
     },
     {
+      "id": "install-4",
+      "section": "install",
+      "lines": [
+        "cargo install \\",
+        "  --git \\",
+        "  https://github.com/BaDaaS/baldssl \\",
+        "  --no-default-features \\",
+        "  --features openssl-4 \\",
+        "  baldssl"
+      ]
+    },
+    {
+      "id": "install-3-6",
+      "section": "install",
+      "lines": [
+        "cargo install \\",
+        "  --git \\",
+        "  https://github.com/BaDaaS/baldssl \\",
+        "  --no-default-features \\",
+        "  --features openssl-3-6 \\",
+        "  baldssl"
+      ]
+    },
+    {
+      "id": "install-3-0",
+      "section": "install",
+      "lines": [
+        "cargo install \\",
+        "  --git \\",
+        "  https://github.com/BaDaaS/baldssl \\",
+        "  --no-default-features \\",
+        "  --features openssl-3-0 \\",
+        "  baldssl"
+      ]
+    },
+    {
       "id": "usage",
       "section": "usage",
       "lines": ["baldssl x509 -in cert.crt \\", "  -noout -text"]
-    },
-    {
-      "id": "compat-4",
-      "section": "compatibility",
-      "lines": [
-        "BALDSSL_OPENSSL_COMPAT=4 \\",
-        "  baldssl x509 -in cert.crt \\",
-        "  -noout -text"
-      ]
     }
   ]
 }

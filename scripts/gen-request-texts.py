@@ -6,7 +6,7 @@ For every request of tests/fixtures/req/requests.txt, runs
 
     <request hex> <text hex>
 
-Run it once per release line baldssl imitates (BALDSSL_OPENSSL_COMPAT):
+Run it once per release line baldssl imitates, with an OpenSSL of it:
 3.0, 3 and 4.
 
 Usage: gen-request-texts.py OPENSSL > tests/fixtures/req/text-<line>.txt

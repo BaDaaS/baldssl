@@ -42,7 +42,7 @@ RUST = (
 OPENSSL_BUILD = (".github/actions/build-openssl/*",)
 
 GROUPS: dict[str, tuple[str, ...]] = {
-    # test, cross, wasm and coverage: build and test the workspace.
+    # test, cross, wasm, coverage and profiles: build and test the workspace.
     "rust": RUST,
     # platforms and the os-rng jobs: os_rng, and the versions they test.
     "os-rng": (
@@ -83,6 +83,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         *OPENSSL_BUILD,
         "scripts/*interop*.sh",
         "scripts/find-openssl.sh",
+        "scripts/openssl-feature.sh",
         "scripts/gen-certs.sh",
     ),
     # website-examples: every command the website shows.
@@ -91,6 +92,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         *OPENSSL_BUILD,
         "website/src/examples.json",
         "scripts/check_website_examples.py",
+        "scripts/openssl-feature.sh",
     ),
     # golden: OpenSSL's output against the pinned fixtures (no baldssl).
     "golden": (

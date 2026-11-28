@@ -26,22 +26,31 @@ uses nightly `rustfmt` and `taplo`; `make setup` installs the tools.
 
 ## OpenSSL compatibility profiles
 
-OpenSSL releases print `-text` differently, so the printer takes a profile,
-`baldssl_x509::text::Compat`, chosen by the CLI from `BALDSSL_OPENSSL_COMPAT`:
+OpenSSL's release lines differ in their `-text` layouts, in some messages and
+encodings, and in a few checks. Each is a type implementing
+`baldssl_x509::Profile`, which holds the differences, and a `baldssl` binary
+imitates exactly one, chosen when it is built by its Cargo feature
+(`baldssl version` names it):
 
-| Profile | Release line | Differences                                                                                                                                 |
-| ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `3.0`   | OpenSSL 3.0  | names in the older escaped style (`CN = x`, `\XX` escapes, quoted values)                                                                   |
-| `3`     | OpenSSL 3.5  | the default                                                                                                                                 |
-| `3.6`   | OpenSSL 3.6  | as `3`, except that `pkey -outform DER` writes private keys as PKCS#8                                                                       |
-| `4`     | OpenSSL 4.x  | hex dump geometry, no RSA modulus sign byte, EC key header with the security level; no authority key identifier in `req -x509` certificates |
+| Feature       | Release line | Differences                                                                                                                                 |
+| ------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `openssl-3-0` | OpenSSL 3.0  | names in the older escaped style (`CN = x`, `\XX` escapes, quoted values)                                                                   |
+| `openssl-3-5` | OpenSSL 3.5  | the default                                                                                                                                 |
+| `openssl-3-6` | OpenSSL 3.6  | as 3.5, except that `pkey -outform DER` writes private keys as PKCS#8                                                                       |
+| `openssl-4`   | OpenSSL 4.x  | hex dump geometry, no RSA modulus sign byte, EC key header with the security level; no authority key identifier in `req -x509` certificates |
 
-Golden files exist per profile (`golden/v30`, `v3`, `v4` in the fixtures,
-recorded from OpenSSL 3.0.22, 3.5.9 and 4.1.0), and `scripts/interop.sh` picks
-the profile from the version of the OpenSSL under test. CI requires 3.0.22,
-3.5.9, 3.6.5, 4.0.3 and 4.1.0 to pass. One exception is documented in the
-script: OpenSSL 3.0's `x509` silently ignores unknown options, which baldssl
-rejects.
+```sh
+cargo build -p baldssl --no-default-features --features openssl-4
+```
+
+The library, `baldssl-x509`, compiles all four by default and tests each;
+`make check-profiles` builds and tests each line alone. Golden files exist per
+line (`golden/v30`, `v3`, `v4` in the fixtures, recorded from OpenSSL 3.0.22,
+3.5.9 and 4.1.0; 3.6 prints certificates as 3.5 does), and
+`make interop OPENSSL=...` builds baldssl for the line of the OpenSSL under test
+(`make build-for-openssl`). CI requires 3.0.22, 3.5.9, 3.6.5, 4.0.3 and 4.1.0 to
+pass. One exception is documented in the script: OpenSSL 3.0's `x509` silently
+ignores unknown options, which baldssl rejects.
 
 Rule for new output: never print something OpenSSL would print differently.
 Unimplemented cases return `Error::Unsupported`; the status of each command is

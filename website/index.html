@@ -139,25 +139,29 @@
           <div class="mt-6 grid gap-10 lg:grid-cols-2">
             <div class="max-w-prose text-sm text-muted">
               <p>
-                OpenSSL 3.x and 4.x print
+                OpenSSL's release lines differ: 3.0, 3.5, 3.6 and 4.x print
                 <code class="font-mono text-foreground">-text</code>
                 differently (hex dump widths, the RSA modulus sign byte, the EC
-                key header). baldssl reproduces either; the profile is selected
-                with an environment variable, so scripts that call
+                key header, the style of names), and differ in some messages,
+                encodings and checks. A baldssl binary imitates one release
+                line, chosen when it is built, so scripts that call
                 <code class="font-mono text-foreground">openssl</code> need no
-                new flags.
+                new flags. Build the one for the OpenSSL your scripts were
+                written against.
               </p>
-              <p class="mt-4">OpenSSL 3.x layout (the default):</p>
-              <div class="mt-2"><!-- example:usage --></div>
-              <p class="mt-4">OpenSSL 4.x layout:</p>
-              <div class="mt-2"><!-- example:compat-4 --></div>
+              <p class="mt-4">OpenSSL 3.5 (the default):</p>
+              <div class="mt-2"><!-- example:install --></div>
+              <p class="mt-4">OpenSSL 4.x:</p>
+              <div class="mt-2"><!-- example:install-4 --></div>
+              <p class="mt-4">OpenSSL 3.6:</p>
+              <div class="mt-2"><!-- example:install-3-6 --></div>
+              <p class="mt-4">OpenSSL 3.0:</p>
+              <div class="mt-2"><!-- example:install-3-0 --></div>
               <p class="mt-4">
-                Supported and checked against real OpenSSL builds in CI: OpenSSL
-                3.5.9 (profile 3, the default) and 4.1.0 (profile 4), and
-                OpenSSL 3.0.22 with
-                <code class="font-mono text-foreground"
-                  >BALDSSL_OPENSSL_COMPAT=3.0</code
-                >, whose names use the older escaped style.
+                <code class="font-mono text-foreground">baldssl version</code>
+                names the release line a binary imitates. Each is checked
+                against a real OpenSSL build in CI: 3.0.22, 3.5.9, 3.6.5, 4.0.3
+                and 4.1.0.
               </p>
             </div>
             <div class="max-w-prose text-sm text-muted">

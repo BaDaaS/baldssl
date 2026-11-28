@@ -2,10 +2,10 @@
 #
 # Refuses a binary that is not OpenSSL 3.x or 4.x (macOS's /usr/bin/openssl is
 # LibreSSL, whose output differs; baldssl has no profile before 3.0), sets
-# OPENSSL_VERSION, exports the release line baldssl imitates (see README,
-# "OpenSSL compatibility profiles") as BALDSSL_OPENSSL_COMPAT, and defines
-# interop_pass, which counts a passing case, and interop_summary, which each
-# script calls last.
+# OPENSSL_VERSION, checks that BALDSSL is built for that release line (its
+# Cargo feature, FEATURE, from scripts/openssl-feature.sh; see README,
+# "OpenSSL compatibility profiles"), and defines interop_pass, which counts a
+# passing case, and interop_summary, which each script calls last.
 # shellcheck shell=bash
 
 OPENSSL_BANNER=$("$OPENSSL" version)
@@ -21,12 +21,10 @@ case "$OPENSSL_BANNER" in
         ;;
 esac
 OPENSSL_VERSION=$(awk '{print $2}' <<<"$OPENSSL_BANNER")
-case "$OPENSSL_VERSION" in
-    3.0.*) BALDSSL_OPENSSL_COMPAT=3.0 ;;
-    3.6.*) BALDSSL_OPENSSL_COMPAT=3.6 ;;
-    *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
-esac
-export BALDSSL_OPENSSL_COMPAT
+# baldssl imitates the release line it is built for, which must be the line
+# of the OpenSSL under test.
+FEATURE=$("$(dirname "${BASH_SOURCE[0]}")/openssl-feature.sh" "$OPENSSL" \
+    "$BALDSSL") || exit 2
 
 # interop_pass NAME: count a passing case, and print it when VERBOSE=1.
 interop_pass() {
@@ -41,6 +39,6 @@ interop_pass() {
 interop_summary() {
     echo "$1: $2 passed, $3 failed"
     echo "$1: tested against OpenSSL $OPENSSL_VERSION ($OPENSSL)," \
-        "baldssl profile $BALDSSL_OPENSSL_COMPAT"
+        "baldssl built with $FEATURE"
     [[ "$3" -eq 0 ]]
 }

@@ -59,18 +59,21 @@ const BN_BYTES: usize = 8;
 /// (`crypto/asn1/f_int.c`).
 const SERIAL_BYTES_PER_LINE: usize = 35;
 
-/// Which OpenSSL release line's output to reproduce. The lines differ in
-/// the style of names (3.0), the hex-dump geometry and the EC key header
-/// (4), and how `pkey` writes a private key in DER (3.6 and 4); everything
-/// else is shared. `scripts/interop.sh` checks each profile against real
-/// binaries of that line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Which OpenSSL release line's output to reproduce, as a value: each
+/// [`Profile`](crate::Profile) names its line ([`Profile::COMPAT`]), and
+/// [`Compat::run`] goes back from a value to its profile. The lines differ
+/// in the style of names (3.0), the hex-dump geometry and the EC key header
+/// (4), how `pkey` writes a private key in DER (3.6 and 4), and the
+/// differences the profile holds; everything else is shared.
+/// `scripts/interop.sh` checks each line against real binaries of it.
+///
+/// [`Profile::COMPAT`]: crate::Profile::COMPAT
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compat {
     /// OpenSSL 3.0, whose names use the older escaped style
     /// ([`NameStyle::Oneline`]).
     V30,
     /// OpenSSL 3.2 to 3.5.
-    #[default]
     V3,
     /// OpenSSL 3.6: as 3.5, except that `pkey` writes a private key in DER
     /// as PKCS#8 ([`Compat::private_key_der`]); `genpkey` does not
@@ -78,6 +81,22 @@ pub enum Compat {
     V36,
     /// OpenSSL 4.0 and later.
     V4,
+}
+
+/// The line used when none is named: OpenSSL 3.5 when it is compiled in,
+/// otherwise the newest line that is.
+impl Default for Compat {
+    fn default() -> Self {
+        if cfg!(feature = "openssl-3-5") {
+            Compat::V3
+        } else if cfg!(feature = "openssl-4") {
+            Compat::V4
+        } else if cfg!(feature = "openssl-3-6") {
+            Compat::V36
+        } else {
+            Compat::V30
+        }
+    }
 }
 
 impl Compat {
@@ -165,22 +184,6 @@ impl Compat {
         match self {
             Compat::V30 => "Unknown cipher",
             Compat::V3 | Compat::V36 | Compat::V4 => "Unknown option or cipher",
-        }
-    }
-
-    /// How `verify` compares a certificate's validity times with the
-    /// verification time (`ossl_x509_check_cert_time` in
-    /// `crypto/x509/x509_vfy.c`). OpenSSL 3.0 to 3.6 compare with
-    /// `X509_cmp_time`, which converts the verification time to an ASN.1
-    /// time with `X509_time_adj` and compares with `<=`; from 4.0,
-    /// `ossl_x509_check_cert_time` compares 64-bit POSIX times (see
-    /// [`CertificateTimes`]).
-    pub(crate) fn certificate_times(self) -> CertificateTimes {
-        match self {
-            Compat::V30 | Compat::V3 | Compat::V36 => {
-                CertificateTimes::Asn1Compared
-            }
-            Compat::V4 => CertificateTimes::PosixCompared,
         }
     }
 
@@ -336,9 +339,8 @@ impl Compat {
         }
     }
 
-    /// The name of the profile, as `BALDSSL_OPENSSL_COMPAT` gives it: the
-    /// release line, or its major version when the line covers several
-    /// minor ones.
+    /// The short name of the line: the release, or its major version when
+    /// the line covers several minor ones.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -501,28 +503,6 @@ pub enum ExtraOperands {
     HintOnly,
     /// With a line naming it, then the hint (from OpenSSL 3.2).
     Named,
-}
-
-/// How a certificate's validity times are compared with the verification
-/// time ([`Compat::certificate_times`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CertificateTimes {
-    /// OpenSSL 3.0 to 3.6: the verification time is converted to an ASN.1
-    /// time, which holds the years 0 to 9999 only; outside them the
-    /// conversion fails, which `X509_cmp_time` reports as 0, and
-    /// `ossl_x509_check_cert_time` as error 13 at the first certificate it
-    /// checks. A certificate is valid from its notBefore to the second
-    /// before its notAfter: `X509_cmp_time`'s comparison is `<=`, so it has
-    /// expired at its notAfter.
-    Asn1Compared,
-    /// OpenSSL 4.0 and later: any 64-bit time, and a certificate valid from
-    /// its notBefore through its notAfter, both included ([RFC 5280,
-    /// section 4.1.2.5][rfc5280]). A notAfter of 99991231235959Z, which
-    /// RFC 5280 assigns to a certificate with no well-defined expiration
-    /// date, never expires.
-    ///
-    /// [rfc5280]: https://www.rfc-editor.org/rfc/rfc5280#section-4.1.2.5
-    PosixCompared,
 }
 
 /// When `x509 -req -CA` adds a subject and an authority key identifier

@@ -13,7 +13,7 @@ use super::{
     VERIFY_FAILED, run, target_report,
 };
 use crate::{
-    input::compat,
+    line::compat,
     load::{Credential, LoadFailure, load_line},
     outputs::Outputs,
 };
@@ -75,7 +75,7 @@ fn exit_code_opt(result: &Result<()>) -> Option<u8> {
 /// then one with no certificate, which both end in exit code 2.
 #[test]
 fn targets_that_do_not_load() {
-    let compat = compat().unwrap();
+    let compat = compat();
     let garbage = scratch("targets", "garbage.txt", "not a certificate\n");
     let missing = garbage.with_file_name("missing.pem");
     let (result, stderr) =
@@ -98,7 +98,7 @@ fn targets_that_do_not_load() {
 /// command with exit code 1; `-CAfile` reports `setup_verify`'s line.
 #[test]
 fn intermediates_and_anchors_that_do_not_load() {
-    let compat = compat().unwrap();
+    let compat = compat();
     let empty = scratch("lists", "empty.pem", "");
     let missing = empty.with_file_name("missing.pem");
     let (result, stderr) = run_args(&[

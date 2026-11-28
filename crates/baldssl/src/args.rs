@@ -21,7 +21,7 @@ use std::{
 use baldssl_core::{Error, Result};
 use baldssl_x509::{Compat, ExtraOperands, UndeclaredOptions};
 
-use crate::input::compat;
+use crate::line::compat;
 
 /// The messages of OpenSSL's option parser, `apps/lib/opt.c`, after the
 /// command name and a colon.
@@ -476,7 +476,7 @@ pub(crate) fn parse_line<O>(
 where
     O: Clone,
 {
-    parse_line_as(command, args, specs, unknown, compat()?)
+    parse_line_as(command, args, specs, unknown, compat())
 }
 
 /// As [`parse_line`], with the messages of the release line `compat`.

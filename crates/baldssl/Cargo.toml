@@ -18,6 +18,14 @@ baldssl-fs.workspace = true
 baldssl-pkey.workspace = true
 baldssl-x509.workspace = true
 
+[features]
+default = ["openssl-3-5"]
+# The OpenSSL release line baldssl imitates: exactly one (see src/line.rs).
+openssl-3-0 = ["baldssl-x509/openssl-3-0"]
+openssl-3-5 = ["baldssl-x509/openssl-3-5"]
+openssl-3-6 = ["baldssl-x509/openssl-3-6"]
+openssl-4 = ["baldssl-x509/openssl-4"]
+
 [dev-dependencies]
 proptest.workspace = true
 

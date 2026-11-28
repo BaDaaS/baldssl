@@ -28,7 +28,7 @@ baldssl-crypto = { path = "crates/baldssl-crypto", version = "0.1.0" }
 baldssl-fs = { path = "crates/baldssl-fs", version = "0.1.0" }
 baldssl-pkey = { path = "crates/baldssl-pkey", version = "0.1.0" }
 baldssl-test-utils = { path = "crates/baldssl-test-utils" }
-baldssl-x509 = { path = "crates/baldssl-x509", version = "0.1.0" }
+baldssl-x509 = { path = "crates/baldssl-x509", version = "0.1.0", default-features = false }
 
 # Test-only. `make check-no-deps` asserts no third-party crate reaches a
 # normal or build dependency edge.

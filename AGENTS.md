@@ -68,11 +68,16 @@ practices" says what the project does; this file says how to work in it.
 - A command returns what it writes on standard output and never writes standard
   output itself; a failure that has output carries it
   (`Error::Reported { code, output }`).
-- A difference between OpenSSL release lines is a method of `Compat` named for
-  what differs (`Compat::bn_sign_byte`, `Compat::name_style`), whose
-  documentation cites the OpenSSL source that differs. Callers ask the method;
-  they never compare lines (`compat != Compat::V4`), which silently puts a new
-  line on one side.
+- A difference between OpenSSL release lines is an item of
+  `baldssl_x509::Profile` named for what differs (`Profile::NOT_YET_VALID`,
+  `Profile::CERTIFICATE_TIMES`), whose documentation cites the OpenSSL source
+  that differs; its default is what the lines share, and each line's type
+  overrides it where it differs. Code that depends on the line is generic over
+  `P: Profile`. In a module not yet moved onto the profile, a difference is a
+  method of `Compat` named the same way (`Compat::bn_sign_byte`), moved to the
+  profile with its module. Callers ask the item or the method; they never
+  compare lines (`compat != Compat::V4`), which silently puts a new line on one
+  side.
 - Before an OpenSSL release joins CI, diff the sources baldssl reproduces
   (`apps/*.c`, the message tables such as `crypto/x509/x509_txt.c`) against the
   release line it would share a profile with; any difference that reaches

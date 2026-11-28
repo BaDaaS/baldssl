@@ -16,8 +16,14 @@ reader would paste them into bash:
   its `verify` commands with OpenSSL on what baldssl produced;
 - a deterministic task with status "not-yet" fails the check if baldssl
   already reproduces it, so the status is updated when a feature lands;
-- `usage` and `compatibility` commands run with baldssl as `baldssl`;
-- `install` commands run only with --install (CI), since they install.
+- `usage` commands run with baldssl as `baldssl`;
+- `install` commands run only with --install (CI), since they install, and
+  install from this checkout in place of the repository URL they show, so
+  that they build what is being checked.
+
+baldssl imitates one OpenSSL release line, chosen when it is built: the
+binary given must be built for the line of the OpenSSL given
+(scripts/openssl-feature.sh checks it; `make website-examples` builds it).
 
 Usage:
   scripts/check_website_examples.py --openssl PATH --baldssl PATH [--install]
@@ -42,9 +48,8 @@ EXAMPLES = ROOT / "website" / "src" / "examples.json"
 # website's code blocks.
 MAX_WIDTH = 38
 
-# The release lines baldssl has a profile of its own for, besides the major
-# versions (baldssl_x509::Compat).
-LINES = ("3.0", "3.6")
+# The repository the install commands name, replaced by this checkout.
+REPOSITORY = "https://github.com/BaDaaS/baldssl"
 
 # The program name `openssl`, where the shell runs it.
 PROGRAM = re.compile(r"(?<![\w./-])openssl(?= )")
@@ -62,14 +67,10 @@ def displayed(lines: list[str]) -> list[str]:
     return problems
 
 
-def profile(version: str) -> str:
-    """The baldssl profile (BALDSSL_OPENSSL_COMPAT) for an OpenSSL version:
-    the release line for 3.0 and 3.6, which differ from the rest of 3, and
-    the major version otherwise."""
-    for line in LINES:
-        if version == line or version.startswith(f"{line}."):
-            return line
-    return version.split(".", maxsplit=1)[0]
+def local_install(command: str) -> str:
+    """An install command building this checkout instead of the repository
+    it names, so that the check installs what it checks."""
+    return command.replace(REPOSITORY, ROOT.as_uri())
 
 
 def baldssl_variant(command: str) -> str:
@@ -87,11 +88,10 @@ def bin_dir(base: Path, name: str, links: dict[str, Path]) -> Path:
 
 
 def run(
-    command: str, cwd: Path, path_first: Path, env_extra: dict[str, str]
+    command: str, cwd: Path, path_first: Path
 ) -> subprocess.CompletedProcess[bytes]:
     env = dict(os.environ)
     env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
-    env.update(env_extra)
     # The commands are the website's examples, from the repository.
     return subprocess.run(  # noqa: S603
         ["bash", "-o", "pipefail", "-c", command],  # noqa: S607
@@ -126,13 +126,18 @@ def main() -> int:
     openssl = args.openssl.resolve()
     baldssl = args.baldssl.resolve()
 
-    # The binary is the one named on the command line.
-    version = subprocess.run(  # noqa: S603
-        [str(openssl), "version"], capture_output=True, text=True, check=True
-    ).stdout.split()[1]
-    line = profile(version)
-    environment = {"BALDSSL_OPENSSL_COMPAT": line}
-    print(f"OpenSSL {version} (baldssl profile {line})")
+    # The binary is the one named on the command line, built for the
+    # release line of the OpenSSL named.
+    feature = subprocess.run(  # noqa: S603
+        [str(ROOT / "scripts" / "openssl-feature.sh"), openssl, baldssl],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if feature.returncode != 0:
+        print(feature.stderr, end="", file=sys.stderr)
+        return 1
+    print(f"OpenSSL {openssl} (baldssl built with {feature.stdout.strip()})")
 
     examples = json.loads(EXAMPLES.read_text(encoding="utf-8"))["examples"]
     failures: list[str] = []
@@ -154,7 +159,9 @@ def main() -> int:
             shadow = base / f"shadow-{ident}"
             shutil.copytree(work, shadow)
 
-            ran = run(command, work, real, environment)
+            if section == "install":
+                command = local_install(command)
+            ran = run(command, work, real)
             if ran.returncode != 0:
                 failures.append(
                     f"{ident}: exit {ran.returncode}: "
@@ -173,7 +180,7 @@ def main() -> int:
             if status == "supported" and not ex.get("deterministic"):
                 # Random output (a new key): baldssl must succeed, and
                 # OpenSSL must accept what it produced.
-                mine = run(baldssl_variant(command), shadow, real, environment)
+                mine = run(baldssl_variant(command), shadow, real)
                 problems = []
                 if mine.returncode != 0:
                     problems.append(
@@ -181,7 +188,7 @@ def main() -> int:
                         f"{mine.stderr.decode(errors='replace').strip()[:300]}"
                     )
                 for check in ex.get("verify", []):
-                    verified = run(check, shadow, real, environment)
+                    verified = run(check, shadow, real)
                     if verified.returncode != 0:
                         problems.append(
                             f"`{check}` rejects it: "
@@ -196,7 +203,7 @@ def main() -> int:
                     print(f"ok    {ident} (baldssl verified by OpenSSL)")
                 continue
 
-            mine = run(baldssl_variant(command), shadow, real, environment)
+            mine = run(baldssl_variant(command), shadow, real)
             same = (
                 mine.returncode == 0
                 and mine.stdout == ran.stdout

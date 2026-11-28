@@ -22,8 +22,9 @@ use baldssl_x509::{Format, print_private_key_text};
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
-    input::{compat, format_value},
+    input::format_value,
     keygen::KeyParameters,
+    line::compat,
     outputs::Outputs,
 };
 
@@ -124,7 +125,7 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
         return Err(args::opthelp(COMMAND, None));
     }
     pending.read(COMMAND, &mut Vec::new())?;
-    let compat = compat()?;
+    let compat = compat();
     let key = AnyPrivateKey::generate(parameters.algorithm()?)?;
     let mut bytes = match format {
         Format::Der => key.der(compat.generated_key_der()).expose().to_vec(),
@@ -186,7 +187,7 @@ mod tests {
     /// in DER, and giving it twice changes nothing.
     #[test]
     fn text() {
-        let compat = compat().unwrap();
+        let compat = compat();
         for alg in [
             &["-algorithm", "ED25519"][..],
             &["-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-521"],

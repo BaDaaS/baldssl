@@ -12,6 +12,14 @@ baldssl-core.workspace = true
 baldssl-crypto.workspace = true
 baldssl-pkey.workspace = true
 
+[features]
+default = ["openssl-3-0", "openssl-3-5", "openssl-3-6", "openssl-4"]
+# The OpenSSL release lines compiled in (see the profile module).
+openssl-3-0 = []
+openssl-3-5 = []
+openssl-3-6 = []
+openssl-4 = []
+
 [dev-dependencies]
 baldssl-core = { workspace = true, features = ["laws"] }
 baldssl-test-utils = { workspace = true, features = ["proptest"] }
