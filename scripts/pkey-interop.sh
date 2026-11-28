@@ -101,5 +101,15 @@ for args in "-text -noout" "-outform DER" ""; do
         ${extra[@]+"${extra[@]}"}
 done
 
+# The same key without its public key, which ECPrivateKey makes optional:
+# OpenSSL writes it back without it, and computes it to print or export.
+"$OPENSSL" pkey -in "$WORK/zero0.der" -inform DER -out "$WORK/nopub.pem"
+for args in "" "-outform DER" "-text -noout" "-pubout" "-check -noout"; do
+    read -r -a extra <<<"$args"
+    same "no public key ${args:-(none)}" -in "$WORK/nopub.pem" \
+        ${extra[@]+"${extra[@]}"}
+done
+same "no public key, SEC 1 DER" -in "$WORK/zero0.der" -inform DER
+
 echo "pkey-interop: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
