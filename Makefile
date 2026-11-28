@@ -198,6 +198,16 @@ ANDROID_RUN_API ?= 28
 platform-matrix: ## The os-rng CI matrices, from website/src/platforms.json
 	python3 scripts/platform-matrix.py
 
+.PHONY: ci-changes
+ci-changes: ## The CI job groups a change needs (CHANGES_BASE=<rev>; none: all)
+ifeq ($(CHANGES_BASE),)
+	python3 scripts/ci-changes.py --all
+else
+	mkdir -p target
+	git diff --name-only $(CHANGES_BASE) HEAD > target/changed-files
+	python3 scripts/ci-changes.py target/changed-files
+endif
+
 .PHONY: test-os-rng
 test-os-rng: ## Run the os_rng tests on this machine
 	cargo test -p baldssl-crypto --lib os_rng
