@@ -30,13 +30,8 @@ BALDSSL=$2
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/baldssl-x509-req.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
-OPENSSL_VERSION=$("$OPENSSL" version | awk '{print $2}')
-case "$OPENSSL_VERSION" in
-    3.0.*) BALDSSL_OPENSSL_COMPAT=3.0 ;;
-    3.6.*) BALDSSL_OPENSSL_COMPAT=3.6 ;;
-    *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
-esac
-export BALDSSL_OPENSSL_COMPAT
+# shellcheck source=scripts/interop-profile.sh
+source "$ROOT/scripts/interop-profile.sh"
 pass=0
 fail=0
 
@@ -206,5 +201,4 @@ for who in OPENSSL BALDSSL; do
         -out "$WORK/x.pem"
 done
 
-echo "x509-req-interop: $pass passed, $fail failed"
-[[ "$fail" -eq 0 ]]
+interop_summary x509-req-interop "$pass" "$fail"
