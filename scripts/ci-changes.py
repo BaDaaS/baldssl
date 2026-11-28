@@ -27,7 +27,8 @@ EVERYTHING = (
 )
 
 # What every Rust build reads: the sources, the manifests, the toolchain and
-# the lints, and the tests with their fixtures.
+# the lints, and the tests with their fixtures (`make fixtures` runs
+# scripts/fetch-fixtures.sh, which every test target depends on).
 RUST = (
     "crates/*",
     "Cargo.toml",
@@ -36,17 +37,23 @@ RUST = (
     "clippy.toml",
     ".cargo/*",
     "tests/*",
+    "scripts/fetch-fixtures.sh",
 )
 
 # The OpenSSL builds the interop, website and golden jobs use.
 OPENSSL_BUILD = (".github/actions/build-openssl/*",)
 
 GROUPS: dict[str, tuple[str, ...]] = {
-    # test, cross, wasm, coverage and profiles: build and test the workspace.
-    "rust": RUST,
-    # platforms and the os-rng jobs: os_rng, and the versions they test.
+    # test, cross, wasm, coverage and profiles: build and test the workspace,
+    # the WebAssembly CLI through scripts/wasmtime-baldssl.sh.
+    "rust": (*RUST, "scripts/wasmtime-baldssl.sh"),
+    # platforms and the os-rng jobs: os_rng, the crates its tests build
+    # (baldssl-crypto, what it depends on, baldssl-core, and its test
+    # helpers), and the versions they test.
     "os-rng": (
         "crates/baldssl-crypto/*",
+        "crates/baldssl-core/*",
+        "crates/baldssl-test-utils/*",
         "Cargo.toml",
         "Cargo.lock",
         "rust-toolchain.toml",
@@ -101,8 +108,10 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "scripts/fetch-fixtures.sh",
         "scripts/gen-*",
     ),
-    # lean: the Lean 4 skeleton.
-    "lean": ("proofs/*",),
+    # lean: the Lean 4 project, which is the Rust translated by Aeneas, so
+    # every change to the Rust it translates asks for it as much as a change
+    # to the proofs.
+    "lean": (*RUST, "proofs/*"),
 }
 
 

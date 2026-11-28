@@ -22,16 +22,37 @@ def test_workflow_makefile_and_rules_need_everything(path: str) -> None:
     assert on([path]) == set(ci_changes.GROUPS)
 
 
-def test_a_rust_source_needs_the_builds_but_not_lean_or_python() -> None:
+def test_a_rust_source_needs_the_builds_and_lean_but_not_python() -> None:
     groups = on(["crates/baldssl-x509/src/lib.rs"])
     assert {"rust", "format", "hygiene", "links", "interop"} <= groups
-    assert {"website-examples"} <= groups
-    assert groups.isdisjoint({"lean", "python", "golden", "os-rng"})
+    assert {"website-examples", "lean"} <= groups
+    assert groups.isdisjoint({"python", "golden", "os-rng"})
 
 
-def test_os_rng_follows_the_crypto_crate_only() -> None:
-    assert "os-rng" in on(["crates/baldssl-crypto/src/os_rng.rs"])
-    assert "os-rng" in on(["website/src/platforms.json"])
+def test_lean_follows_every_rust_input_and_the_proofs() -> None:
+    for path in [
+        "crates/baldssl-core/src/der.rs",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "proofs/Baldssl.lean",
+    ]:
+        assert "lean" in on([path]), path
+    assert "lean" not in on(["website/src/commands.json"])
+
+
+def test_the_fixture_and_wasm_scripts_need_the_builds() -> None:
+    assert {"rust", "interop"} <= on(["scripts/fetch-fixtures.sh"])
+    assert "rust" in on(["scripts/wasmtime-baldssl.sh"])
+
+
+def test_os_rng_follows_the_crates_its_tests_build() -> None:
+    for path in [
+        "crates/baldssl-crypto/src/os_rng.rs",
+        "crates/baldssl-core/src/lib.rs",
+        "crates/baldssl-test-utils/src/lib.rs",
+        "website/src/platforms.json",
+    ]:
+        assert "os-rng" in on([path]), path
     assert "os-rng" not in on(["crates/baldssl-pkey/src/lib.rs"])
 
 
