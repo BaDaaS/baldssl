@@ -59,7 +59,7 @@ same() {
     "$BALDSSL" "$@" <"$input" >b.out 2>b.err || rb=$?
     if [[ "$ro" -eq "$rb" ]] && cmp -s o.out b.out &&
         [[ "$(report o.err)" == "$(report b.err)" ]]; then
-        pass=$((pass + 1))
+        interop_pass "[$*]"
     else
         echo "FAIL [$*]: exit $ro/$rb; $(report o.err | tr '\n' '|') vs" \
             "$(report b.err | tr '\n' '|')"
@@ -72,7 +72,7 @@ check() {
     local what=$1
     shift
     if "$@" >/dev/null 2>&1; then
-        pass=$((pass + 1))
+        interop_pass "$what"
     else
         echo "FAIL $what"
         fail=$((fail + 1))
@@ -87,7 +87,7 @@ refuse() {
         echo "FAIL $what (accepted)"
         fail=$((fail + 1))
     else
-        pass=$((pass + 1))
+        interop_pass "$what (refused)"
     fi
 }
 

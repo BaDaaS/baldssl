@@ -50,7 +50,7 @@ same() {
     sed '/verification failed/q' o.err >o3
     sed '/verification failed/q' b.err >b3
     if [[ "$ro" -eq "$rb" ]] && cmp -s o.out b.out && cmp -s o3 b3; then
-        pass=$((pass + 1))
+        interop_pass "$label"
     else
         echo "FAIL $label: exit $ro/$rb; $(tr '\n' '|' <o3) vs $(tr '\n' '|' <b3)"
         fail=$((fail + 1))

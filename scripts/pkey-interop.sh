@@ -35,7 +35,7 @@ same() {
     "$OPENSSL" pkey "$@" >"$WORK/o.out" 2>/dev/null || ro=$?
     "$BALDSSL" pkey "$@" >"$WORK/b.out" 2>/dev/null || rb=$?
     if [[ "$ro" -eq 0 && "$rb" -eq 0 ]] && cmp -s "$WORK/o.out" "$WORK/b.out"; then
-        pass=$((pass + 1))
+        interop_pass "$label"
     else
         echo "FAIL $label: exit $ro and $rb, or outputs differ"
         fail=$((fail + 1))
@@ -72,7 +72,7 @@ while read -r curve _ _ pkcs8; do
     "$BALDSSL" pkey -in "$WORK/k.pem" -out "$WORK/written.pem"
     if [[ "$(mode "$WORK/written.pem")" == 600 ]] &&
         cmp -s "$WORK/written.pem" "$WORK/k.pem"; then
-        pass=$((pass + 1))
+        interop_pass "$curve $n: -out key file mode"
     else
         echo "FAIL $curve $n: -out key file mode $(mode "$WORK/written.pem")"
         fail=$((fail + 1))

@@ -60,7 +60,7 @@ compare() {
         diff "$WORK/o.out" "$WORK/b.out" | head -20 || true
         fail=$((fail + 1))
     else
-        pass=$((pass + 1))
+        interop_pass "$label"
     fi
 }
 
@@ -85,7 +85,7 @@ for cert in "${CERTS[@]}"; do
             -out "$WORK/rt.der" && cmp -s "$der" "$WORK/rt.der" &&
         "$OPENSSL" x509 -in "$WORK/b.pem" -outform DER -out "$WORK/rt2.der" &&
         cmp -s "$der" "$WORK/rt2.der"; then
-        pass=$((pass + 1))
+        interop_pass "$base/reverse"
     else
         echo "FAIL $base/reverse: OpenSSL does not read back baldssl output"
         fail=$((fail + 1))
@@ -94,7 +94,7 @@ for cert in "${CERTS[@]}"; do
         if "$OPENSSL" verify -CAfile "$WORK/b.pem" "$WORK/b.pem" >/dev/null 2>&1 \
             || "$OPENSSL" verify -partial_chain -CAfile "$WORK/b.pem" \
                 "$WORK/b.pem" >/dev/null 2>&1; then
-            pass=$((pass + 1))
+            interop_pass "$base/verify"
         else
             echo "FAIL $base/verify: OpenSSL rejects baldssl's re-encoding"
             fail=$((fail + 1))
@@ -140,7 +140,7 @@ for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
         diff <(structure "$WORK/o-key.pem") <(structure "$WORK/b-key.pem") || true
         fail=$((fail + 1))
     else
-        pass=$((pass + 1))
+        interop_pass "$label"
     fi
     # In DER, the key has the structure of OpenSSL's: the traditional form
     # or PKCS#8, by release line.
@@ -148,7 +148,7 @@ for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
     "$OPENSSL" genpkey "${args[@]}" -outform DER -out "$WORK/o-key.der"
     if cmp -s <(structure_der "$WORK/b-key.der") \
         <(structure_der "$WORK/o-key.der"); then
-        pass=$((pass + 1))
+        interop_pass "$label -outform DER"
     else
         echo "FAIL $label -outform DER: structure differs from OpenSSL's"
         diff <(structure_der "$WORK/o-key.der") \
@@ -160,7 +160,7 @@ for spec in "EC ec_paramgen_curve:P-256" "EC ec_paramgen_curve:P-384" \
     "$BALDSSL" genpkey "${args[@]}" -text >"$WORK/b-text.pem"
     if cmp -s "$WORK/b-text.pem" \
         <("$OPENSSL" pkey -in "$WORK/b-text.pem" -text); then
-        pass=$((pass + 1))
+        interop_pass "$label -text"
     else
         echo "FAIL $label -text: differs from OpenSSL's pkey -text"
         diff <("$OPENSSL" pkey -in "$WORK/b-text.pem" -text) \
@@ -197,7 +197,7 @@ usage_same() {
     "$BALDSSL" "$@" </dev/null >/dev/null 2>"$WORK/b.err" || b_rc=$?
     grep -Ev '^[0-9A-F]+:error:' "$WORK/o.err" >"$WORK/o2.err" || true
     if [[ "$o_rc" -eq "$b_rc" ]] && cmp -s "$WORK/o2.err" "$WORK/b.err"; then
-        pass=$((pass + 1))
+        interop_pass "$label"
     else
         echo "FAIL $label: exit $o_rc/$b_rc"
         diff "$WORK/o2.err" "$WORK/b.err" || true

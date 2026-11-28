@@ -4,7 +4,8 @@
 # LibreSSL, whose output differs; baldssl has no profile before 3.0), sets
 # OPENSSL_VERSION, exports the release line baldssl imitates (see README,
 # "OpenSSL compatibility profiles") as BALDSSL_OPENSSL_COMPAT, and defines
-# interop_summary, which each script calls last.
+# interop_pass, which counts a passing case, and interop_summary, which each
+# script calls last.
 # shellcheck shell=bash
 
 OPENSSL_BANNER=$("$OPENSSL" version)
@@ -26,6 +27,14 @@ case "$OPENSSL_VERSION" in
     *) BALDSSL_OPENSSL_COMPAT=${OPENSSL_VERSION%%.*} ;;
 esac
 export BALDSSL_OPENSSL_COMPAT
+
+# interop_pass NAME: count a passing case, and print it when VERBOSE=1.
+interop_pass() {
+    pass=$((pass + 1))
+    if [[ "${VERBOSE:-0}" == 1 ]]; then
+        echo "PASS $1"
+    fi
+}
 
 # interop_summary NAME PASSED FAILED: print the counts and what was tested,
 # and succeed only if nothing failed.
