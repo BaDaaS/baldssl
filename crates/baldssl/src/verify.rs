@@ -31,8 +31,8 @@ use std::ffi::{OsStr, OsString};
 
 use baldssl_core::{Error, Result, der::syntax::RawTlv};
 use baldssl_x509::{
-    Certificate, CertificateLoadSummary, Compat, Reported, TrustStore,
-    Verification, certificate_der, certificates_der,
+    Certificate, CertificateLoadSummary, Compat, Profile, Reported, TrustStore,
+    Verification, WithProfile, certificate_der, certificates_der,
 };
 
 use crate::{
@@ -254,9 +254,36 @@ fn parse_all(ders: &[RawTlv]) -> Result<Vec<Certificate<'_>>> {
 /// [`Error::Reported`] with exit code 2 when a certificate does not
 /// verify, as OpenSSL exits.
 pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
+    compat()?.run(Run { raw, outputs })?
+}
+
+/// `verify` for the release line chosen at run time.
+struct Run<'r> {
+    /// The command's arguments.
+    raw: &'r [OsString],
+    /// Where its output goes.
+    outputs: &'r mut Outputs,
+}
+
+impl WithProfile for Run<'_> {
+    type Output = Result<()>;
+
+    fn call<P>(self) -> Self::Output
+    where
+        P: Profile,
+    {
+        run_as::<P>(self.raw, self.outputs)
+    }
+}
+
+/// `verify` as the release line `P` does it.
+fn run_as<P>(raw: &[OsString], outputs: &mut Outputs) -> Result<()>
+where
+    P: Profile,
+{
     let (opts, files) =
         args::parse_with_operands(COMMAND, raw, SPECS, Unknown::Refused)?;
-    let compat = compat()?;
+    let compat = P::COMPAT;
     let mut trusted_paths = Vec::new();
     let mut untrusted_ders = Vec::new();
     let mut at_time = None;
@@ -316,7 +343,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
             }
         };
         let target = Certificate::from_der(&der)?;
-        match store.verify(&target, now, compat)? {
+        match store.verify::<P>(&target, now)? {
             Verification::Verified(_) => {
                 out.extend_from_slice(format!("{label}: OK\n").as_bytes());
             }
@@ -334,7 +361,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
                         format!(
                             "\nerror {} at {depth} depth lookup: {}\n",
                             error.code(),
-                            error.message(compat)
+                            error.message::<P>()
                         )
                         .as_bytes(),
                     );

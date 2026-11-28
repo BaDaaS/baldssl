@@ -10,12 +10,45 @@ use super::{
     HANDLED_CRITICAL, Reported, TrustStore, Verification, VerifyError,
 };
 use crate::{
-    Certificate, CertificateTemplate, CertificationRequest, Compat, Extension,
-    ExtensionFile, ExtensionValue, Extensions, IssuedExtensions, SerialNumber,
-    SignatureAlgorithm, Validity,
+    Certificate, CertificateTemplate, CertificateTimes, CertificationRequest,
+    Compat, Extension, ExtensionFile, ExtensionValue, Extensions,
+    IssuedExtensions, Profile, SerialNumber, SignatureAlgorithm, Validity,
+    WithProfile,
     dn::{DistinguishedName, InputEncoding, RdnMode, UTF8_ONLY},
-    text::CertificateTimes,
 };
+
+/// What a profile says: how it compares times, and its message for a
+/// verification error.
+struct Says(VerifyError);
+
+impl WithProfile for Says {
+    type Output = (CertificateTimes, &'static str);
+
+    fn call<P>(self) -> Self::Output
+    where
+        P: Profile,
+    {
+        (P::CERTIFICATE_TIMES, self.0.message::<P>())
+    }
+}
+
+/// The release lines compiled in.
+fn lines() -> Vec<Compat> {
+    Compat::ALL
+        .into_iter()
+        .filter(|c| c.run(Says(VerifyError::CertHasExpired)).is_ok())
+        .collect()
+}
+
+/// How the line `compat` compares times.
+fn times(compat: Compat) -> CertificateTimes {
+    compat.run(Says(VerifyError::CertHasExpired)).unwrap().0
+}
+
+/// The line `compat`'s message for `error`.
+fn message(error: VerifyError, compat: Compat) -> &'static str {
+    compat.run(Says(error)).unwrap().1
+}
 
 fn key(seed: u8) -> AnyPrivateKey {
     AnyPrivateKey::from_secret(Algorithm::Ed25519, &[seed; 32]).unwrap()
@@ -100,7 +133,7 @@ fn errors(
     untrusted: &[&[u8]],
     now: i64,
 ) -> Vec<(u32, usize)> {
-    errors_as(target, trusted, untrusted, now, Compat::V3)
+    errors_as(target, trusted, untrusted, now, Compat::default())
 }
 
 /// The errors of verifying `target` at `now` as the release line `compat`
@@ -112,16 +145,42 @@ fn errors_as(
     now: i64,
     compat: Compat,
 ) -> Vec<(u32, usize)> {
-    let (trusted, untrusted) = (parse(trusted), parse(untrusted));
-    let target = Certificate::from_der(target).unwrap();
-    let store = TrustStore::new(&trusted, &untrusted).unwrap();
-    match store.verify(&target, now, compat).unwrap() {
-        Verification::Verified(_) => Vec::new(),
-        Verification::Failed(f) => f
-            .errors
-            .iter()
-            .map(|Reported { error, depth }| (error.code(), *depth))
-            .collect(),
+    compat
+        .run(ErrorsAt {
+            target,
+            trusted,
+            untrusted,
+            now,
+        })
+        .unwrap()
+}
+
+/// The errors of a verification, for the profile it is applied to.
+struct ErrorsAt<'x> {
+    target: &'x [u8],
+    trusted: &'x [&'x [u8]],
+    untrusted: &'x [&'x [u8]],
+    now: i64,
+}
+
+impl WithProfile for ErrorsAt<'_> {
+    type Output = Vec<(u32, usize)>;
+
+    fn call<P>(self) -> Self::Output
+    where
+        P: Profile,
+    {
+        let (trusted, untrusted) = (parse(self.trusted), parse(self.untrusted));
+        let target = Certificate::from_der(self.target).unwrap();
+        let store = TrustStore::new(&trusted, &untrusted).unwrap();
+        match store.verify::<P>(&target, self.now).unwrap() {
+            Verification::Verified(_) => Vec::new(),
+            Verification::Failed(f) => f
+                .errors
+                .iter()
+                .map(|Reported { error, depth }| (error.code(), *depth))
+                .collect(),
+        }
     }
 }
 
@@ -156,7 +215,7 @@ fn outcomes() {
         *last ^= 1;
     }
     assert_eq!(errors(&bad, &[&root], &[&mid], now), [(7, 0)]);
-    let _ = VerifyError::KeyUsageNoCertSign.message(Compat::V3);
+    let _ = message(VerifyError::KeyUsageNoCertSign, Compat::default());
 }
 
 /// The bounds of the validity period, by release line, as OpenSSL 3.5.9 and
@@ -169,7 +228,7 @@ fn validity_bounds() {
     let (from, to) = (DAY, 2 * DAY);
     let root = root(&rk, 0, 3 * DAY);
     let leaf = issue("/CN=Leaf", &lk, &root, &rk, (from, to), false);
-    for compat in Compat::ALL {
+    for compat in lines() {
         let at = |t: u64| {
             errors_as(&leaf, &[&root], &[], i64::try_from(t).unwrap(), compat)
         };
@@ -177,7 +236,7 @@ fn validity_bounds() {
         assert_eq!(at(from), [], "{compat:?}");
         assert_eq!(at(to - 1), [], "{compat:?}");
         assert_eq!(at(to + 1), [(10, 0)], "{compat:?}");
-        let expected: Errors = match compat.certificate_times() {
+        let expected: Errors = match times(compat) {
             CertificateTimes::Asn1Compared => &[(10, 0)],
             CertificateTimes::PosixCompared => &[],
         };
@@ -197,12 +256,12 @@ fn times_outside_asn1() {
     let mid = issue("/CN=Mid", &mk, &root, &rk, span, true);
     let leaf = issue("/CN=Leaf", &lk, &mid, &mk, span, false);
     let (first, last) = (-62_167_219_200, 253_402_300_799);
-    for compat in Compat::ALL {
+    for compat in lines() {
         let at = |now: i64| errors_as(&leaf, &[&root], &[&mid], now, compat);
         assert_eq!(at(first), [(9, 2)], "{compat:?}");
         assert_eq!(at(last), [(10, 2), (10, 1), (10, 0)], "{compat:?}");
         for now in [first - 1, last + 1, i64::MIN, i64::MAX] {
-            let expected: Errors = match compat.certificate_times() {
+            let expected: Errors = match times(compat) {
                 CertificateTimes::Asn1Compared => &[(13, 2)],
                 CertificateTimes::PosixCompared if now < first => &[(9, 2)],
                 CertificateTimes::PosixCompared => &[(10, 2), (10, 1), (10, 0)],
@@ -220,10 +279,9 @@ fn times_outside_asn1() {
 fn no_well_defined_expiration() {
     let rk = key(1);
     let forever = root(&rk, DAY, 253_402_300_799);
-    for compat in Compat::ALL {
+    for compat in lines() {
         let at = |now: i64| errors_as(&forever, &[&forever], &[], now, compat);
-        let (at_end, after): (Errors, Errors) = match compat.certificate_times()
-        {
+        let (at_end, after): (Errors, Errors) = match times(compat) {
             CertificateTimes::Asn1Compared => (&[(10, 0)], &[(13, 0)]),
             CertificateTimes::PosixCompared => (&[], &[]),
         };
@@ -247,7 +305,7 @@ proptest! {
         starts in prop::array::uniform3(0u64..50),
         lengths in prop::array::uniform3(1u64..50),
         now in 0i64..120,
-        compat in prop::sample::select(Compat::ALL.to_vec()),
+        compat in prop::sample::select(lines()),
     ) {
         let interval = |i: usize| (starts[i] * DAY, (starts[i] + lengths[i]) * DAY);
         let (rk, mk, lk) = (key(1), key(2), key(3));
@@ -259,7 +317,7 @@ proptest! {
             let (from, to) = interval(i);
             let (from, to) = (i64::try_from(from).unwrap(), i64::try_from(to).unwrap());
             from <= now
-                && match compat.certificate_times() {
+                && match times(compat) {
                     CertificateTimes::Asn1Compared => now < to,
                     CertificateTimes::PosixCompared => now <= to,
                 }
@@ -331,15 +389,14 @@ fn error_numbers() {
 fn not_yet_valid_message() {
     let short = "certificate is not yet valid";
     let long = "certificate is not yet valid or the system clock is incorrect";
-    for (compat, message) in [
-        (Compat::V30, short),
-        (Compat::V3, short),
-        (Compat::V36, long),
-        (Compat::V4, long),
-    ] {
+    for compat in lines() {
+        let expected = match compat {
+            Compat::V30 | Compat::V3 => short,
+            Compat::V36 | Compat::V4 => long,
+        };
         assert_eq!(
-            VerifyError::CertNotYetValid.message(compat),
-            message,
+            message(VerifyError::CertNotYetValid, compat),
+            expected,
             "{compat:?}"
         );
     }

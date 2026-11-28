@@ -91,6 +91,19 @@ check-md: ## Check markdown formatting with prettier
 lint: ## Run clippy, warnings as errors
 	cargo clippy --workspace --all-targets -- -D warnings
 
+# The OpenSSL release lines, one Cargo feature each (see baldssl-x509's
+# profile module).
+PROFILES := openssl-3-0 openssl-3-5 openssl-3-6 openssl-4
+
+.PHONY: check-profiles
+check-profiles: fixtures ## Lint and test each OpenSSL release line compiled alone
+	for p in $(PROFILES); do \
+		cargo clippy -p baldssl-x509 -p baldssl --no-default-features \
+			--features $$p --all-targets -- -D warnings && \
+		cargo test -p baldssl-x509 -p baldssl --no-default-features \
+			--features $$p || exit 1; \
+	done
+
 .PHONY: lint-beta
 lint-beta: ## Run clippy with the beta toolchain
 	cargo +beta clippy --workspace --all-targets -- -D warnings
@@ -323,8 +336,8 @@ lean: ## Build the Lean 4 skeleton in proofs/ (Aeneas library, Mathlib cache)
 # --- Aggregate ---------------------------------------------------------------
 
 .PHONY: ci
-ci: check-format lint test doc doc-private check-no-deps check-unsafe \
-	check-aeneas check-where-clauses check-use-at-top check-opt-suffix \
+ci: check-format lint check-profiles test doc doc-private check-no-deps \
+	check-unsafe check-aeneas check-where-clauses check-use-at-top check-opt-suffix \
 	check-practices lint-shell check-py ## Run the CI checks locally
 
 .PHONY: clean

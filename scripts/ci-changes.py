@@ -42,7 +42,7 @@ RUST = (
 OPENSSL_BUILD = (".github/actions/build-openssl/*",)
 
 GROUPS: dict[str, tuple[str, ...]] = {
-    # test, cross, wasm and coverage: build and test the workspace.
+    # test, cross, wasm, coverage and profiles: build and test the workspace.
     "rust": RUST,
     # platforms and the os-rng jobs: os_rng, and the versions they test.
     "os-rng": (

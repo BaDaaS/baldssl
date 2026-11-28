@@ -66,6 +66,7 @@ mod name;
 mod objects;
 mod objects_table;
 mod oid;
+mod profile;
 mod text;
 mod verify;
 mod version;
@@ -86,6 +87,15 @@ pub use issue::{
     SerialNumber,
 };
 pub use name::{Name, NameStyle};
+#[cfg(feature = "openssl-4")]
+pub use profile::OpenSsl4;
+#[cfg(feature = "openssl-3-0")]
+pub use profile::OpenSsl30;
+#[cfg(feature = "openssl-3-5")]
+pub use profile::OpenSsl35;
+#[cfg(feature = "openssl-3-6")]
+pub use profile::OpenSsl36;
+pub use profile::{CertificateTimes, Profile, WithProfile};
 pub use text::{
     CertificateLoadSummary, Compat, CsrSignatureWarning, ExtensionsWithoutFile,
     ExtraOperands, LoadMessage, OneshotSigning, PublicKeyLoading, Stream,

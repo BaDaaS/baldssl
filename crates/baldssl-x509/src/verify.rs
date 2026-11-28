@@ -21,7 +21,8 @@
 //!    (7), and each certificate is valid now (9, 10).
 //!
 //! How validity times compare with the verification time depends on the
-//! release line ([`Compat`]): OpenSSL 3.0 to 3.6 convert the verification
+//! release line ([`Profile::CERTIFICATE_TIMES`]): OpenSSL 3.0 to 3.6
+//! convert the verification
 //! time to an ASN.1 time, report a time outside the years 0 to 9999 as
 //! error 13 and stop, and count a certificate expired at its notAfter;
 //! OpenSSL 4 compares any time, includes notAfter, and never expires a
@@ -51,7 +52,7 @@ use baldssl_crypto::signature::SignatureAlgorithm;
 use baldssl_pkey::PublicKey;
 
 use crate::{
-    Certificate, Compat,
+    Certificate, CertificateTimes, Profile,
     cert::Extension as ExtensionView,
     extension::{ExtensionValue, KeyUsage},
     name::CanonicalName,
@@ -63,7 +64,6 @@ use crate::{
         ID_CE_SUBJECT_ALT_NAME, ID_PE_AUTONOMOUS_SYS_IDS, ID_PE_IP_ADDR_BLOCKS,
         ID_PE_PROXY_CERT_INFO, NETSCAPE_CERT_TYPE,
     },
-    text::CertificateTimes,
 };
 
 /// `authorityKeyIdentifier`'s `keyIdentifier [0] IMPLICIT`
@@ -149,9 +149,12 @@ impl VerifyError {
 
     /// OpenSSL's message (`X509_verify_cert_error_string` in
     /// `crypto/x509/x509_txt.c`), by release line: from 3.6, error 9 adds
-    /// "or the system clock is incorrect".
+    /// "or the system clock is incorrect" ([`Profile::NOT_YET_VALID`]).
     #[must_use]
-    pub fn message(self, compat: Compat) -> &'static str {
+    pub fn message<P>(self) -> &'static str
+    where
+        P: Profile,
+    {
         match self {
             VerifyError::UnableToGetIssuerCert => {
                 "unable to get issuer certificate"
@@ -159,12 +162,7 @@ impl VerifyError {
             VerifyError::CertSignatureFailure => {
                 "certificate signature failure"
             }
-            VerifyError::CertNotYetValid
-                if matches!(compat, Compat::V36 | Compat::V4) =>
-            {
-                "certificate is not yet valid or the system clock is incorrect"
-            }
-            VerifyError::CertNotYetValid => "certificate is not yet valid",
+            VerifyError::CertNotYetValid => P::NOT_YET_VALID,
             VerifyError::CertHasExpired => "certificate has expired",
             VerifyError::ErrorInCertNotBeforeField => {
                 "format error in certificate's notBefore field"
@@ -554,20 +552,22 @@ impl<'c, 'a> TrustStore<'c, 'a> {
     }
 
     /// Verifies `target` at `now`, seconds after the Unix epoch, as the
-    /// release line `compat` compares times (see the module).
+    /// release line `P` compares times (see the module).
     ///
     /// # Errors
     ///
     /// What baldssl cannot check (see the module).
-    pub fn verify(
+    pub fn verify<P>(
         &self,
         target: &'c Certificate<'a>,
         now: i64,
-        compat: Compat,
-    ) -> Result<Verification<'c, 'a>> {
+    ) -> Result<Verification<'c, 'a>>
+    where
+        P: Profile,
+    {
         let at = VerificationTime {
             seconds: now,
-            times: compat.certificate_times(),
+            times: P::CERTIFICATE_TIMES,
         };
         let target = Node::new(target)?;
         let mut report = Report(Vec::new());
