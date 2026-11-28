@@ -13,7 +13,10 @@ use proptest::prelude::*;
 use super::{Hmac, Mac, Tag};
 use crate::{
     ct::CtEq,
-    hash::{Algorithm, Digest, Sha1, Sha224, Sha256, Sha384, Sha512},
+    hash::{
+        Algorithm, Digest, Sha1, Sha224, Sha256, Sha384, Sha512, Sha512_224,
+        Sha512_256,
+    },
 };
 
 /// One test case: key, data, and the expected tag in hexadecimal. A
@@ -534,15 +537,18 @@ proptest! {
         key in prop::collection::vec(any::<u8>(), 0..200),
         message in prop::collection::vec(any::<u8>(), 0..300),
     ) {
-        let typed = [
-            Hmac::<Sha1>::mac(&key, &message),
-            Hmac::<Sha224>::mac(&key, &message),
-            Hmac::<Sha256>::mac(&key, &message),
-            Hmac::<Sha384>::mac(&key, &message),
-            Hmac::<Sha512>::mac(&key, &message),
-        ];
-        for (algorithm, expected) in Algorithm::ALL.into_iter().zip(typed) {
-            prop_assert_eq!(algorithm.hmac(&key, &message), expected);
+        // An exhaustive match: a new hash is a compile error here.
+        let typed = |algorithm| match algorithm {
+            Algorithm::Sha1 => Hmac::<Sha1>::mac(&key, &message),
+            Algorithm::Sha224 => Hmac::<Sha224>::mac(&key, &message),
+            Algorithm::Sha256 => Hmac::<Sha256>::mac(&key, &message),
+            Algorithm::Sha384 => Hmac::<Sha384>::mac(&key, &message),
+            Algorithm::Sha512 => Hmac::<Sha512>::mac(&key, &message),
+            Algorithm::Sha512_224 => Hmac::<Sha512_224>::mac(&key, &message),
+            Algorithm::Sha512_256 => Hmac::<Sha512_256>::mac(&key, &message),
+        };
+        for algorithm in Algorithm::ALL {
+            prop_assert_eq!(algorithm.hmac(&key, &message), typed(algorithm));
         }
     }
 }

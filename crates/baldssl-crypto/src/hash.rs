@@ -1,4 +1,5 @@
-//! Hash functions: SHA-1 and SHA-2 ([FIPS 180-4][fips180]).
+//! Hash functions: SHA-1 and SHA-2 ([FIPS 180-4][fips180]), SHA-512/224 and
+//! SHA-512/256 among them (section 6.7).
 //!
 //! The state of a hash that has absorbed a key (HMAC's inner and outer
 //! hashes) is as secret as the key, so each engine overwrites its chaining
@@ -25,7 +26,7 @@ mod sha512;
 
 pub use sha1::Sha1;
 pub use sha256::{Sha224, Sha256};
-pub use sha512::{Sha384, Sha512};
+pub use sha512::{Sha384, Sha512, Sha512_224, Sha512_256};
 
 use crate::drbg::DrbgHash;
 
@@ -81,16 +82,22 @@ pub enum Algorithm {
     Sha384,
     /// SHA-512
     Sha512,
+    /// SHA-512/224
+    Sha512_224,
+    /// SHA-512/256
+    Sha512_256,
 }
 
 impl Algorithm {
     /// Every supported algorithm.
-    pub const ALL: [Algorithm; 5] = [
+    pub const ALL: [Algorithm; 7] = [
         Algorithm::Sha1,
         Algorithm::Sha224,
         Algorithm::Sha256,
         Algorithm::Sha384,
         Algorithm::Sha512,
+        Algorithm::Sha512_224,
+        Algorithm::Sha512_256,
     ];
 
     /// The lower-case name OpenSSL accepts as `-<name>`.
@@ -102,6 +109,8 @@ impl Algorithm {
             Algorithm::Sha256 => "sha256",
             Algorithm::Sha384 => "sha384",
             Algorithm::Sha512 => "sha512",
+            Algorithm::Sha512_224 => "sha512-224",
+            Algorithm::Sha512_256 => "sha512-256",
         }
     }
 
@@ -117,6 +126,8 @@ impl Algorithm {
             Algorithm::Sha256 => "SHA2-256",
             Algorithm::Sha384 => "SHA2-384",
             Algorithm::Sha512 => "SHA2-512",
+            Algorithm::Sha512_224 => "SHA2-512/224",
+            Algorithm::Sha512_256 => "SHA2-512/256",
         }
     }
 
@@ -147,6 +158,8 @@ impl Algorithm {
             Algorithm::Sha256 => computation.run::<Sha256>(),
             Algorithm::Sha384 => computation.run::<Sha384>(),
             Algorithm::Sha512 => computation.run::<Sha512>(),
+            Algorithm::Sha512_224 => computation.run::<Sha512_224>(),
+            Algorithm::Sha512_256 => computation.run::<Sha512_256>(),
         }
     }
 
@@ -199,13 +212,23 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["SHA1", "SHA2-224", "SHA2-256", "SHA2-384", "SHA2-512"]
+            [
+                "SHA1",
+                "SHA2-224",
+                "SHA2-256",
+                "SHA2-384",
+                "SHA2-512",
+                "SHA2-512/224",
+                "SHA2-512/256"
+            ]
         );
     }
 
     /// Known answers from the [FIPS 180-4 example documents][examples] (NIST CSRC,
     /// "Examples with Intermediate Values"): "abc", the empty string, the
-    /// two-block message, and one million 'a'.
+    /// two-block message, and one million 'a'. Those of SHA-512/224 and
+    /// SHA-512/256 are OpenSSL 3.5.9's and 4.1.0's (`openssl dgst
+    /// -sha512-224`, `-sha512-256`).
     ///
     /// [examples]: https://csrc.nist.gov/projects/cryptographic-standards-and-guidelines/example-values
     #[test]
@@ -267,6 +290,21 @@ mod tests {
                 "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce\
                  47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
             ),
+            (
+                Algorithm::Sha512_224,
+                abc,
+                "4634270f707b6a54daae7530460842e20e37ed265ceee9a43e8924aa",
+            ),
+            (
+                Algorithm::Sha512_256,
+                abc,
+                "53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23",
+            ),
+            (
+                Algorithm::Sha512_256,
+                b"",
+                "c672b8d1ef56ed28ab87c3622c5114069bdd3ad7b8f9737498d0c01ecef0967a",
+            ),
         ];
         for (alg, msg, want) in cases {
             assert_eq!(alg.digest(msg), hex(want), "{alg:?} {msg:?}");
@@ -314,11 +352,13 @@ mod tests {
         assert_eq!(Sha256::OUTPUT_LEN, 32);
         assert_eq!(Sha384::OUTPUT_LEN, 48);
         assert_eq!(Sha512::OUTPUT_LEN, 64);
+        assert_eq!(Sha512_224::OUTPUT_LEN, 28);
+        assert_eq!(Sha512_256::OUTPUT_LEN, 32);
         for alg in Algorithm::ALL {
             let len = match alg {
                 Algorithm::Sha1 => 20,
-                Algorithm::Sha224 => 28,
-                Algorithm::Sha256 => 32,
+                Algorithm::Sha224 | Algorithm::Sha512_224 => 28,
+                Algorithm::Sha256 | Algorithm::Sha512_256 => 32,
                 Algorithm::Sha384 => 48,
                 Algorithm::Sha512 => 64,
             };
@@ -344,6 +384,8 @@ mod tests {
             Algorithm::Sha256 => stream::<Sha256>(data, chunk),
             Algorithm::Sha384 => stream::<Sha384>(data, chunk),
             Algorithm::Sha512 => stream::<Sha512>(data, chunk),
+            Algorithm::Sha512_224 => stream::<Sha512_224>(data, chunk),
+            Algorithm::Sha512_256 => stream::<Sha512_256>(data, chunk),
         }
     }
 
@@ -371,6 +413,8 @@ mod tests {
             prop_assert_eq!(split::<Sha512>(&data, cut), Sha512::digest(&data));
             prop_assert_eq!(stream::<Sha224>(&data, chunk), Sha224::digest(&data));
             prop_assert_eq!(stream::<Sha384>(&data, chunk), Sha384::digest(&data));
+            prop_assert_eq!(split::<Sha512_224>(&data, cut), Sha512_224::digest(&data));
+            prop_assert_eq!(stream::<Sha512_256>(&data, chunk), Sha512_256::digest(&data));
         }
 
         /// `digest_parts` is the digest of the concatenation, for any way of

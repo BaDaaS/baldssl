@@ -11,7 +11,7 @@
     {
       "id": "sha",
       "name": "SHA-1 and SHA-2",
-      "purpose": "Fingerprints, and the hashes signatures are computed over (FIPS 180-4).",
+      "purpose": "Fingerprints, and the hashes signatures are computed over (FIPS 180-4), SHA-512/224 and SHA-512/256 included.",
       "status": "implemented",
       "link": ""
     },
@@ -214,8 +214,8 @@
     {
       "id": "more-digests",
       "name": "More digests",
-      "purpose": "SHA-3 and SHAKE, BLAKE2, MD5, RIPEMD-160, SM3, and SHA-512/224 and SHA-512/256, for dgst and their shortcut commands.",
-      "status": "planned",
+      "purpose": "SHA-3 and SHAKE, BLAKE2, MD5, RIPEMD-160 and SM3, for dgst and their shortcut commands.",
+      "status": "in-progress",
       "link": ""
     },
     {

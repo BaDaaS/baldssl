@@ -554,7 +554,7 @@ impl CertificateTemplate {
                 (
                     self.serial.0.clone(),
                     (
-                        AlgorithmIdentifier::from(algorithm),
+                        AlgorithmIdentifier::try_from(algorithm)?,
                         (
                             self.issuer.clone(),
                             (
@@ -583,8 +583,8 @@ impl CertificateTemplate {
     ///
     /// # Errors
     ///
-    /// When `algorithm` does not match the key, or a name is not one DER
-    /// TLV.
+    /// When `algorithm` does not match the key, or has no algorithm
+    /// identifier, or a name is not one DER TLV.
     pub fn sign(
         &self,
         issuer_key: &AnyPrivateKey,
@@ -598,7 +598,7 @@ impl CertificateTemplate {
             &certificate,
             &(
                 RawTlv::parse(&tbs)?,
-                (AlgorithmIdentifier::from(algorithm), (signature, ())),
+                (AlgorithmIdentifier::try_from(algorithm)?, (signature, ())),
             ),
         ))
     }

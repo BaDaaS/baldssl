@@ -125,6 +125,8 @@ pub struct CertificationRequest {
     attributes: Vec<RawTlv>,
     /// How it is signed.
     algorithm: SignatureAlgorithm,
+    /// The identifier of `algorithm`, as written.
+    algorithm_id: AlgorithmIdentifier,
     /// The signature: a DER `ECDSA-Sig-Value`, or 64 Ed25519 bytes.
     signature: Vec<u8>,
 }
@@ -169,6 +171,7 @@ impl CertificationRequest {
                 (subject.clone(), (spki, (attributes.clone(), ()))),
             ),
         ))?;
+        let algorithm_id = AlgorithmIdentifier::try_from(algorithm)?;
         let signature = key.sign(algorithm, info.as_bytes())?;
         Ok(CertificationRequest {
             info,
@@ -176,8 +179,14 @@ impl CertificationRequest {
             public_key,
             attributes,
             algorithm,
+            algorithm_id,
             signature,
         })
+    }
+
+    /// The identifier of the signature algorithm, as written.
+    pub(crate) fn algorithm_id(&self) -> &AlgorithmIdentifier {
+        &self.algorithm_id
     }
 
     /// Whether the signature verifies under the request's own key.
@@ -278,10 +287,7 @@ impl Encodable for CertificationRequest {
             &request_syntax(),
             &(
                 self.info.clone(),
-                (
-                    AlgorithmIdentifier::from(self.algorithm),
-                    (self.signature.clone(), ()),
-                ),
+                (self.algorithm_id.clone(), (self.signature.clone(), ())),
             ),
         )
     }
@@ -310,6 +316,7 @@ impl Decodable for CertificationRequest {
             public_key: PublicKey::decode(spki.as_bytes())?,
             attributes,
             algorithm: SignatureAlgorithm::try_from(&algorithm)?,
+            algorithm_id: algorithm,
             signature,
         })
     }

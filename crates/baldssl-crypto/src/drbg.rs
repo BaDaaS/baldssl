@@ -18,7 +18,9 @@
 use baldssl_core::num::u32_to_usize;
 
 use crate::{
-    hash::{Digest, Sha1, Sha224, Sha256, Sha384, Sha512},
+    hash::{
+        Digest, Sha1, Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256,
+    },
     mac::{Hmac, Mac},
     secret::SecretBytes,
 };
@@ -61,6 +63,12 @@ impl DrbgHash for Sha384 {
     const SECURITY_STRENGTH: SecurityStrength = SecurityStrength(256);
 }
 impl DrbgHash for Sha512 {
+    const SECURITY_STRENGTH: SecurityStrength = SecurityStrength(256);
+}
+impl DrbgHash for Sha512_224 {
+    const SECURITY_STRENGTH: SecurityStrength = SecurityStrength(192);
+}
+impl DrbgHash for Sha512_256 {
     const SECURITY_STRENGTH: SecurityStrength = SecurityStrength(256);
 }
 
