@@ -46,9 +46,8 @@ use baldssl_crypto::Algorithm;
 use baldssl_fs::Access;
 use baldssl_x509::{
     Certificate, CertificateTemplate, Compat, Config, CopyExtensions,
-    CsrSignatureWarning, ExtensionFile, Extensions, ExtensionsWithoutFile,
-    Format, IssuedExtensions, SerialNumber, certificate_der, fingerprint_line,
-    serial_line, time_rfc822,
+    ExtensionFile, Extensions, Format, IssuedExtensions, SerialNumber,
+    certificate_der, fingerprint_line, serial_line, time_rfc822,
 };
 
 use crate::{
@@ -60,7 +59,9 @@ use crate::{
         set_serial, signature_algorithm, signing_digest_opt, validity_time,
     },
     keygen::utf8,
-    line::{Line, compat},
+    line::{
+        Apps as _, CsrSignatureWarning, ExtensionsWithoutFile, Line, compat,
+    },
     outputs::Outputs,
 };
 
@@ -552,15 +553,11 @@ fn copy_extensions(value: &OsStr) -> Result<CopyExtensions> {
 /// `extensions` value of the default section, or the default section, as
 /// OpenSSL finds it. Nothing without `-extfile`, where `-extensions` is
 /// ignored or looked up in the default configuration file by the release
-/// line ([`Compat::extensions_without_file`]); baldssl does not read that
+/// line ([`Apps::EXTENSIONS_WITHOUT_FILE`](crate::line::Apps::EXTENSIONS_WITHOUT_FILE)); baldssl does not read that
 /// file, so it fails there as OpenSSL does for a missing section.
-fn extension_file(
-    s: &Signing,
-    compat: Compat,
-    out: &mut Outputs,
-) -> Result<Extensions> {
+fn extension_file(s: &Signing, out: &mut Outputs) -> Result<Extensions> {
     let Some(path) = &s.extfile else {
-        match (&s.section, compat.extensions_without_file()) {
+        match (&s.section, Line::EXTENSIONS_WITHOUT_FILE) {
             (Some(section), ExtensionsWithoutFile::DefaultConfiguration) => {
                 out.diagnostic(format!(
                     "{} {section}",
@@ -598,10 +595,10 @@ fn extension_file(
 fn issue(o: &Options, compat: Compat, out: &mut Outputs) -> Result<Vec<u8>> {
     let s = &o.signing;
     // OpenSSL checks the extension file before it reads the request.
-    let section = extension_file(s, compat, out)?;
+    let section = extension_file(s, out)?;
     let request = read_request(o.input.as_deref(), o.inform)?;
     if !request.verify() {
-        match compat.csr_signature_warning() {
+        match Line::CSR_SIGNATURE_WARNING {
             CsrSignatureWarning::Silent => {}
             CsrSignatureWarning::Printed => {
                 out.diagnostic(message::CSR_SIGNATURE_WARNING);
@@ -876,7 +873,17 @@ mod tests {
         let o = options(&["-req", "-CA", "ca.crt", "-extensions", "v3"]);
         for (compat, stderr, fails) in [
             (
+                Compat::V30,
+                format!("{}\n", message::EXTENSIONS_IGNORED),
+                false,
+            ),
+            (
                 Compat::V3,
+                format!("{}\n", message::EXTENSIONS_IGNORED),
+                false,
+            ),
+            (
+                Compat::V36,
                 format!("{}\n", message::EXTENSIONS_IGNORED),
                 false,
             ),
@@ -886,8 +893,11 @@ mod tests {
                 true,
             ),
         ] {
+            if compat != crate::line::compat() {
+                continue;
+            }
             let mut out = Outputs::default();
-            let result = extension_file(&o.signing, compat, &mut out);
+            let result = extension_file(&o.signing, &mut out);
             assert_eq!(result.is_err(), fails, "{compat:?}");
             assert_eq!(out.stderr_bytes(), stderr.as_bytes(), "{compat:?}");
         }

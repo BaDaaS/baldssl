@@ -9,7 +9,7 @@
 //! `-pubcheck`. A private key in DER is written as OpenSSL 3.0 to 3.5 write
 //! it, in its traditional form when it has one (SEC 1's ECPrivateKey for
 //! EC), and as 3.6 and 4 do, in PKCS#8, by the release line
-//! ([`baldssl_x509::Compat::private_key_der`]). As in OpenSSL, the check's
+//! ([`Apps::PRIVATE_KEY_DER`](crate::line::Apps::PRIVATE_KEY_DER)). As in OpenSSL, the check's
 //! "Key is valid" comes first, then the key, then the text, all on the
 //! output; a private key written to a file is created readable by its
 //! owner only (`bio_open_owner`).
@@ -33,7 +33,7 @@ use baldssl_x509::{Format, print_private_key_text, print_public_key_text};
 use crate::{
     args::{self, Kind, Spec, Unknown},
     input::{format_value, read_input},
-    line::compat,
+    line::{Apps as _, Line, compat},
     outputs::Outputs,
 };
 
@@ -327,7 +327,7 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
             Access::OwnerOnly
         }
         (Written::AsRead, Key::Private(k), Format::Der) => {
-            out.extend_from_slice(k.der(compat.private_key_der()).expose());
+            out.extend_from_slice(k.der(Line::PRIVATE_KEY_DER).expose());
             Access::OwnerOnly
         }
         (Written::AsRead | Written::Public, _, Format::Pem) => {

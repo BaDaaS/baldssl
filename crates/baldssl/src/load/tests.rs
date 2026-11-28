@@ -1,9 +1,10 @@
 //! The loader's lines for certificates. The keys' lines are tested with
 //! `dgst`, which loads them.
 
-use baldssl_x509::{Compat, LoadMessage};
+use baldssl_x509::Compat;
 
 use super::{Credential, LoadFailure, load_line};
+use crate::line::{Apps as _, Line, LoadMessage, compat};
 
 /// `verify`'s description of a certificate to verify (`apps/verify.c`).
 const TARGET: &str = "certificate file";
@@ -120,15 +121,18 @@ const CASES: &[(Credential, &str, LoadFailure, Compat, &str)] = &[
 
 /// OpenSSL's lines for files that do not load: 3.0.22, 3.5.9 and 4.1.0 as
 /// they print them; 3.6 as `load_key_certs_crls` in its `apps/lib/apps.c`
-/// builds them, the same as 3.5's ("Could not find").
+/// builds them, the same as 3.5's ("Could not find"). A build checks the
+/// cases of the line it imitates (`make check-profiles` builds each).
 #[test]
 fn certificate_lines() {
-    for &(credential, desc, failure, compat, expected) in CASES {
-        assert_eq!(
-            load_line(credential, desc, "f", failure, compat),
-            expected,
-            "{credential:?} {failure:?} {compat:?}"
-        );
+    for &(credential, desc, failure, line, expected) in CASES {
+        if line == compat() {
+            assert_eq!(
+                load_line(credential, desc, "f", failure),
+                expected,
+                "{credential:?} {failure:?} {line:?}"
+            );
+        }
     }
 }
 
@@ -138,20 +142,17 @@ fn certificate_lines() {
 /// "public key" contains; later lines call it "private key".
 #[test]
 fn noun_rule() {
-    for compat in [Compat::V30, Compat::V3, Compat::V36, Compat::V4] {
-        let line = load_line(
-            Credential::PrivateKey,
-            "public key",
-            "f",
-            LoadFailure::Undecoded,
-            compat,
-        );
-        let expected = match compat.load_message() {
-            LoadMessage::Read => "public key",
-            LoadMessage::Find | LoadMessage::FindOrDecode => {
-                "private key of public key"
-            }
-        };
-        assert!(line.contains(&format!(" {expected} from f")), "{line}");
-    }
+    let line = load_line(
+        Credential::PrivateKey,
+        "public key",
+        "f",
+        LoadFailure::Undecoded,
+    );
+    let expected = match Line::LOAD_MESSAGE {
+        LoadMessage::Read => "public key",
+        LoadMessage::Find | LoadMessage::FindOrDecode => {
+            "private key of public key"
+        }
+    };
+    assert!(line.contains(&format!(" {expected} from f")), "{line}");
 }

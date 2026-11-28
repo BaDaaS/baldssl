@@ -24,7 +24,7 @@ use baldssl_core::{
 use baldssl_crypto::models::weierstrass::{
     COMPRESSED_EVEN, COMPRESSED_ODD, UNCOMPRESSED,
 };
-use baldssl_pkey::{AnyPrivateKey, ED25519_KEY_LEN, PrivateKeyDer, PublicKey};
+use baldssl_pkey::{AnyPrivateKey, ED25519_KEY_LEN, PublicKey};
 
 use crate::{
     CertificationRequest,
@@ -76,8 +76,8 @@ pub enum Compat {
     /// OpenSSL 3.2 to 3.5.
     V3,
     /// OpenSSL 3.6: as 3.5, except that `pkey` writes a private key in DER
-    /// as PKCS#8 ([`Compat::private_key_der`]); `genpkey` does not
-    /// ([`Compat::generated_key_der`]).
+    /// as PKCS#8; `genpkey` does not (the CLI's `Apps::PRIVATE_KEY_DER` and
+    /// `Apps::GENERATED_KEY_DER`).
     V36,
     /// OpenSSL 4.0 and later.
     V4,
@@ -134,171 +134,6 @@ impl Compat {
         match self {
             Compat::V30 | Compat::V3 | Compat::V36 => EcKeySize::Bits,
             Compat::V4 => EcKeySize::BitsAndSecurity,
-        }
-    }
-
-    /// What a second option an application does not declare does
-    /// (`opt_next` in `apps/lib/opt.c`): OpenSSL 3.0 and 3.1 keep the last
-    /// one, and from 3.2 the second is refused as it is read ("Multiple
-    /// digest or unknown options").
-    #[must_use]
-    pub fn undeclared_options(self) -> UndeclaredOptions {
-        match self {
-            Compat::V30 => UndeclaredOptions::LastKept,
-            Compat::V3 | Compat::V36 | Compat::V4 => UndeclaredOptions::OneOnly,
-        }
-    }
-
-    /// How an operand where an application takes none is reported. OpenSSL
-    /// 3.0 and 3.1's applications go to their `opthelp` label, which prints
-    /// only the hint at `-help` (`apps/pkey.c`, `apps/genpkey.c`); from 3.2,
-    /// `opt_check_rest_arg` (`apps/lib/opt.c`) names the operand first.
-    #[must_use]
-    pub fn extra_operands(self) -> ExtraOperands {
-        match self {
-            Compat::V30 => ExtraOperands::HintOnly,
-            Compat::V3 | Compat::V36 | Compat::V4 => ExtraOperands::Named,
-        }
-    }
-
-    /// What `opt_cipher_any` (`apps/lib/opt.c`) says of a name that is not
-    /// a cipher: "Unknown cipher" in OpenSSL 3.0 and 3.1, "Unknown option or
-    /// cipher" from 3.2, where an undeclared option is read as one.
-    #[must_use]
-    pub fn unknown_cipher_message(self) -> &'static str {
-        match self {
-            Compat::V30 => "Unknown cipher",
-            Compat::V3 | Compat::V36 | Compat::V4 => "Unknown option or cipher",
-        }
-    }
-
-    /// The form `openssl pkey -outform DER` writes a private key in.
-    /// OpenSSL 3.0 to 3.5 call `i2d_PrivateKey_bio` (`apps/pkey.c`), which
-    /// writes the algorithm's traditional form (SEC 1's ECPrivateKey for
-    /// EC); from 3.6, `apps/pkey.c` calls `i2d_PKCS8PrivateKey_bio` unless
-    /// `-traditional` is given.
-    #[must_use]
-    pub fn private_key_der(self) -> PrivateKeyDer {
-        match self {
-            Compat::V30 | Compat::V3 => PrivateKeyDer::Traditional,
-            Compat::V36 | Compat::V4 => PrivateKeyDer::Pkcs8,
-        }
-    }
-
-    /// The form `openssl genpkey -outform DER` writes the key it generates
-    /// in. OpenSSL 3.0 to 3.6 call `i2d_PrivateKey_bio`
-    /// (`apps/genpkey.c`), which writes the algorithm's traditional form
-    /// (SEC 1's ECPrivateKey for EC); from 4.0, `apps/genpkey.c` calls
-    /// `encode_private_key` (`apps/lib/apps.c`), which asks for
-    /// "PrivateKeyInfo", PKCS#8. The change comes one release after
-    /// [`Compat::private_key_der`]'s.
-    #[must_use]
-    pub fn generated_key_der(self) -> PrivateKeyDer {
-        match self {
-            Compat::V30 | Compat::V3 | Compat::V36 => {
-                PrivateKeyDer::Traditional
-            }
-            Compat::V4 => PrivateKeyDer::Pkcs8,
-        }
-    }
-
-    /// Whether `openssl x509 -req` warns, before its own message, that the
-    /// request's self-signature does not match. From 3.2, `load_csr` in
-    /// `apps/lib/apps.c` checks the signature as it loads the request and
-    /// prints "Warning: CSR self-signature does not match the contents";
-    /// 3.0's `load_csr` does not check it.
-    #[must_use]
-    pub fn csr_signature_warning(self) -> CsrSignatureWarning {
-        match self {
-            Compat::V30 => CsrSignatureWarning::Silent,
-            Compat::V3 | Compat::V36 | Compat::V4 => {
-                CsrSignatureWarning::Printed
-            }
-        }
-    }
-
-    /// What `openssl x509 -extensions` does without `-extfile`. In 3.x,
-    /// `apps/x509.c` prints "Warning: ignoring -extensions option without
-    /// -extfile" and goes on; in 4, it looks the section up in the default
-    /// configuration file (`app_conf_try_string` on the loaded
-    /// configuration), and fails with "Error checking extension section"
-    /// when it is not there.
-    #[must_use]
-    pub fn extensions_without_file(self) -> ExtensionsWithoutFile {
-        match self {
-            Compat::V30 | Compat::V3 | Compat::V36 => {
-                ExtensionsWithoutFile::Ignored
-            }
-            Compat::V4 => ExtensionsWithoutFile::DefaultConfiguration,
-        }
-    }
-
-    /// The stream `openssl req -verify` prints "Certificate request
-    /// self-signature verify OK" on: `bio_err` in `apps/req.c` of 3.0 and
-    /// 3.1, `bio_out` (standard output, whatever `-out` says) from 3.2.
-    #[must_use]
-    pub fn request_verified_stream(self) -> Stream {
-        match self {
-            Compat::V30 => Stream::Stderr,
-            Compat::V3 | Compat::V36 | Compat::V4 => Stream::Stdout,
-        }
-    }
-
-    /// How `openssl dgst -verify` loads its public key (`load_pubkey` in
-    /// `apps/lib/apps.c`): 3.0 reads a public key only; from 3.2, it falls
-    /// back to reading a private key and taking its public half, and a file
-    /// that holds neither is reported as the failure of that fallback.
-    #[must_use]
-    pub fn public_key_loading(self) -> PublicKeyLoading {
-        match self {
-            Compat::V30 => PublicKeyLoading::PublicOnly,
-            Compat::V3 | Compat::V36 | Compat::V4 => {
-                PublicKeyLoading::PrivateFallback
-            }
-        }
-    }
-
-    /// The form of the message `load_key_certs_crls` in `apps/lib/apps.c`
-    /// prints for keys or certificates it cannot load. 3.0 says "Could not
-    /// read" (with " any" for a list of certificates), names the credential
-    /// as its first draft did ("key", "cert", "certs"), and gives no reason
-    /// for a file that does not open. 3.2 rewrote it with `FAIL_NAME`: "Could
-    /// not find", the credential named in full ("private key",
-    /// "certificate", "certificates"), and the system's reason ("No such
-    /// file or directory") after a file that does not open. 4 says "Could
-    /// not find or decode".
-    #[must_use]
-    pub fn load_message(self) -> LoadMessage {
-        match self {
-            Compat::V30 => LoadMessage::Read,
-            Compat::V3 | Compat::V36 => LoadMessage::Find,
-            Compat::V4 => LoadMessage::FindOrDecode,
-        }
-    }
-
-    /// Whether `load_cert` in `apps/lib/apps.c` follows a certificate it
-    /// could not load with `Unable to load <desc>`: 3.0 does after every
-    /// failure; from 3.2 it does only for a certificate fetched over HTTP.
-    #[must_use]
-    pub fn certificate_load_summary(self) -> CertificateLoadSummary {
-        match self {
-            Compat::V30 => CertificateLoadSummary::Printed,
-            Compat::V3 | Compat::V36 | Compat::V4 => {
-                CertificateLoadSummary::Omitted
-            }
-        }
-    }
-
-    /// Whether `openssl dgst` signs and verifies with a key that signs the
-    /// message itself (Ed25519). 3.0's `apps/dgst.c` feeds the input
-    /// through `EVP_DigestSignUpdate`, which such a key refuses ("Key type
-    /// not supported for this operation"); later lines read the input whole
-    /// and sign it in one shot (`do_fp_oneshot_sign`).
-    #[must_use]
-    pub fn dgst_oneshot(self) -> OneshotSigning {
-        match self {
-            Compat::V30 => OneshotSigning::Refused,
-            Compat::V3 | Compat::V36 | Compat::V4 => OneshotSigning::Supported,
         }
     }
 
@@ -365,79 +200,6 @@ impl FromStr for Compat {
     }
 }
 
-/// Whether a mismatched request signature gets a warning first
-/// ([`Compat::csr_signature_warning`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CsrSignatureWarning {
-    /// No warning.
-    Silent,
-    /// "Warning: CSR self-signature does not match the contents".
-    Printed,
-}
-
-/// What `-extensions` without `-extfile` does
-/// ([`Compat::extensions_without_file`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtensionsWithoutFile {
-    /// It is ignored, with a warning.
-    Ignored,
-    /// The section is looked up in the default configuration file.
-    DefaultConfiguration,
-}
-
-/// How `dgst -verify` loads its public key
-/// ([`Compat::public_key_loading`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublicKeyLoading {
-    /// A public key only.
-    PublicOnly,
-    /// A public key, or else the public half of a private key.
-    PrivateFallback,
-}
-
-/// The form of the message for keys or certificates that do not load
-/// ([`Compat::load_message`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoadMessage {
-    /// "Could not read", the first draft's names, and no reason for a file
-    /// that does not open (3.0).
-    Read,
-    /// "Could not find", the full names, and the reason for a file that
-    /// does not open (3.2 to 3.6).
-    Find,
-    /// "Could not find or decode", otherwise as [`LoadMessage::Find`] (4).
-    FindOrDecode,
-}
-
-/// Whether a certificate that does not load is followed by
-/// `Unable to load <desc>` ([`Compat::certificate_load_summary`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CertificateLoadSummary {
-    /// It is (3.0).
-    Printed,
-    /// It is not.
-    Omitted,
-}
-
-/// Whether `dgst` signs with a one-shot key such as Ed25519
-/// ([`Compat::dgst_oneshot`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OneshotSigning {
-    /// It refuses the key.
-    Refused,
-    /// It signs and verifies in one shot.
-    Supported,
-}
-
-/// A standard stream of the process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stream {
-    /// Standard output.
-    Stdout,
-    /// Standard error.
-    Stderr,
-}
-
 /// What an EC key's header gives as its size ([`Compat::ec_key_size`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EcKeySize {
@@ -445,26 +207,6 @@ enum EcKeySize {
     Bits,
     /// `256 bit field, 128 bit security level`.
     BitsAndSecurity,
-}
-
-/// What a second undeclared option does ([`Compat::undeclared_options`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UndeclaredOptions {
-    /// Each replaces the one before it, and the last is read (OpenSSL 3.0
-    /// and 3.1).
-    LastKept,
-    /// The second is refused (from OpenSSL 3.2).
-    OneOnly,
-}
-
-/// How an operand where none is taken is reported
-/// ([`Compat::extra_operands`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtraOperands {
-    /// With the hint at `-help` alone (OpenSSL 3.0 and 3.1).
-    HintOnly,
-    /// With a line naming it, then the hint (from OpenSSL 3.2).
-    Named,
 }
 
 /// The months as `ASN1_TIME_print` names them.

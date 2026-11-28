@@ -305,13 +305,21 @@ fn verified_stream() {
             b"",
         ),
         (
+            Compat::V36,
+            b"Certificate request self-signature verify OK\n",
+            b"",
+        ),
+        (
             Compat::V4,
             b"Certificate request self-signature verify OK\n",
             b"",
         ),
     ] {
+        if compat != crate::line::compat() {
+            continue;
+        }
         let mut out = Outputs::default();
-        verify(&request, compat, &mut out).unwrap();
+        verify(&request, &mut out).unwrap();
         assert_eq!(out.stdout_bytes(), stdout, "{compat:?}");
         assert_eq!(out.stderr_bytes(), stderr, "{compat:?}");
     }

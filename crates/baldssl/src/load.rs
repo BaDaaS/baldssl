@@ -1,7 +1,7 @@
 //! The line OpenSSL's applications print for a file of keys or certificates
 //! that does not load: the message of `load_key_certs_crls` in
 //! `apps/lib/apps.c`, in the form of the release line
-//! ([`Compat::load_message`]).
+//! ([`Apps::LOAD_MESSAGE`](crate::line::Apps::LOAD_MESSAGE)).
 //!
 //! The line is `<verb> <noun> from <file>`, and from OpenSSL 3.2 a file
 //! that does not open adds `: <reason>`. The noun is the description the
@@ -13,7 +13,7 @@
 #[cfg(test)]
 mod tests;
 
-use baldssl_x509::{Compat, LoadMessage};
+use crate::line::{Apps as _, Line, LoadMessage};
 
 /// The verb for a file that does not open, in every release line.
 const COULD_NOT_OPEN: &str = "Could not open file or uri for loading";
@@ -107,15 +107,15 @@ impl Credential {
 }
 
 /// The line, without its newline, for `credential` described as `desc`
-/// that did not load from `file`.
+/// that did not load from `file`, in the form of the release line this
+/// build imitates.
 pub(crate) fn load_line(
     credential: Credential,
     desc: &str,
     file: &str,
     failure: LoadFailure,
-    compat: Compat,
 ) -> String {
-    let message = compat.load_message();
+    let message = Line::LOAD_MESSAGE;
     let name = credential.name(failure, message);
     let noun = if desc.contains(name) {
         desc.to_owned()

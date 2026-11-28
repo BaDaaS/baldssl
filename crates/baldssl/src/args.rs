@@ -19,9 +19,8 @@ use std::{
 };
 
 use baldssl_core::{Error, Result};
-use baldssl_x509::{Compat, ExtraOperands, UndeclaredOptions};
 
-use crate::line::compat;
+use crate::line::{Apps, ExtraOperands, Line, UndeclaredOptions};
 
 /// The messages of OpenSSL's option parser, `apps/lib/opt.c`, after the
 /// command name and a colon.
@@ -278,15 +277,18 @@ pub(crate) struct Parsed<O> {
     /// The undeclared option: one, as from OpenSSL 3.2 a second is refused
     /// when read, and OpenSSL 3.0 keeps the last.
     undeclared: Option<Undeclared>,
-    /// The release line whose messages are given.
-    compat: Compat,
+    /// How the release line reports operands ([`Apps::EXTRA_OPERANDS`]).
+    extra_operands: ExtraOperands,
+    /// What the release line says of a name that is not a cipher
+    /// ([`Apps::UNKNOWN_CIPHER_MESSAGE`]).
+    unknown_cipher_message: &'static str,
 }
 
 impl<O> Parsed<O> {
     /// OpenSSL's error when there are operands (`opt_check_rest_arg`):
     /// `Extra option: "<operand>"`, or `Extra (unknown) options: "<name>"
     /// "<operand>"` after an undeclared option; in OpenSSL 3.0, the hint
-    /// alone ([`baldssl_x509::Compat::extra_operands`]).
+    /// alone ([`Apps::EXTRA_OPERANDS`]).
     ///
     /// # Errors
     ///
@@ -295,7 +297,7 @@ impl<O> Parsed<O> {
         let Some(operand) = self.operands.first() else {
             return Ok(());
         };
-        let line = match self.compat.extra_operands() {
+        let line = match self.extra_operands {
             ExtraOperands::HintOnly => return Err(opthelp(command, None)),
             ExtraOperands::Named => match &self.undeclared {
                 None => format!(
@@ -338,7 +340,8 @@ impl<O> Parsed<O> {
             operands,
             unknown,
             undeclared,
-            compat,
+            unknown_cipher_message,
+            ..
         } = self;
         (
             options,
@@ -346,7 +349,7 @@ impl<O> Parsed<O> {
             Pending {
                 unknown,
                 undeclared,
-                compat,
+                unknown_cipher_message,
             },
         )
     }
@@ -361,8 +364,9 @@ pub(crate) struct Pending<O> {
     unknown: Unknown<O>,
     /// The option, if one was given.
     undeclared: Option<Undeclared>,
-    /// The release line whose messages are given.
-    compat: Compat,
+    /// What the release line says of a name that is not a cipher
+    /// ([`Apps::UNKNOWN_CIPHER_MESSAGE`]).
+    unknown_cipher_message: &'static str,
 }
 
 impl<O> Pending<O> {
@@ -373,7 +377,7 @@ impl<O> Pending<O> {
     ///
     /// [`Error::Usage`] for an undeclared option that is not a digest the
     /// application takes; baldssl encrypts no key, so a cipher application
-    /// refuses every one ([`baldssl_x509::Compat::unknown_cipher_message`]).
+    /// refuses every one ([`Apps::UNKNOWN_CIPHER_MESSAGE`]).
     pub(crate) fn read(
         self,
         command: &str,
@@ -388,7 +392,7 @@ impl<O> Pending<O> {
                 format!("{}: -{name}", message::UNKNOWN_OPTION)
             }
             Unknown::Ciphers => {
-                format!("{}: {name}", self.compat.unknown_cipher_message())
+                format!("{}: {name}", self.unknown_cipher_message)
             }
             Unknown::Digests(digest) => match (inline, digest(&name)) {
                 (None, Some(option)) => {
@@ -466,7 +470,7 @@ where
 /// [`Error::Usage`] for a missing value, a value given to a flag, an
 /// undeclared option when `unknown` is [`Unknown::Refused`], and, from
 /// OpenSSL 3.2, a second undeclared option
-/// ([`baldssl_x509::Compat::undeclared_options`]).
+/// ([`Apps::UNDECLARED_OPTIONS`]).
 pub(crate) fn parse_line<O>(
     command: &str,
     args: &[OsString],
@@ -476,22 +480,22 @@ pub(crate) fn parse_line<O>(
 where
     O: Clone,
 {
-    parse_line_as(command, args, specs, unknown, compat())
+    parse_line_as::<Line, O>(command, args, specs, unknown)
 }
 
-/// As [`parse_line`], with the messages of the release line `compat`.
+/// As [`parse_line`], with the messages of the release line `P`.
 ///
 /// # Errors
 ///
 /// As [`parse_line`].
-fn parse_line_as<O>(
+fn parse_line_as<P, O>(
     command: &str,
     args: &[OsString],
     specs: &[Spec<O>],
     unknown: Unknown<O>,
-    compat: Compat,
 ) -> Result<Parsed<O>>
 where
+    P: Apps,
     O: Clone,
 {
     let mut options = Vec::new();
@@ -509,7 +513,7 @@ where
             break;
         };
         let Some(spec) = specs.iter().find(|s| s.name == name) else {
-            match (unknown, &undeclared, compat.undeclared_options()) {
+            match (unknown, &undeclared, P::UNDECLARED_OPTIONS) {
                 (Unknown::Refused, _, _) => {
                     let line = format!("{}: -{name}", message::UNKNOWN_OPTION);
                     return Err(opthelp(command, Some(&line)));
@@ -564,7 +568,8 @@ where
         operands,
         unknown,
         undeclared,
-        compat,
+        extra_operands: P::EXTRA_OPERANDS,
+        unknown_cipher_message: P::UNKNOWN_CIPHER_MESSAGE,
     })
 }
 
@@ -793,9 +798,9 @@ mod tests {
     #[test]
     fn errors() {
         let cases = error_cases();
-        for compat in Compat::ALL {
+        {
             for case in &cases {
-                let line = match (compat.undeclared_options(), case.v30) {
+                let line = match (Line::UNDECLARED_OPTIONS, case.v30) {
                     (UndeclaredOptions::LastKept, Some(v30)) => v30,
                     (UndeclaredOptions::LastKept, None)
                     | (UndeclaredOptions::OneOnly, _) => case.from_32,
@@ -804,12 +809,11 @@ mod tests {
                     "" => "Use -help for summary.".to_string(),
                     line => format!("{line}\nx: Use -help for summary."),
                 };
-                let got = parse_line_as(
+                let got = parse_line_as::<Line, _>(
                     "x",
                     &os(case.args),
                     SPECS,
                     case.unknown,
-                    compat,
                 )
                 .and_then(|p| {
                     p.check_no_operands("x")?;
@@ -818,7 +822,7 @@ mod tests {
                 assert_eq!(
                     got.err(),
                     Some(Error::Usage(expected)),
-                    "{compat:?} {:?}",
+                    "{:?}",
                     case.args
                 );
             }
@@ -832,27 +836,31 @@ mod tests {
     fn undeclared_digests() {
         let digest =
             Unknown::Digests(|name| (name == "sha256").then_some(Opt::Text));
-        for (compat, args) in [
-            (Compat::V4, &["-in", "a", "-sha256", "-text"][..]),
-            (Compat::V30, &["-in", "a", "-bogus", "-sha256", "-text"]),
-        ] {
+        // In 3.0 the last undeclared option is the one read, so a refused
+        // one may come first.
+        let args: &[&str] = match Line::UNDECLARED_OPTIONS {
+            UndeclaredOptions::OneOnly => &["-in", "a", "-sha256", "-text"],
+            UndeclaredOptions::LastKept => {
+                &["-in", "a", "-bogus", "-sha256", "-text"]
+            }
+        };
+        {
             let (o, rest) =
-                parse_line_as("x", &os(args), SPECS, digest, compat)
+                parse_line_as::<Line, _>("x", &os(args), SPECS, digest)
                     .unwrap()
                     .into_options("x")
                     .unwrap();
             let names: Vec<&str> = o.iter().map(|g| g.name.as_str()).collect();
-            assert_eq!(names, ["in", "sha256", "text"], "{compat:?}");
+            assert_eq!(names, ["in", "sha256", "text"]);
             assert_eq!(rest, Vec::<OsString>::new());
         }
         // Operands are the caller's to check.
         assert!(
-            parse_line_as(
+            parse_line_as::<Line, _>(
                 "x",
                 &os(&["-in", "a", "f"]),
                 SPECS,
-                digest,
-                Compat::V4
+                digest
             )
             .unwrap()
             .into_options("x")

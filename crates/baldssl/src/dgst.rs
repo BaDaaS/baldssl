@@ -43,13 +43,13 @@ use baldssl_crypto::{
 };
 use baldssl_fs::Access;
 use baldssl_pkey::{AnyPrivateKey, PublicKey, SignatureCheck};
-use baldssl_x509::{Compat, Format, OneshotSigning, PublicKeyLoading};
+use baldssl_x509::Format;
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
     digest::DigestName,
     input::{format_value, read_input},
-    line::compat,
+    line::{Apps as _, Line, OneshotSigning, PublicKeyLoading},
     load::{Credential, LoadFailure, load_line},
     outputs::Outputs,
 };
@@ -499,15 +499,10 @@ fn report(out: &mut Outputs, line: &str) -> Error {
 /// The line OpenSSL prints when it cannot load the key of `-sign` or
 /// `-prverify` (private) or `-verify` (public) from `path`. A public key
 /// that fails to load where OpenSSL falls back to a private key
-/// ([`Compat::public_key_loading`]) is reported as that fallback's failure,
+/// ([`Apps::PUBLIC_KEY_LOADING`](crate::line::Apps::PUBLIC_KEY_LOADING)) is reported as that fallback's failure,
 /// a private key described as "public key".
-fn key_load_line(
-    path: &str,
-    kind: KeyKind,
-    failure: LoadFailure,
-    compat: Compat,
-) -> String {
-    let (credential, desc) = match (kind, compat.public_key_loading()) {
+fn key_load_line(path: &str, kind: KeyKind, failure: LoadFailure) -> String {
+    let (credential, desc) = match (kind, Line::PUBLIC_KEY_LOADING) {
         (KeyKind::Private, _) => (Credential::PrivateKey, PRIVATE_KEY_DESC),
         (KeyKind::Public, PublicKeyLoading::PublicOnly) => {
             (Credential::PublicKey, PUBLIC_KEY_DESC)
@@ -516,7 +511,7 @@ fn key_load_line(
             (Credential::PrivateKey, PUBLIC_KEY_DESC)
         }
     };
-    load_line(credential, desc, path, failure, compat)
+    load_line(credential, desc, path, failure)
 }
 
 /// A private key, PEM or DER.
@@ -541,12 +536,11 @@ fn load_key(
     o: &Options,
     path: &OsString,
     role: KeyRole,
-    compat: Compat,
 ) -> Result<Operation> {
     let label = path.to_string_lossy();
     let kind = role.key_kind();
     let mut fail = |failure| {
-        let line = key_load_line(&label, kind, failure, compat);
+        let line = key_load_line(&label, kind, failure);
         report(out, &line)
     };
     let bytes = match read_input(Some(path)) {
@@ -555,7 +549,7 @@ fn load_key(
         Err(e) => return Err(e),
     };
     let format = Format::given_or_detected(o.keyform, &bytes);
-    match (kind, compat.public_key_loading()) {
+    match (kind, Line::PUBLIC_KEY_LOADING) {
         (KeyKind::Private, _) => private_key(&bytes, format)
             .map(Operation::Sign)
             .map_err(|_| fail(LoadFailure::Undecoded)),
@@ -597,12 +591,7 @@ fn read_signature(
 
 /// Everything to know before reading the inputs, checked in OpenSSL's
 /// order.
-fn prepare(
-    out: &mut Outputs,
-    command: &str,
-    o: &Options,
-    compat: Compat,
-) -> Result<Operation> {
+fn prepare(out: &mut Outputs, command: &str, o: &Options) -> Result<Operation> {
     if o.key_file.is_some() && o.files.len() > 1 {
         return Err(report(out, &format!("{command}: {ONE_FILE_ONLY}")));
     }
@@ -618,7 +607,7 @@ fn prepare(
     }
     let mut operation = match (&o.key_file, o.role, &o.hmac) {
         (Some(path), Some(role), _) => {
-            match (load_key(out, o, path, role, compat)?, role.purpose()) {
+            match (load_key(out, o, path, role)?, role.purpose()) {
                 (Operation::Sign(private), Purpose::Verifies) => {
                     Operation::Verify(PublicKey::from(&private), Vec::new())
                 }
@@ -631,7 +620,7 @@ fn prepare(
         }
         (_, _, None) => Operation::Digest,
     };
-    match (operation.signer(), compat.dgst_oneshot(), o.digest) {
+    match (operation.signer(), Line::DGST_ONESHOT, o.digest) {
         (Signer::Oneshot, OneshotSigning::Refused, _) => {
             return Err(report(out, KEY_TYPE_UNSUPPORTED));
         }
@@ -898,8 +887,7 @@ pub(crate) fn run(
         out.stdout(args::usage(command, SPECS));
         return Ok(());
     };
-    let compat = compat();
-    let operation = prepare(out, command, &o, compat)?;
+    let operation = prepare(out, command, &o)?;
     let mut results = Vec::new();
     let mut outcome = Outcome::Done;
     if o.files.is_empty() {
