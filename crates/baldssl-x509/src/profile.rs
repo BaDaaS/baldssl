@@ -10,12 +10,11 @@
 //! for each line, so adding an item without deciding it for every line
 //! does not compile, and a line's code is built only with its feature.
 //!
-//! The modules move onto the profile one by one: path validation
-//! ([`TrustStore::verify`](crate::TrustStore::verify)) and issuing
-//! ([`CertificateTemplate`](crate::CertificateTemplate)) are on it; the
-//! others still
-//! ask the methods of [`Compat`], the line as a value, which each profile
-//! names ([`Profile::COMPAT`]).
+//! Path validation ([`TrustStore::verify`](crate::TrustStore::verify)),
+//! issuing ([`CertificateTemplate`](crate::CertificateTemplate)) and text
+//! printing ([`TextLayout`](crate::TextLayout)) are on it; the CLI adds
+//! the differences of OpenSSL's applications. [`Compat`] is the line as a
+//! value, which each profile names ([`Profile::COMPAT`]).
 //!
 //! Each line is compiled in by its Cargo feature (`openssl-3-0`,
 //! `openssl-3-5`, `openssl-3-6`, `openssl-4`). Cargo features are additive,
@@ -51,7 +50,7 @@ mod tests;
 
 use baldssl_core::{Error, Result};
 
-use crate::Compat;
+use crate::{Compat, NameStyle};
 
 mod sealed {
     /// Only the release lines of this module are profiles.
@@ -111,6 +110,25 @@ pub enum DefaultKeyIdentifiers {
     FromConfiguration,
 }
 
+/// Whether a bignum with its top bit set is printed with a leading `00:`,
+/// the two's-complement sign byte ([`Profile::BN_SIGN_BYTE`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BnSignByte {
+    /// It is: `ASN1_bn_print` in `crypto/asn1/t_pkey.c` adds it (OpenSSL 3).
+    Printed,
+    /// It is not (OpenSSL 4).
+    Omitted,
+}
+
+/// What an EC key's header gives as its size ([`Profile::EC_KEY_SIZE`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcKeySize {
+    /// `256 bit` (OpenSSL 3).
+    Bits,
+    /// `256 bit field, 128 bit security level` (OpenSSL 4).
+    BitsAndSecurity,
+}
+
 /// The message of `X509_V_ERR_CERT_NOT_YET_VALID` (error 9) up to OpenSSL
 /// 3.5 (`crypto/x509/x509_txt.c`).
 const NOT_YET_VALID: &str = "certificate is not yet valid";
@@ -146,6 +164,27 @@ pub trait Profile: sealed::Sealed + 'static {
     /// Where `x509 -req -CA` takes the key identifiers it adds from.
     const DEFAULT_KEY_IDENTIFIERS: DefaultKeyIdentifiers =
         DefaultKeyIdentifiers::AtSigning;
+
+    /// Bytes per line in `ASN1_buf_print` (keys, modulus): 15 in OpenSSL
+    /// 3, 16 in 4.
+    const KEY_BYTES_PER_LINE: usize = 15;
+
+    /// Bytes per line in `X509_signature_dump`: 18 in OpenSSL 3, 24 in 4.
+    const SIGNATURE_BYTES_PER_LINE: usize = 18;
+
+    /// Whether `ASN1_bn_print` (`crypto/asn1/t_pkey.c`) prints the sign
+    /// byte of a bignum whose top bit is set.
+    const BN_SIGN_BYTE: BnSignByte = BnSignByte::Printed;
+
+    /// The size an EC key's header gives (`Public-Key: (...)`), as
+    /// `ec_to_text` in
+    /// `providers/implementations/encode_decode/encode_key2text.c` writes
+    /// it: the field size in 3.x, and the security level too in 4.
+    const EC_KEY_SIZE: EcKeySize = EcKeySize::Bits;
+
+    /// How the release line prints names: in the older escaped style in
+    /// OpenSSL 3.0 (`XN_FLAG_ONELINE`), in UTF-8 from 3.2.
+    const NAME_STYLE: NameStyle = NameStyle::Utf8;
 }
 
 /// OpenSSL 3.0.
@@ -163,6 +202,7 @@ impl Profile for OpenSsl30 {
     const FEATURE: &'static str = "openssl-3-0";
     const DEFAULT_KEY_IDENTIFIERS: DefaultKeyIdentifiers =
         DefaultKeyIdentifiers::AtSigningWithExtensions;
+    const NAME_STYLE: NameStyle = NameStyle::Oneline;
 }
 
 /// OpenSSL 3.2 to 3.5, measured on 3.5.
@@ -215,6 +255,10 @@ impl Profile for OpenSsl4 {
         SelfSignedAuthorityKeyId::Omitted;
     const DEFAULT_KEY_IDENTIFIERS: DefaultKeyIdentifiers =
         DefaultKeyIdentifiers::FromConfiguration;
+    const KEY_BYTES_PER_LINE: usize = 16;
+    const SIGNATURE_BYTES_PER_LINE: usize = 24;
+    const BN_SIGN_BYTE: BnSignByte = BnSignByte::Omitted;
+    const EC_KEY_SIZE: EcKeySize = EcKeySize::BitsAndSecurity;
 }
 
 /// A release line compiled in, for tests whose subject does not depend on

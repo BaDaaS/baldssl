@@ -73,11 +73,12 @@ practices" says what the project does; this file says how to work in it.
   `Profile::CERTIFICATE_TIMES`), whose documentation cites the OpenSSL source
   that differs; its default is what the lines share, and each line's type
   overrides it where it differs. Code that depends on the line is generic over
-  `P: Profile`. In a module not yet moved onto the profile, a difference is a
-  method of `Compat` named the same way (`Compat::bn_sign_byte`), moved to the
-  profile with its module. Callers ask the item or the method; they never
-  compare lines (`compat != Compat::V4`), which silently puts a new line on one
-  side.
+  `P: Profile`. A difference of OpenSSL's applications (`apps/`: messages,
+  option parsing, what a command writes) is an item of the CLI's `line::Apps` in
+  the same way (`Apps::LOAD_MESSAGE`). Callers ask the item; they never compare
+  lines (`compat != Compat::V4`), which silently puts a new line on one side.
+  `Compat` is the line as a value, for `Compat::run` and for tests that pick a
+  known answer by line.
 - Before an OpenSSL release joins CI, diff the sources baldssl reproduces
   (`apps/*.c`, the message tables such as `crypto/x509/x509_txt.c`) against the
   release line it would share a profile with; any difference that reaches

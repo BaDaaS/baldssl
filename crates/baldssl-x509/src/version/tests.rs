@@ -17,7 +17,7 @@ use baldssl_test_utils::{
 use proptest::prelude::*;
 
 use super::{Version, version_field};
-use crate::{cert::Certificate, text::Compat};
+use crate::{TextLayout, cert::Certificate};
 
 fn version() -> impl Strategy<Value = Version> {
     sign_magnitude(12).prop_map(|(negative, magnitude)| {
@@ -72,7 +72,9 @@ fn version_lines_match_openssl() {
         let block = pem::decode_first(text.as_bytes(), &["CERTIFICATE"])
             .expect("a PEM certificate");
         let cert = Certificate::from_der(&block.contents).expect(name);
-        let printed = cert.to_text(Compat::V4).expect(name);
+        let printed = cert
+            .to_text(TextLayout::of::<crate::profile::AnyProfile>())
+            .expect(name);
         let printed = String::from_utf8(printed).expect("UTF-8");
         let got = printed
             .lines()

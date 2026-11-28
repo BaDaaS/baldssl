@@ -28,12 +28,14 @@ use baldssl_core::{
 };
 use baldssl_fs::Access;
 use baldssl_pkey::{AnyPrivateKey, PublicKey};
-use baldssl_x509::{Format, print_private_key_text, print_public_key_text};
+use baldssl_x509::{
+    Format, TextLayout, print_private_key_text, print_public_key_text,
+};
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
     input::{format_value, read_input},
-    line::{Apps as _, Line, compat},
+    line::{Apps as _, Line},
     outputs::Outputs,
 };
 
@@ -309,7 +311,6 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
         outputs.stdout(args::usage(COMMAND, SPECS));
         return Ok(());
     };
-    let compat = compat();
     let key = read_key(&o)?;
     let mut out = Vec::new();
     match o.check {
@@ -342,12 +343,15 @@ pub(crate) fn run(raw: &[OsString], outputs: &mut Outputs) -> Result<()> {
     match (o.text, &key) {
         (Text::Nothing, _) => {}
         (Text::AsRead, Key::Private(k)) => {
-            out.extend_from_slice(&print_private_key_text(k, compat)?);
+            out.extend_from_slice(&print_private_key_text(
+                k,
+                TextLayout::of::<Line>(),
+            )?);
         }
         (Text::AsRead | Text::Public, _) => {
             out.extend_from_slice(&print_public_key_text(
                 &key.public(),
-                compat,
+                TextLayout::of::<Line>(),
             )?);
         }
     }

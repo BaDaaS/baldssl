@@ -96,12 +96,12 @@ pub use profile::OpenSsl35;
 #[cfg(feature = "openssl-3-6")]
 pub use profile::OpenSsl36;
 pub use profile::{
-    CertificateTimes, DefaultKeyIdentifiers, Profile, SelfSignedAuthorityKeyId,
-    WithProfile,
+    BnSignByte, CertificateTimes, DefaultKeyIdentifiers, EcKeySize, Profile,
+    SelfSignedAuthorityKeyId, WithProfile,
 };
 pub use text::{
-    Compat, print_private_key_text, print_public_key_text, serial_line,
-    time_rfc822,
+    Compat, TextLayout, print_private_key_text, print_public_key_text,
+    serial_line, time_rfc822,
 };
 pub use verify::{Failure, Reported, TrustStore, Verification, VerifyError};
 

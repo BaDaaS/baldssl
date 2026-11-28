@@ -39,7 +39,7 @@ compile_error!(
 );
 
 use baldssl_pkey::PrivateKeyDer;
-use baldssl_x509::{Compat, Profile};
+use baldssl_x509::Profile;
 
 /// The release line this build imitates: OpenSSL 3.0.
 #[cfg(feature = "openssl-3-0")]
@@ -66,8 +66,10 @@ pub(crate) type Line = baldssl_x509::OpenSsl36;
 ))]
 pub(crate) type Line = baldssl_x509::OpenSsl4;
 
-/// The release line, for the modules that still ask [`Compat`]'s methods.
-pub(crate) const fn compat() -> Compat {
+/// The release line as a value, for the tests that pick their known answer
+/// by line.
+#[cfg(test)]
+pub(crate) const fn compat() -> baldssl_x509::Compat {
     Line::COMPAT
 }
 

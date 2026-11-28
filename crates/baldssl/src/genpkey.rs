@@ -18,13 +18,13 @@ use std::ffi::OsString;
 use baldssl_core::{Result, pem::Pem};
 use baldssl_fs::Access;
 use baldssl_pkey::AnyPrivateKey;
-use baldssl_x509::{Format, print_private_key_text};
+use baldssl_x509::{Format, TextLayout, print_private_key_text};
 
 use crate::{
     args::{self, Kind, Spec, Unknown},
     input::format_value,
     keygen::KeyParameters,
-    line::{Apps as _, Line, compat},
+    line::{Apps as _, Line},
     outputs::Outputs,
 };
 
@@ -125,7 +125,6 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
         return Err(args::opthelp(COMMAND, None));
     }
     pending.read(COMMAND, &mut Vec::new())?;
-    let compat = compat();
     let key = AnyPrivateKey::generate(parameters.algorithm()?)?;
     let mut bytes = match format {
         Format::Der => key.der(Line::GENERATED_KEY_DER).expose().to_vec(),
@@ -134,7 +133,10 @@ pub(crate) fn run(raw: &[OsString], out: &mut Outputs) -> Result<()> {
     match text {
         Text::Nothing => {}
         Text::Printed => {
-            bytes.extend(print_private_key_text(&key, compat)?);
+            bytes.extend(print_private_key_text(
+                &key,
+                TextLayout::of::<Line>(),
+            )?);
         }
     }
     out.output(output.as_deref(), Access::OwnerOnly, bytes);
@@ -187,7 +189,6 @@ mod tests {
     /// in DER, and giving it twice changes nothing.
     #[test]
     fn text() {
-        let compat = compat();
         for alg in [
             &["-algorithm", "ED25519"][..],
             &["-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-521"],
@@ -198,7 +199,8 @@ mod tests {
                 let key = AnyPrivateKey::from_pem(&pem).unwrap();
                 let expected = [
                     key.to_pem().into_bytes(),
-                    print_private_key_text(&key, compat).unwrap(),
+                    print_private_key_text(&key, TextLayout::of::<Line>())
+                        .unwrap(),
                 ]
                 .concat();
                 assert_eq!(pem, expected);
@@ -211,7 +213,8 @@ mod tests {
                 let key = AnyPrivateKey::decode(&der[..len]).unwrap();
                 let expected = [
                     key.der(Line::GENERATED_KEY_DER).expose().to_vec(),
-                    print_private_key_text(&key, compat).unwrap(),
+                    print_private_key_text(&key, TextLayout::of::<Line>())
+                        .unwrap(),
                 ]
                 .concat();
                 assert_eq!(der, expected);
